@@ -32,6 +32,26 @@ def by_name(events, name):
     return [e for e in events if e["event"] == name]
 
 
+def make_signin_failing_run_book(calls, fail_titles=()):
+    """指定タイトルで signin_required を出して失敗する run_book の代役。"""
+
+    def fake(**kwargs):
+        calls.append(kwargs)
+        title = kwargs["title"]
+        if title in fail_titles:
+            kwargs["emit"]("signin_required", human="ログアウトされています")
+            return pipeline.EXIT_WINDOW_NOT_FOUND
+        out = kwargs["output"]
+        os.makedirs(out, exist_ok=True)
+        with open(
+            os.path.join(out, pipeline._ensure_ext(title, ".pdf")), "w", encoding="utf-8"
+        ) as f:
+            f.write("x")
+        return pipeline.EXIT_OK
+
+    return fake
+
+
 def make_fake_run_book(calls, fail_titles=()):
     """run_book の代役。呼び出しを記録し、出力ファイルを作って EXIT_OK を返す。
 
@@ -439,3 +459,47 @@ def test_cli_batch_bad_file_returns_bad_args(tmp_path, isolated_config, capsys):
     assert code == cli.EXIT_BAD_ARGS
     events = [json.loads(x) for x in capsys.readouterr().out.splitlines() if x.strip()]
     assert by_name(events, "error")
+
+
+# ------------------------------------------------------------
+# ログアウト検出でのバッチ中断
+# ------------------------------------------------------------
+
+
+def test_batch_aborts_when_signed_out(tmp_path, monkeypatch):
+    """ログアウトを検出したら残りの本を試さずに中断する。
+
+    以後の全冊が確実に同じ理由で失敗するため、走り続けると Amazon へ
+    失敗ログインを冊数分投げることになり、アカウントロックを招く。
+    """
+    calls: list = []
+    monkeypatch.setattr(
+        pipeline, "run_book", make_signin_failing_run_book(calls, fail_titles=("B",))
+    )
+    books = [
+        {"title": "A", "asin": "B01"},
+        {"title": "B", "asin": "B02"},
+        {"title": "C", "asin": "B03"},
+    ]
+    emit, events = collect_emit()
+    pipeline.run_batch(books, output=str(tmp_path / "out"), emit=emit)
+
+    # A は成功、B で中断するので C は試さない
+    assert [c["title"] for c in calls] == ["A", "B"]
+    assert any("ログアウト" in e.get("message", "") for e in by_name(events, "error"))
+    summary = by_name(events, "batch_summary")[0]
+    assert summary["unprocessed"] == 1
+
+
+def test_batch_continues_on_ordinary_failure(tmp_path, monkeypatch):
+    """ログアウト以外の失敗では従来どおり次の本へ進む。"""
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls, fail_titles=("B",)))
+    books = [
+        {"title": "A", "asin": "B01"},
+        {"title": "B", "asin": "B02"},
+        {"title": "C", "asin": "B03"},
+    ]
+    emit, events = collect_emit()
+    pipeline.run_batch(books, output=str(tmp_path / "out"), emit=emit)
+    assert [c["title"] for c in calls] == ["A", "B", "C"]

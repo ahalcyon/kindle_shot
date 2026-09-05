@@ -169,6 +169,14 @@ def open_reader(url, *, profile_dir=None, headless=True, viewport=None, emit=nul
                 ok, message = sign_in(page, emit)
                 emit("signin", human=message, message=message)
                 if not ok:
+                    # 一括実行では「以後の全冊が同じ理由で失敗する」ことを
+                    # 伝えるためのイベント。run_batch がこれを見て中断する
+                    # （気づかず走り続けると失敗ログインを冊数分投げることになる）
+                    emit(
+                        "signin_required",
+                        human="Kindle にサインインできないため本を開けません",
+                        message=message,
+                    )
                     emit_error(emit, message)
                     yield None
                     return
