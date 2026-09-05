@@ -17,9 +17,12 @@ from core.headless_capture import (
     DEFAULT_TURN_KEY,
     build_manifest,
     capture_pages,
+    detect_turn_key,
     digest,
     hide_ui_css,
     is_signed_in,
+    read_position,
+    reverse_of,
     turn_key,
 )
 
@@ -232,3 +235,97 @@ def test_manifest_is_json_serializable_and_marks_backend():
 def test_digest_differs_per_content():
     assert digest(b"a") != digest(b"b")
     assert digest(b"a") == digest(b"a")
+
+
+# ------------------------------------------------------------
+# ページ送りの向き判定
+# ------------------------------------------------------------
+
+
+class FakeReader:
+    """読書位置を持つ page の代役。
+
+    forward に指定したキーで位置が増え、その逆で減る。
+    """
+
+    def __init__(self, forward="ArrowLeft", position=10, text=None):
+        self.forward = forward
+        self.position = position
+        self.text = text
+        self.url = "https://read.amazon.co.jp/?asin=B0X"
+        self.presses: list[str] = []
+
+        page = self
+
+        class Keyboard:
+            def press(self, key):
+                page.presses.append(key)
+                page.position += 1 if key == page.forward else -1
+
+        self.keyboard = Keyboard()
+
+    def locator(self, _selector):
+        page = self
+
+        class Loc:
+            def count(self):
+                return 0 if page.text == "" else 1
+
+            @property
+            def first(self):
+                return self
+
+            def inner_text(self):
+                if page.text is not None:
+                    return page.text
+                return f"{page.position}/339ページ \u2002●\u2002 1%"
+
+        return Loc()
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+
+def test_reverse_of():
+    assert reverse_of("left") == "right"
+    assert reverse_of("right") == "left"
+    assert reverse_of("pagedown") == "pageup"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("6/339ページ ● 1%", 6),
+        ("位置1/3495 ● 0%", 1),
+        ("11/339ページ", 11),
+        ("", None),
+        ("ページ", None),
+    ],
+)
+def test_read_position(text, expected):
+    """ページ表示と位置表示の 2 形式から先頭の数値を読む。"""
+    assert read_position(FakeReader(text=text)) == expected
+
+
+def test_detects_left_for_vertical_book():
+    """縦書きの本では left が前進。"""
+    page = FakeReader(forward="ArrowLeft")
+    assert detect_turn_key(page, page_wait=0) == "left"
+
+
+def test_detects_right_for_horizontal_book():
+    """横書きの本では right が前進。left を試して位置が減れば right と分かる。"""
+    page = FakeReader(forward="ArrowRight")
+    assert detect_turn_key(page, page_wait=0) == "right"
+
+
+def test_detection_restores_reading_position():
+    """判定で動かした分を戻す（Whispersync の読書位置を動かすため）。"""
+    page = FakeReader(forward="ArrowLeft", position=42)
+    detect_turn_key(page, page_wait=0)
+    assert page.position == 42
+
+
+def test_detection_gives_up_without_position():
+    """位置が読めなければ判定しない（決め打ちで進めない）。"""
+    assert detect_turn_key(FakeReader(text=""), page_wait=0) is None

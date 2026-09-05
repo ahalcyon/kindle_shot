@@ -19,6 +19,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 
 from core.pipeline import (
     EXIT_BAD_ARGS,
@@ -63,6 +64,70 @@ PLAYWRIGHT_KEYS = {
     "up": "ArrowUp",
 }
 DEFAULT_TURN_KEY = "left"
+AUTO_TURN_KEY = "auto"
+DEFAULT_PAGE_WAIT = 2.5
+DEFAULT_LOAD_WAIT = 12
+
+# 読書位置の表示。実測で 2 形式ある:
+#     "6/339ページ ● 1%"   (ページ表示)
+#     "位置1/3495 ● 0%"    (位置表示)
+# どちらも先頭の数値が前進で増えるので、そこだけ読めば向きを判定できる。
+# スクラバー (#kr-scrubber-bar) の値は縦書きだと逆行するため使わない。
+POSITION_SELECTOR = ".footer-label.position"
+_POSITION_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
+
+
+def read_position(page):
+    """現在の読書位置を数値で返す。読めなければ None。"""
+    try:
+        locator = page.locator(POSITION_SELECTOR)
+        if not locator.count():
+            return None
+        matched = _POSITION_RE.search(locator.first.inner_text())
+    except Exception:
+        return None
+    return int(matched.group(1)) if matched else None
+
+
+def detect_turn_key(page, *, page_wait=DEFAULT_PAGE_WAIT, emit=null_emit):
+    """前進するページ送りキーを実測で判定する。判定できなければ None。
+
+    縦書き（右→左）の本では right が前のページに戻る。数百冊には縦書きと
+    横書きが混ざるため、決め打ちだと「正常終了したのに中身が逆順」の本が
+    紛れ込む。読書位置の数値が増える方を前進とみなす。
+
+    判定のために動かした分は元に戻す（Whispersync の読書位置を動かすため）。
+    """
+    before = read_position(page)
+    if before is None:
+        emit("status", human="読書位置を読めないため送りキーを判定できません")
+        return None
+
+    for candidate in ("left", "right"):
+        page.keyboard.press(turn_key(candidate))
+        page.wait_for_timeout(int(page_wait * 1000))
+        after = read_position(page)
+        if after is None or after == before:
+            continue
+        forward = candidate if after > before else reverse_of(candidate)
+        # 判定で動かした分を戻す
+        page.keyboard.press(turn_key(reverse_of(candidate)))
+        page.wait_for_timeout(int(page_wait * 1000))
+        emit(
+            "page_turn_detected",
+            human=f"ページ送りキーを判定しました: {forward}",
+            page_turn=forward,
+        )
+        return forward
+    emit("status", human="ページ送りキーを判定できませんでした")
+    return None
+
+
+def reverse_of(name):
+    """逆方向のキー名。"""
+    return {"left": "right", "right": "left", "pagedown": "pageup", "pageup": "pagedown"}.get(
+        name, "right"
+    )
 
 
 def hide_ui_css():
@@ -149,7 +214,14 @@ def dismiss_dialogs(page):
 
 
 def capture_pages(
-    page, save_dir, *, key="ArrowLeft", max_pages=None, page_wait=2.5, max_retries=3, emit=null_emit
+    page,
+    save_dir,
+    *,
+    key="ArrowLeft",
+    max_pages=None,
+    page_wait=DEFAULT_PAGE_WAIT,
+    max_retries=3,
+    emit=null_emit,
 ):
     """ページを順に撮る。(枚数, stopped_reason) を返す。
 
@@ -217,10 +289,10 @@ def run_headless_capture(
     url=None,
     profile_key=None,
     max_pages=None,
-    page_wait=2.5,
+    page_wait=None,
     page_turn=None,
     overwrite=False,
-    load_wait=12,
+    load_wait=None,
     profile_dir=None,
     headless=True,
     emit=null_emit,
@@ -235,6 +307,11 @@ def run_headless_capture(
     if not asin and not url:
         emit_error(emit, "asin か url のどちらかが必要です")
         return EXIT_BAD_ARGS
+
+    # run_book は指定が無ければ None を渡してくる（画面キャプチャ側は
+    # プロファイルの値へ落とす作りのため）。ここで既定へ寄せる。
+    page_wait = DEFAULT_PAGE_WAIT if page_wait is None else page_wait
+    load_wait = DEFAULT_LOAD_WAIT if load_wait is None else load_wait
 
     save_dir = os.path.join(os.path.abspath(output_folder), title)
     # 前回の残骸が混ざると後段の PDF に古いページが紛れる（README の契約）
@@ -251,7 +328,8 @@ def run_headless_capture(
 
     started = datetime.datetime.now()
     target = url or book_url(asin)
-    key = turn_key(page_turn or getattr(profile, "page_turn_key", None))
+    requested = page_turn or AUTO_TURN_KEY
+    key = turn_key(page_turn if page_turn != AUTO_TURN_KEY else None)
     total = 0
     stopped_reason = "error"
 
@@ -282,6 +360,12 @@ def run_headless_capture(
             dismiss_dialogs(page)
             page.add_style_tag(content=hide_ui_css())
             emit("status", human="ビューアの UI を隠しました", message="ビューアの UI を隠しました")
+
+            if requested == AUTO_TURN_KEY:
+                detected = detect_turn_key(page, page_wait=page_wait, emit=emit)
+                key = turn_key(detected or getattr(profile, "page_turn_key", None))
+            else:
+                key = turn_key(requested)
             emit("status", human=f"ページ送りキー: {key}", message=f"ページ送りキー: {key}")
             total, stopped_reason = capture_pages(
                 page, save_dir, key=key, max_pages=max_pages, page_wait=page_wait, emit=emit
