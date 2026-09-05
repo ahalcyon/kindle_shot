@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# setup.bat が作る仮想環境と、その中に展開する OCR エンジン
+kindle_env/
+ndlocr-lite/
+
+# ユーザーのローカル設定 (config.example.json がテンプレート)
+core/config.json
+
+# 実行時の生成物
+*.log
