@@ -83,8 +83,9 @@ def rewind_press_count(pages_captured):
     return pages_captured
 
 
-def _capture_probe_pages(profile, key, *, max_pages=PROBE_MAX_PAGES,
-                         stop_event=None, strict_process=True):
+def _capture_probe_pages(
+    profile, key, *, max_pages=PROBE_MAX_PAGES, stop_event=None, strict_process=True
+):
     """一時フォルダへ短いキャプチャを実行し、(終了コード, 撮れた枚数) を返す。
 
     画像は一時フォルダごと削除する（著作物を残さない）。受け取った判定専用の
@@ -104,9 +105,14 @@ def _capture_probe_pages(profile, key, *, max_pages=PROBE_MAX_PAGES,
     probe_profile = CaptureProfile.from_dict(profile.to_dict())
     with tempfile.TemporaryDirectory(prefix="kindle_shot_probe_") as tmp_dir:
         code = run_capture(
-            probe_profile, PROBE_TITLE, tmp_dir,
-            page_turn=key, max_pages=max_pages, overwrite=True,
-            stop_event=stop_event, strict_process=strict_process,
+            probe_profile,
+            PROBE_TITLE,
+            tmp_dir,
+            page_turn=key,
+            max_pages=max_pages,
+            overwrite=True,
+            stop_event=stop_event,
+            strict_process=strict_process,
             emit=count_emit,
         )
     return code, pages
@@ -124,9 +130,17 @@ def _press_key(key, times, interval=REWIND_INTERVAL):
         time.sleep(interval)
 
 
-def probe_page_turn_key(profile, *, keys=None, max_pages=PROBE_MAX_PAGES,
-                        stop_event=None, strict_process=True,
-                        capture_fn=None, rewind_fn=None, emit=null_emit):
+def probe_page_turn_key(
+    profile,
+    *,
+    keys=None,
+    max_pages=PROBE_MAX_PAGES,
+    stop_event=None,
+    strict_process=True,
+    capture_fn=None,
+    rewind_fn=None,
+    emit=null_emit,
+):
     """候補キーを順に試してページ送りキーを特定する。
 
     本の先頭ページを表示した状態で呼ぶこと。成功したキーで進んだ分は
@@ -151,16 +165,21 @@ def probe_page_turn_key(profile, *, keys=None, max_pages=PROBE_MAX_PAGES,
     keys = tuple(keys) if keys else PROBE_KEY_ORDER
     capture_fn = capture_fn or _capture_probe_pages
     rewind_fn = rewind_fn or _press_key
-    tried = []
+    tried: list = []
 
     def finish(ok, key, exit_code, **fields):
         emit(
             "result",
             human=(
-                f"ページ送りキーを特定しました: {key}" if ok
+                f"ページ送りキーを特定しました: {key}"
+                if ok
                 else "ページ送りキーを特定できませんでした"
             ),
-            ok=ok, page_turn_key=key, exit_code=exit_code, tried=tried, **fields,
+            ok=ok,
+            page_turn_key=key,
+            exit_code=exit_code,
+            tried=tried,
+            **fields,
         )
         return key if ok else None
 
@@ -172,18 +191,21 @@ def probe_page_turn_key(profile, *, keys=None, max_pages=PROBE_MAX_PAGES,
         emit("probe_key_start", human=f"「{key}」を試しています...", key=key)
         probe_profile = probe_profile_for(profile, first=(index == 0))
         code, pages = capture_fn(
-            probe_profile, key, max_pages=max_pages, stop_event=stop_event,
+            probe_profile,
+            key,
+            max_pages=max_pages,
+            stop_event=stop_event,
             strict_process=strict_process,
         )
         detected = is_page_turn_detected(pages)
         tried.append(key)
         emit(
             "probe_key_result",
-            human=(
-                f"「{key}」: {pages}ページ送られました" if detected
-                else f"「{key}」: 変化なし"
-            ),
-            key=key, pages=pages, detected=detected, exit_code=code,
+            human=(f"「{key}」: {pages}ページ送られました" if detected else f"「{key}」: 変化なし"),
+            key=key,
+            pages=pages,
+            detected=detected,
+            exit_code=code,
         )
 
         if code == EXIT_WINDOW_NOT_FOUND:
@@ -206,17 +228,28 @@ def probe_page_turn_key(profile, *, keys=None, max_pages=PROBE_MAX_PAGES,
             emit(
                 "probe_rewind",
                 human=f"先頭ページへ戻せませんでした（手動で戻してください）: {e}",
-                ok=False, key=rewind_key, presses=presses, message=str(e),
+                ok=False,
+                key=rewind_key,
+                presses=presses,
+                message=str(e),
             )
         else:
             emit(
                 "probe_rewind",
                 human=f"「{rewind_key}」を{presses}回送って先頭ページへ戻しました",
-                ok=True, key=rewind_key, presses=presses,
+                ok=True,
+                key=rewind_key,
+                presses=presses,
             )
-        return finish(True, key, EXIT_OK, pages=pages,
-                      rewind_key=rewind_key, rewind_presses=presses,
-                      rewound=rewound)
+        return finish(
+            True,
+            key,
+            EXIT_OK,
+            pages=pages,
+            rewind_key=rewind_key,
+            rewind_presses=presses,
+            rewound=rewound,
+        )
 
     emit_error(emit, "どの候補キーでもページが送られませんでした")
     return finish(False, None, EXIT_ERROR)

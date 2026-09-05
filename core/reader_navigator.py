@@ -42,12 +42,13 @@ def _reader_arrow_dark(hwnd):
     left, top, right, bottom = get_window_rect(hwnd)
     w, h = right - left, bottom - top
     y0, y1 = top + int(h * 0.45), top + int(h * 0.55)
-    lb = ImageGrab.grab(bbox=(left + int(w * 0.02), y0, left + int(w * 0.08), y1),
-                        all_screens=True).convert("L")
-    rb = ImageGrab.grab(bbox=(left + int(w * 0.92), y0, left + int(w * 0.98), y1),
-                        all_screens=True).convert("L")
-    return int((np.asarray(lb, np.uint8) < 128).sum()) + \
-        int((np.asarray(rb, np.uint8) < 128).sum())
+    lb = ImageGrab.grab(
+        bbox=(left + int(w * 0.02), y0, left + int(w * 0.08), y1), all_screens=True
+    ).convert("L")
+    rb = ImageGrab.grab(
+        bbox=(left + int(w * 0.92), y0, left + int(w * 0.98), y1), all_screens=True
+    ).convert("L")
+    return int((np.asarray(lb, np.uint8) < 128).sum()) + int((np.asarray(rb, np.uint8) < 128).sum())
 
 
 def _find_modal_button(hwnd):
@@ -77,8 +78,10 @@ def _find_modal_button(hwnd):
     ph, pw = max(1, h // 20), max(1, w // 20)
     my = h // 2
     patches = [
-        arr[my - ph:my + ph, :pw], arr[my - ph:my + ph, -pw:],
-        arr[-2 * ph:-ph, :pw], arr[-2 * ph:-ph, -pw:],
+        arr[my - ph : my + ph, :pw],
+        arr[my - ph : my + ph, -pw:],
+        arr[-2 * ph : -ph, :pw],
+        arr[-2 * ph : -ph, -pw:],
     ]
     if not all(p.std() < 8 and 120 <= p.mean() <= 235 for p in patches):
         return None
@@ -117,9 +120,18 @@ def _find_modal_button(hwnd):
     return (left + cx * ds, top + cy * ds)
 
 
-def open_book(profile, *, asin=None, url=None, page_turn=None,
-              no_fullscreen=False, no_rewind=False, max_rewind=1000,
-              load_wait=45, emit=null_emit):
+def open_book(
+    profile,
+    *,
+    asin=None,
+    url=None,
+    page_turn=None,
+    no_fullscreen=False,
+    no_rewind=False,
+    max_rewind=1000,
+    load_wait=45,
+    emit=null_emit,
+):
     """Kindle Cloud Reader で本を開き、全画面化して先頭ページに合わせる。
 
     Args:
@@ -145,15 +157,21 @@ def open_book(profile, *, asin=None, url=None, page_turn=None,
     # 真っ黒に映り「読み込み未完了」と誤判定される）。open 全体でスリープを抑止する。
     prevent_sleep()
     try:
-        return _open_impl(profile, asin=asin, url=url,
-                          no_fullscreen=no_fullscreen, no_rewind=no_rewind,
-                          max_rewind=max_rewind, load_wait=load_wait, emit=emit)
+        return _open_impl(
+            profile,
+            asin=asin,
+            url=url,
+            no_fullscreen=no_fullscreen,
+            no_rewind=no_rewind,
+            max_rewind=max_rewind,
+            load_wait=load_wait,
+            emit=emit,
+        )
     finally:
         allow_sleep()
 
 
-def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind,
-               max_rewind, load_wait, emit):
+def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind, max_rewind, load_wait, emit):
     import numpy as np
     import pyautogui as pag
     from PIL import ImageGrab
@@ -188,13 +206,14 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind,
         emit_error(
             emit,
             f"対象ウィンドウが見つかりません: {profile.window_title_keyword} "
-            f"(プロセス: {profile.process_name or '指定なし'})"
+            f"(プロセス: {profile.process_name or '指定なし'})",
         )
         return EXIT_WINDOW_NOT_FOUND
     emit(
         "window_found",
         human=f'検出ウィンドウ: "{get_window_title(hwnd)}"',
-        title=get_window_title(hwnd), process=get_window_process_name(hwnd),
+        title=get_window_title(hwnd),
+        process=get_window_process_name(hwnd),
     )
 
     engine.activate_target_window(hwnd)
@@ -215,7 +234,7 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind,
         emit_error(
             emit,
             "画面がロックされています。ロックを解除してから再実行してください"
-            "（無人実行ではロックされない設定にしてください）"
+            "（無人実行ではロックされない設定にしてください）",
         )
         return EXIT_ERROR
 
@@ -234,8 +253,7 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind,
         while time.monotonic() < end:
             time.sleep(1.2)
             cur = grab_thumb()
-            if float(np.abs(cur - prev).mean()) < 0.5 and \
-                    (not need_content or cur.std() > 8):
+            if float(np.abs(cur - prev).mean()) < 0.5 and (not need_content or cur.std() > 8):
                 return True
             prev = cur
         return False
@@ -258,9 +276,12 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind,
         engine.activate_target_window(hwnd)
         fwd = profile.page_turn_key
         for key in (fwd, reverse_page_turn_key(fwd)):
-            emit("status",
-                 human=f"ほぼ白いページで開きました。{key} キーで1ページ動かして再確認します",
-                 message="blank_page_nudge", key=key)
+            emit(
+                "status",
+                human=f"ほぼ白いページで開きました。{key} キーで1ページ動かして再確認します",
+                message="blank_page_nudge",
+                key=key,
+            )
             pag.press(key)
             time.sleep(1.5)
             if wait_stable(15):
@@ -276,16 +297,23 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind,
     # 移動するが、この後の巻き戻しで先頭に戻るので位置は問わない。
     btn = _find_modal_button(hwnd)
     if btn is not None:
-        emit("status", human="位置同期ダイアログを閉じます",
-             message="position_dialog_dismiss", x=btn[0], y=btn[1])
+        emit(
+            "status",
+            human="位置同期ダイアログを閉じます",
+            message="position_dialog_dismiss",
+            x=btn[0],
+            y=btn[1],
+        )
         engine.activate_target_window(hwnd)
         pag.click(btn[0], btn[1])
         time.sleep(2)
         wait_stable(load_wait)
         if _find_modal_button(hwnd) is not None:
-            emit("status",
-                 human="注意: 位置同期ダイアログを閉じられなかった可能性があります",
-                 message="position_dialog_remains")
+            emit(
+                "status",
+                human="注意: 位置同期ダイアログを閉じられなかった可能性があります",
+                message="position_dialog_remains",
+            )
 
     # 全画面化 (F11 はトグルなので、すでに全画面なら押さない)
     if not no_fullscreen:
@@ -322,9 +350,14 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind,
         hidden = True
     emit(
         "ui_bar",
-        human=("リーダー UI: 非表示" if hidden else
-               "注意: リーダー UI を非表示にできなかった可能性があります"),
-        hidden=hidden, arrow_before=a, arrow_after=b,
+        human=(
+            "リーダー UI: 非表示"
+            if hidden
+            else "注意: リーダー UI を非表示にできなかった可能性があります"
+        ),
+        hidden=hidden,
+        arrow_before=a,
+        arrow_after=b,
     )
 
     # 先頭ページへ巻き戻し
@@ -370,12 +403,16 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind,
         emit(
             "result",
             human=f"先頭ページに到達しました（{presses} 回めくり、うち2回は終端確認）",
-            ok=True, at_first_page=True, presses=presses,
+            ok=True,
+            at_first_page=True,
+            presses=presses,
         )
         return EXIT_OK
     emit(
         "result",
         human=f"--max-rewind {max_rewind} に達しましたが先頭を確認できていません",
-        ok=False, at_first_page=False, presses=presses,
+        ok=False,
+        at_first_page=False,
+        presses=presses,
     )
     return EXIT_ERROR

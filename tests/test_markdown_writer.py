@@ -23,7 +23,10 @@ def test_write_markdown_page_faithful_structure(tmp_path):
     ]
     chapters = [Chapter(0, "page_001.png", "第一章 出発", 1)]
     success, message = write_markdown(
-        results, str(out), title="テスト本", chapters=chapters,
+        results,
+        str(out),
+        title="テスト本",
+        chapters=chapters,
     )
     assert success
     content = _read_without_date(out)
@@ -52,7 +55,11 @@ def test_write_notebooklm_markdown_structure(tmp_path):
     ]
     chapters = [Chapter(2, "page_003.png", "第一章 出発", 1)]
     success, message, written = write_notebooklm_markdown(
-        results, str(out), title="テスト本", source="B000TEST", chapters=chapters,
+        results,
+        str(out),
+        title="テスト本",
+        source="B000TEST",
+        chapters=chapters,
     )
     assert success
     assert written == [str(out)]
@@ -82,7 +89,10 @@ def test_write_notebooklm_markdown_chapter_matching_title_is_dropped(tmp_path):
     # 書名で始まる章タイトルは半扉の誤検出とみなして見出しにしない
     chapters = [Chapter(0, "page_001.png", "テスト本 上巻", 1)]
     success, _, _ = write_notebooklm_markdown(
-        results, str(out), title="テスト本", chapters=chapters,
+        results,
+        str(out),
+        title="テスト本",
+        chapters=chapters,
     )
     assert success
     content = _read_without_date(out)
@@ -98,6 +108,7 @@ def test_write_notebooklm_markdown_empty_results(tmp_path):
 # ------------------------------------------------------------
 # 分割出力（split_words）
 # ------------------------------------------------------------
+
 
 def _chapter_results():
     """3章構成・各章が推定100語強のテストデータを作る。"""
@@ -118,7 +129,10 @@ def test_split_under_limit_writes_single_file(tmp_path):
     out = tmp_path / "book.md"
     results, chapters = _chapter_results()
     success, _, written = write_notebooklm_markdown(
-        results, str(out), title="テスト本", chapters=chapters,
+        results,
+        str(out),
+        title="テスト本",
+        chapters=chapters,
         split_words=100_000,
     )
     assert success
@@ -132,13 +146,19 @@ def test_split_over_limit_splits_at_chapter_boundaries(tmp_path):
     results, chapters = _chapter_results()
     # 1章≒105語なので、上限150語 → 1章ずつ3ファイルに分かれる
     success, message, written = write_notebooklm_markdown(
-        results, str(out), title="テスト本", source="B000TEST",
-        chapters=chapters, split_words=150,
+        results,
+        str(out),
+        title="テスト本",
+        source="B000TEST",
+        chapters=chapters,
+        split_words=150,
     )
     assert success
     assert "3 分割" in message
     assert [os.path.basename(p) for p in written] == [
-        "book_1.md", "book_2.md", "book_3.md",
+        "book_1.md",
+        "book_2.md",
+        "book_3.md",
     ]
     assert not out.exists()  # 分割時は <名前>.md は作らない
 
@@ -162,7 +182,10 @@ def test_split_two_chapters_fit_in_one_part(tmp_path):
     results, chapters = _chapter_results()
     # 上限250語 → 2章 + 1章の2ファイル
     success, _, written = write_notebooklm_markdown(
-        results, str(out), title="テスト本", chapters=chapters,
+        results,
+        str(out),
+        title="テスト本",
+        chapters=chapters,
         split_words=250,
     )
     assert success
@@ -179,13 +202,15 @@ def test_split_oversize_chapter_falls_back_to_paragraphs(tmp_path):
     body = "\n\n".join("段落" + "か" * 50 for _ in range(4))
     results = [("page_001.png", body)]
     success, _, written = write_notebooklm_markdown(
-        results, str(out), title="テスト本", split_words=120,
+        results,
+        str(out),
+        title="テスト本",
+        split_words=120,
     )
     assert success
     assert len(written) >= 2  # 段落境界でフォールバック分割される
     # 全部数を合わせると段落4つが揃っている
     joined = "".join(
-        (tmp_path / f"book_{i}.md").read_text(encoding="utf-8")
-        for i in range(1, len(written) + 1)
+        (tmp_path / f"book_{i}.md").read_text(encoding="utf-8") for i in range(1, len(written) + 1)
     )
     assert joined.count("段落") == 4

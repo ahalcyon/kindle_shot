@@ -1,5 +1,7 @@
 # kindle_shot
 
+[![CI](https://github.com/ahalcyon/kindle_shot/actions/workflows/ci.yml/badge.svg)](https://github.com/ahalcyon/kindle_shot/actions/workflows/ci.yml)
+
 電子書籍のスクリーンキャプチャ・PDF読込・トリミング・PDF変換・OCR統合ツール（Windows専用）
 
 Kindle・楽天Kobo・Google Play ブックスなどのビューアで表示中のページを自動キャプチャしたり、手元の
@@ -686,6 +688,8 @@ OCR の誤認識を機械的に直す置換辞書です。リポジトリ直下�
 
 ```
 kindle_shot/
+├── AGENTS.md               # AI エージェント向けの作業規約
+├── CLAUDE.md               # 上の要点と参照（Claude Code の入口）
 ├── app.py                  # GUI エントリポイント（ウィザード）
 ├── cli.py                  # CLI エントリポイント（無人運用・エージェント向け）
 ├── core/                   # UI 非依存のコアロジック
@@ -752,7 +756,37 @@ kindle_shot 本体は MIT ライセンスです（同梱の `LICENSE` を参照�
 
 ## 開発メモ
 
-- テスト: `kindle_env\Scripts\python.exe -m pytest`（純ロジックと CLI の JSON 契約。Win32 実行系・
-  OCR 実行系は対象外）
-- lint: `kindle_env\Scripts\python.exe -m ruff check .`
+### 検証コマンド
+
+以下は GitHub Actions (`.github/workflows/ci.yml`) が回しているものと同じです。
+開発用ツール（ruff / mypy / pytest）は `pip install --group dev` で入ります。
+
+| 目的 | コマンド |
+| --- | --- |
+| lint | `kindle_env\Scripts\python.exe -m ruff check .` |
+| format | `kindle_env\Scripts\python.exe -m ruff format .`（確認だけなら `--check`） |
+| type check | `kindle_env\Scripts\python.exe -m mypy` |
+| ユニットテスト | `kindle_env\Scripts\python.exe -m pytest -m "not e2e"` |
+| E2E テスト | `kindle_env\Scripts\python.exe -m pytest -m e2e` |
+| 全部 | `kindle_env\Scripts\python.exe -m pytest` |
+
+### テストの種類
+
+- `tests/` … 純ロジックと、`cli.main()` をインプロセスで呼ぶ JSON 契約テスト。
+  Win32 実行系（capture / open / run）と OCR 実行系は対象外。
+- `tests/e2e/` … `python cli.py ...` を実際にサブプロセス起動し、外部PDF → ページ画像 →
+  トリミング → PDF を通しで検証する（`e2e` マーカー付き）。
+
+### CI
+
+- lint / format / type check … ubuntu-latest（OS 非依存。mypy は `platform = "win32"` 指定で
+  Windows 前提として解析する）
+- ユニットテスト / E2E … windows-latest。`ctypes.windll` と Windows の日本語フォントに
+  依存するテストがあるため、Linux では代替できない。
+- Python は開発環境と同じ 3.12 に固定。setup.bat は 3.11〜3.13 を受け付けるが、
+  **CI が動作を保証するのは 3.12 のみ**。3.11 / 3.13 でしか出ない不具合は検出されない。
+
+### その他
+
 - 依存の変更: `pyproject.toml` を編集 → `kindle_env\Scripts\uv.exe pip compile pyproject.toml -o requirements.txt`
+- 改行コードは `.gitattributes` で「リポジトリ内 LF / 作業ツリー CRLF」に正規化している。

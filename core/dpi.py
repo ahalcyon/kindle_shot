@@ -30,6 +30,7 @@ def enable_per_monitor_dpi_awareness():
     """
     import contextlib
     from ctypes import windll
+
     try:
         # PROCESS_PER_MONITOR_DPI_AWARE = 2 (Windows 8.1+)
         windll.shcore.SetProcessDpiAwareness(2)

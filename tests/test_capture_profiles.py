@@ -55,11 +55,14 @@ def test_display_label_falls_back_to_name_then_key():
 def test_builtins_are_the_six_verified_profiles():
     """未検証の PC アプリ版5種は 2026-08-27 に削除済み（ビルトインは6種）。"""
     assert set(BUILTIN_PROFILES) == {
-        "kindle_cloud", "kobo_web", "google_play_web", "dmm_web", "cmoa_web",
+        "kindle_cloud",
+        "kobo_web",
+        "google_play_web",
+        "dmm_web",
+        "cmoa_web",
         "kindle",
     }
-    for key in ("google_play", "rakuten_kobo", "bookwalker",
-                "dmm_books", "kinoppy"):
+    for key in ("google_play", "rakuten_kobo", "bookwalker", "dmm_books", "kinoppy"):
         assert key not in BUILTIN_PROFILES
 
 
@@ -90,9 +93,7 @@ def test_browser_profiles_use_kindle_cloud_template():
 
 def test_dmm_web_is_the_only_book_title_keyword_profile():
     """DMM ブラウザ版だけ window_title_keyword が「本のタイトルの一部」。"""
-    flagged = {
-        k for k, p in BUILTIN_PROFILES.items() if p.title_keyword_is_book_title
-    }
+    flagged = {k for k, p in BUILTIN_PROFILES.items() if p.title_keyword_is_book_title}
     assert flagged == {"dmm_web"}
     # 本ごとに入力させるため既定のキーワードは持たない
     assert BUILTIN_PROFILES["dmm_web"].window_title_keyword == ""
@@ -117,10 +118,10 @@ def test_profile_display_order_follows_spec():
 
 
 def test_profile_display_order_appends_custom_keys():
-    config = {"capture": {"profiles": {"my_viewer": {}, "kindle": {}}}}
+    config: dict = {"capture": {"profiles": {"my_viewer": {}, "kindle": {}}}}
     keys = profile_display_order(config)
-    assert keys[-1] == "my_viewer"          # カスタムは末尾
-    assert keys.count("kindle") == 1        # ビルトインは重複しない
+    assert keys[-1] == "my_viewer"  # カスタムは末尾
+    assert keys.count("kindle") == 1  # ビルトインは重複しない
     assert keys[: len(PROFILE_DISPLAY_ORDER)] == list(PROFILE_DISPLAY_ORDER)
 
 
@@ -142,7 +143,7 @@ def test_get_profile_applies_config_diff_over_builtin():
         },
     }
     profile = get_profile("kindle_cloud", config)
-    assert profile.page_turn_key == "right"   # config の差分が効く
+    assert profile.page_turn_key == "right"  # config の差分が効く
     assert profile.page_wait == 1.5
     # 保存されていない項目はビルトイン由来のまま
     assert profile.settle_enabled is True
@@ -154,9 +155,7 @@ def test_get_profile_matches_merge_profile_data():
     """CLI 経路 (get_profile) と GUI 経路 (merge_profile_data) が一致すること。"""
     config = {"capture": {"profiles": {"kindle": {"page_wait": 2.0}}}}
     for key in ("kindle", "kindle_cloud", "cmoa_web"):
-        assert get_profile(key, config) == CaptureProfile.from_dict(
-            merge_profile_data(key, config)
-        )
+        assert get_profile(key, config) == CaptureProfile.from_dict(merge_profile_data(key, config))
 
 
 def test_get_profile_ignores_obsolete_saved_keys():
@@ -206,8 +205,9 @@ def test_get_profile_returns_independent_copy():
 
 def test_merge_profile_data_keeps_settle_fields():
     """GUI のプロファイル再構築で settle_* が脱落していたバグの回帰テスト。"""
-    data = merge_profile_data("kindle_cloud", {"capture": {"profiles": {}}},
-                              overrides={"page_wait": 1.0})
+    data = merge_profile_data(
+        "kindle_cloud", {"capture": {"profiles": {}}}, overrides={"page_wait": 1.0}
+    )
     profile = CaptureProfile.from_dict(data)
     assert profile.settle_enabled is True
     assert profile.page_wait == 1.0
@@ -230,8 +230,7 @@ def test_merge_profile_data_layering_order():
 
 
 def test_merge_profile_data_ignores_none_overrides():
-    data = merge_profile_data("kindle", None,
-                              overrides={"window_title_keyword": None})
+    data = merge_profile_data("kindle", None, overrides={"window_title_keyword": None})
     assert data["window_title_keyword"] == "kindle"
 
 
@@ -259,7 +258,7 @@ def test_reverse_page_turn_key_unknown_falls_back_left():
 
 
 def test_get_all_profile_keys_merges_builtin_and_config():
-    config = {"capture": {"profiles": {"kindle": {}, "my_viewer": {}}}}
+    config: dict = {"capture": {"profiles": {"kindle": {}, "my_viewer": {}}}}
     keys = get_all_profile_keys(config)
     assert "kindle" in keys
     assert "kindle_cloud" in keys

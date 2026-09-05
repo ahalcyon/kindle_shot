@@ -25,8 +25,12 @@ CONVERT_PHASE_LABELS = {
 # (値, ラベル, 説明, OCR が要るか)
 FORMAT_CHOICES = (
     ("image_pdf", "画像PDF", "ページをそのままPDFに。いちばん速い", False),
-    ("searchable_pdf", "検索できるPDF",
-     "文字認識（OCR）で検索・コピーできるPDFに。時間がかかります", True),
+    (
+        "searchable_pdf",
+        "検索できるPDF",
+        "文字認識（OCR）で検索・コピーできるPDFに。時間がかかります",
+        True,
+    ),
     ("markdown", "Markdown", "NotebookLM などのAIに読ませるテキストに", True),
 )
 
@@ -51,18 +55,29 @@ class ConvertStep(WizardStep):
             block = ctk.CTkFrame(formats, fg_color="transparent")
             block.pack(fill="x", pady=(0, theme.PAD_SMALL))
             radio = ctk.CTkRadioButton(
-                block, text=label, variable=self.format_var, value=value,
+                block,
+                text=label,
+                variable=self.format_var,
+                value=value,
                 font=ctk.CTkFont(size=theme.FONT_SIZE_BASE, weight="bold"),
             )
             radio.pack(anchor="w")
             ctk.CTkLabel(
-                block, text=description, text_color=theme.MUTED_COLOR,
-                anchor="w", justify="left", wraplength=820,
+                block,
+                text=description,
+                text_color=theme.MUTED_COLOR,
+                anchor="w",
+                justify="left",
+                wraplength=820,
             ).pack(anchor="w", padx=(26, 0))
             self._format_buttons[value] = radio
 
         self.ocr_note = ctk.CTkLabel(
-            self, text="", anchor="w", justify="left", wraplength=860,
+            self,
+            text="",
+            anchor="w",
+            justify="left",
+            wraplength=860,
         )
         self.ocr_note.pack(fill="x", padx=theme.PAD_X, pady=(0, theme.PAD_Y))
 
@@ -72,29 +87,36 @@ class ConvertStep(WizardStep):
         form.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(form, text="ファイル名:", anchor="w").grid(
-            row=0, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6)
+            row=0, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6
+        )
         self.filename_var = tk.StringVar()
         ctk.CTkEntry(form, textvariable=self.filename_var).grid(
-            row=0, column=1, sticky="ew", pady=6)
+            row=0, column=1, sticky="ew", pady=6
+        )
 
         ctk.CTkLabel(form, text="出力先フォルダ:", anchor="w").grid(
-            row=1, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6)
+            row=1, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6
+        )
         self.output_var = tk.StringVar()
-        ctk.CTkEntry(form, textvariable=self.output_var).grid(
-            row=1, column=1, sticky="ew", pady=6)
+        ctk.CTkEntry(form, textvariable=self.output_var).grid(row=1, column=1, sticky="ew", pady=6)
         ctk.CTkButton(
-            form, text="参照", width=120,
+            form,
+            text="参照",
+            width=120,
             command=lambda: browse_folder_into(self.output_var),
         ).grid(row=1, column=2, padx=(theme.PAD_SMALL, 0), pady=6)
 
         ctk.CTkLabel(
-            form, text=OUTPUT_FOLDER_HELP, text_color=theme.MUTED_COLOR,
-            anchor="w", justify="left", wraplength=820,
+            form,
+            text=OUTPUT_FOLDER_HELP,
+            text_color=theme.MUTED_COLOR,
+            anchor="w",
+            justify="left",
+            wraplength=820,
         ).grid(row=2, column=1, columnspan=2, sticky="w", pady=(0, 6))
 
         self.progress = ProgressPanel(self)
-        self.progress.pack(fill="both", expand=True,
-                           padx=theme.PAD_X, pady=theme.PAD_Y)
+        self.progress.pack(fill="both", expand=True, padx=theme.PAD_X, pady=theme.PAD_Y)
 
     def build_footer(self):
         self.back_btn = self.add_back_button(STEP_TRIM)
@@ -130,9 +152,8 @@ class ConvertStep(WizardStep):
         available = bool(engine and engine.get("available"))
         for value, _label, _desc, needs_ocr in FORMAT_CHOICES:
             if needs_ocr:
-                self._format_buttons[value].configure(
-                    state="normal" if available else "disabled")
-        if available:
+                self._format_buttons[value].configure(state="normal" if available else "disabled")
+        if engine is not None and available:
             self.ocr_note.configure(
                 text=f"OCRエンジン: {engine.get('description', 'NDLOCR-Lite')}",
                 text_color=theme.MUTED_COLOR,
@@ -140,7 +161,7 @@ class ConvertStep(WizardStep):
         else:
             self.ocr_note.configure(
                 text="NDLOCR-Lite が見つからないため、文字認識が必要な2つは選べません"
-                     "（導入方法は README を参照してください）。",
+                "（導入方法は README を参照してください）。",
                 text_color=theme.ERROR_COLOR,
             )
             if self.format_var.get() != "image_pdf":
@@ -174,18 +195,25 @@ class ConvertStep(WizardStep):
         self.progress.reset("書き出しを開始します...")
 
         root = self.winfo_toplevel()
-        emitter = GuiEmitter(root, log=self.progress.log_text,
-                             progress_bar=self.progress.progress_bar,
-                             status_var=self.progress.status_var,
-                             phase_labels=CONVERT_PHASE_LABELS)
+        emitter = GuiEmitter(
+            root,
+            log=self.progress.log_text,
+            progress_bar=self.progress.progress_bar,
+            status_var=self.progress.status_var,
+            phase_labels=CONVERT_PHASE_LABELS,
+        )
 
         def thread():
             # OCR 前処理・置換辞書・章しおり・Markdown 形式は config の
             # 既定値で動かす（GUI からは触らせない・画面仕様書 §3 S3）。
             try:
                 code = run_convert(
-                    input_folder, output_folder, fmt,
-                    name=filename, config=self.config_data, emit=emitter,
+                    input_folder,
+                    output_folder,
+                    fmt,
+                    name=filename,
+                    config=self.config_data,
+                    emit=emitter,
                 )
             except Exception as e:
                 emitter("error", human=f"エラー: {e}", message=str(e))

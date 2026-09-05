@@ -50,7 +50,9 @@ def test_pdf_extracts_pages(sample_pdf, tmp_path, capsys):
     assert res["ok"] is True
     assert res["pages"] == 3
     assert sorted(p.name for p in out_dir.iterdir()) == [
-        "001.png", "002.png", "003.png",
+        "001.png",
+        "002.png",
+        "003.png",
     ]
 
 
@@ -67,8 +69,7 @@ def test_pdf_jpg_format(sample_pdf, tmp_path, capsys):
     out_dir = tmp_path / "pages_jpg"
     code, events = run_cli(
         capsys,
-        ["pdf", "--in", str(sample_pdf), "--out", str(out_dir),
-         "--format", "jpg", "--json"],
+        ["pdf", "--in", str(sample_pdf), "--out", str(out_dir), "--format", "jpg", "--json"],
     )
     assert code == cli.EXIT_OK
     assert (out_dir / "001.jpg").exists()
@@ -76,7 +77,8 @@ def test_pdf_jpg_format(sample_pdf, tmp_path, capsys):
 
 def test_pdf_missing_file(tmp_path, capsys):
     code, events = run_cli(
-        capsys, ["pdf", "--in", str(tmp_path / "nai.pdf"), "--json"],
+        capsys,
+        ["pdf", "--in", str(tmp_path / "nai.pdf"), "--json"],
     )
     assert code == cli.EXIT_BAD_ARGS
     assert by_name(events, "error")
@@ -84,7 +86,8 @@ def test_pdf_missing_file(tmp_path, capsys):
 
 def test_pdf_invalid_dpi(sample_pdf, capsys):
     code, events = run_cli(
-        capsys, ["pdf", "--in", str(sample_pdf), "--dpi", "0", "--json"],
+        capsys,
+        ["pdf", "--in", str(sample_pdf), "--dpi", "0", "--json"],
     )
     assert code == cli.EXIT_BAD_ARGS
     assert by_name(events, "error")
@@ -107,8 +110,7 @@ def test_pdf_existing_output_requires_overwrite(sample_pdf, tmp_path, capsys):
     # --overwrite → 残骸を消して展開
     code, events = run_cli(
         capsys,
-        ["pdf", "--in", str(sample_pdf), "--out", str(out_dir),
-         "--overwrite", "--json"],
+        ["pdf", "--in", str(sample_pdf), "--out", str(out_dir), "--overwrite", "--json"],
     )
     assert code == cli.EXIT_OK
     assert by_name(events, "cleaned_output")

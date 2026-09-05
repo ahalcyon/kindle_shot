@@ -157,12 +157,8 @@ def get_monitor_rects():
         return True
 
     try:
-        monitor_enum_proc = WINFUNCTYPE(
-            BOOL, HMONITOR, HDC, POINTER(RECT), LPARAM
-        )(callback)
-        enumerated = windll.user32.EnumDisplayMonitors(
-            None, None, monitor_enum_proc, 0
-        )
+        monitor_enum_proc = WINFUNCTYPE(BOOL, HMONITOR, HDC, POINTER(RECT), LPARAM)(callback)
+        enumerated = windll.user32.EnumDisplayMonitors(None, None, monitor_enum_proc, 0)
         if not enumerated or callback_failed:
             return []
     except Exception:
@@ -201,8 +197,7 @@ def is_window_fullscreen(hwnd):
         return False
     left, top, right, bottom = get_window_rect(hwnd)
     m = info.rcMonitor
-    return (left <= m.left and top <= m.top
-            and right >= m.right and bottom >= m.bottom)
+    return left <= m.left and top <= m.top and right >= m.right and bottom >= m.bottom
 
 
 def get_window_process_name(hwnd):
@@ -213,7 +208,7 @@ def get_window_process_name(hwnd):
     return _get_process_name(pid.value)
 
 
-def activate_window(hwnd, click_position='center', use_bring_to_top=False):
+def activate_window(hwnd, click_position="center", use_bring_to_top=False):
     """ウィンドウを前面に出してクリックする。
 
     click_position:
@@ -265,22 +260,20 @@ def activate_window(hwnd, click_position='center', use_bring_to_top=False):
         # フォールバック: TOPMOST → NOTOPMOST で確実に前面化
         time.sleep(0.1)
         if GetForegroundWindow() != hwnd:
-            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
-            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
     finally:
         if attached:
             AttachThreadInput(current_tid, fore_tid.value, False)
 
-    if click_position == 'none':
+    if click_position == "none":
         time.sleep(1)
         return
 
     rect = RECT()
     GetWindowRect(hwnd, pointer(rect))
 
-    if click_position == 'center':
+    if click_position == "center":
         x = rect.left + (rect.right - rect.left) // 2
         y = rect.top + (rect.bottom - rect.top) // 2
     else:
@@ -332,8 +325,15 @@ def allow_sleep():
 # Windows のフォルダ名に使えない文字 → 全角（見た目を保つ）。
 # タイトルはそのまま保存フォルダ名になるため、使う前に必ず通す。
 _INVALID_NAME_CHARS = {
-    "\\": "￥", "/": "／", ":": "：", "*": "＊",
-    "?": "？", '"': "”", "<": "＜", ">": "＞", "|": "｜",
+    "\\": "￥",
+    "/": "／",
+    ":": "：",
+    "*": "＊",
+    "?": "？",
+    '"': "”",
+    "<": "＜",
+    ">": "＞",
+    "|": "｜",
 }
 
 
@@ -342,4 +342,3 @@ def sanitize_folder_name(text):
     cleaned = "".join(_INVALID_NAME_CHARS.get(ch, ch) for ch in text)
     # 末尾のピリオド・空白は Windows のフォルダ名として無効
     return cleaned.strip().rstrip(". 　")
-

@@ -1,0 +1,20 @@
+# Windows 専用アプリなので作業ツリーは CRLF、リポジトリ内は LF に正規化する。
+# これを置かないと index=LF / 作業ツリー=CRLF がずれ、全ファイルが常に
+# 「変更済み」表示になり、CI の diff / format チェックも当てにならなくなる。
+* text=auto eol=crlf
+
+# バイナリは改行変換の対象外にする
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.whl binary

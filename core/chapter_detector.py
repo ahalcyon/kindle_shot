@@ -37,7 +37,9 @@ _STRONG_CHAPTER_EN_RE = re.compile(
 )
 
 # レベル 2 (節): 節パターン
-_SECTION_RE = re.compile(r"^(?:第[〇一二三四五六七八九十百千0-9０-９]+節|§\s*\d+(?:[.\-]\d+)*|\d+[.\-]\d+(?:[.\-]\d+)*\s+\S)")
+_SECTION_RE = re.compile(
+    r"^(?:第[〇一二三四五六七八九十百千0-9０-９]+節|§\s*\d+(?:[.\-]\d+)*|\d+[.\-]\d+(?:[.\-]\d+)*\s+\S)"
+)
 
 # 除外: ページ番号らしき行 (1〜4 桁の数字のみ、または「- 12 -」のような飾り付き)
 _PAGE_NUMBER_RE = STANDALONE_PAGE_NUM_RE
@@ -56,7 +58,9 @@ _SHORT_LINE_THRESHOLD = 20
 _NUMERIC_ONLY_RE = re.compile(r"^[0-9０-９〇一二三四五六七八九十百千IVXLCMivxlcm]+[、.,]?$")
 
 # タイトルとして実体のある文字 (数字・記号・空白を除いた可視文字数を測るために除外する文字集合)
-_NON_SUBSTANTIVE_RE = re.compile(r"[\s\d.,、。・〇一二三四五六七八九十百千０-９,.\-_/()（）「」『』IVXLCMivxlcm]")
+_NON_SUBSTANTIVE_RE = re.compile(
+    r"[\s\d.,、。・〇一二三四五六七八九十百千０-９,.\-_/()（）「」『』IVXLCMivxlcm]"
+)
 
 
 @dataclass
@@ -69,6 +73,7 @@ class Chapter:
         title: 章タイトル文字列
         level: 1 = 章, 2 = 節
     """
+
     page_index: int
     filename: str
     title: str
@@ -144,7 +149,7 @@ def _detect_for_page(idx: int, filename: str, text: str) -> Chapter | None:
 
     # 直後の非空行を文脈確認用に取得 (除外判定はせず、純粋に「次に書かれている行」を見る)
     next_line = None
-    for line in raw[first_pos + 1:first_pos + 4]:
+    for line in raw[first_pos + 1 : first_pos + 4]:
         if line:
             next_line = line
             break

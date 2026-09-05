@@ -25,10 +25,7 @@ def list_images(folder, extensions=IMAGE_EXTENSIONS):
     Raises:
         FileNotFoundError: フォルダが存在しない場合
     """
-    return sorted(
-        f for f in os.listdir(folder)
-        if f.lower().endswith(extensions)
-    )
+    return sorted(f for f in os.listdir(folder) if f.lower().endswith(extensions))
 
 
 def clear_images(folder, extensions=IMAGE_EXTENSIONS):

@@ -34,12 +34,18 @@ class HomeStep(WizardStep):
             block = ctk.CTkFrame(self, fg_color="transparent")
             block.pack(fill="x", padx=theme.PAD_X, pady=(0, theme.PAD_Y))
             ctk.CTkButton(
-                block, text=label, height=60,
+                block,
+                text=label,
+                height=60,
                 font=ctk.CTkFont(size=theme.FONT_SIZE_BIG_BUTTON, weight="bold"),
                 corner_radius=theme.CORNER_RADIUS,
                 command=lambda s=step_id: self.goto(s),
             ).pack(fill="x")
             ctk.CTkLabel(
-                block, text=description, text_color=theme.MUTED_COLOR,
-                anchor="w", justify="left", wraplength=860,
+                block,
+                text=description,
+                text_color=theme.MUTED_COLOR,
+                anchor="w",
+                justify="left",
+                wraplength=860,
             ).pack(fill="x", padx=4, pady=(4, 0))

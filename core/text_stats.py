@@ -24,7 +24,7 @@ WORD_LIMIT = 500_000
 BYTE_LIMIT = 200 * 1024 * 1024
 
 
-def estimate(text: str) -> dict:
+def estimate(text: str | None) -> dict:
     """テキストの分量を見積もる。
 
     Returns:

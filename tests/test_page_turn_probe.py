@@ -43,17 +43,19 @@ class Recorder:
 
 def fake_capture(results, calls=None):
     """キーごとの (終了コード, 撮れた枚数) を返す capture_fn を作る。"""
-    def capture_fn(profile, key, *, max_pages, stop_event=None,
-                   strict_process=True):
+
+    def capture_fn(profile, key, *, max_pages, stop_event=None, strict_process=True):
         if calls is not None:
             calls.append((key, max_pages))
         return results.get(key, (EXIT_OK, 1))
+
     return capture_fn
 
 
 # ------------------------------------------------------------
 # 純ロジック
 # ------------------------------------------------------------
+
 
 def test_probe_key_order_matches_spec():
     """全6キーを仕様どおりの順で試す（画面仕様書 §6-3）。"""
@@ -97,11 +99,13 @@ def test_probe_profile_for_uses_fast_settings_without_mutating_original():
 # probe_page_turn_key（capture_fn 差し替え）
 # ------------------------------------------------------------
 
+
 def test_probe_returns_first_working_key():
-    calls = []
+    calls: list = []
     emit = Recorder()
     key = probe_page_turn_key(
-        make_profile(), emit=emit,
+        make_profile(),
+        emit=emit,
         capture_fn=fake_capture({"left": (EXIT_OK, 3)}, calls),
         rewind_fn=lambda k, n: None,
     )
@@ -118,7 +122,7 @@ def test_probe_returns_first_working_key():
 
 
 def test_probe_skips_dead_keys_in_order():
-    calls = []
+    calls: list = []
     key = probe_page_turn_key(
         make_profile(),
         capture_fn=fake_capture({"pagedown": (EXIT_OK, 2)}, calls),
@@ -132,8 +136,7 @@ def test_probe_passes_fast_profile_settings_to_capture_fn():
     original_profile = make_profile()
     captured_profiles = []
 
-    def recording_capture(profile, key, *, max_pages, stop_event=None,
-                          strict_process=True):
+    def recording_capture(profile, key, *, max_pages, stop_event=None, strict_process=True):
         captured_profiles.append(profile)
         return EXIT_OK, 1
 
@@ -159,9 +162,11 @@ def test_probe_passes_fast_profile_settings_to_capture_fn():
 
 def test_probe_returns_none_when_all_keys_fail():
     emit = Recorder()
-    calls = []
+    calls: list = []
     key = probe_page_turn_key(
-        make_profile(), emit=emit, capture_fn=fake_capture({}, calls),
+        make_profile(),
+        emit=emit,
+        capture_fn=fake_capture({}, calls),
     )
     assert key is None
     assert [c[0] for c in calls] == list(PROBE_KEY_ORDER)  # 全6キーを試す
@@ -175,9 +180,10 @@ def test_probe_returns_none_when_all_keys_fail():
 
 def test_probe_aborts_on_window_not_found():
     emit = Recorder()
-    calls = []
+    calls: list = []
     key = probe_page_turn_key(
-        make_profile(), emit=emit,
+        make_profile(),
+        emit=emit,
         capture_fn=fake_capture({"left": (EXIT_WINDOW_NOT_FOUND, 0)}, calls),
     )
     assert key is None
@@ -203,7 +209,8 @@ def test_probe_reports_rewind_failure_but_keeps_result():
         raise RuntimeError("キー送信に失敗")
 
     key = probe_page_turn_key(
-        make_profile(), emit=emit,
+        make_profile(),
+        emit=emit,
         capture_fn=fake_capture({"left": (EXIT_OK, 3)}),
         rewind_fn=broken_rewind,
     )
@@ -215,15 +222,15 @@ def test_probe_reports_rewind_failure_but_keeps_result():
 def test_probe_emits_progress_events_per_key():
     emit = Recorder()
     probe_page_turn_key(
-        make_profile(), emit=emit,
+        make_profile(),
+        emit=emit,
         capture_fn=fake_capture({"right": (EXIT_OK, 2)}),
         rewind_fn=lambda k, n: None,
     )
     starts = emit.by_name("probe_key_start")
     results = emit.by_name("probe_key_result")
     assert [s["key"] for s in starts] == ["left", "right"]
-    assert results[0] == {"key": "left", "pages": 1, "detected": False,
-                          "exit_code": EXIT_OK}
+    assert results[0] == {"key": "left", "pages": 1, "detected": False, "exit_code": EXIT_OK}
     assert results[1]["detected"] is True
     assert results[1]["pages"] == 2
     # 既存の emit 契約と同じ形（イベント名・fields）で通知する
@@ -234,9 +241,11 @@ def test_probe_honors_stop_event():
     emit = Recorder()
     stop = threading.Event()
     stop.set()
-    calls = []
+    calls: list = []
     key = probe_page_turn_key(
-        make_profile(), emit=emit, stop_event=stop,
+        make_profile(),
+        emit=emit,
+        stop_event=stop,
         capture_fn=fake_capture({"left": (EXIT_OK, 3)}, calls),
     )
     assert key is None
@@ -245,9 +254,10 @@ def test_probe_honors_stop_event():
 
 
 def test_probe_accepts_custom_key_list():
-    calls = []
+    calls: list = []
     key = probe_page_turn_key(
-        make_profile(), keys=("up", "down"),
+        make_profile(),
+        keys=("up", "down"),
         capture_fn=fake_capture({"down": (EXIT_OK, 2)}, calls),
         rewind_fn=lambda k, n: None,
     )

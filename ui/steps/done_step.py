@@ -18,13 +18,21 @@ class DoneStep(WizardStep):
 
     def build(self):
         self.path_label = ctk.CTkLabel(
-            self, text="", anchor="w", justify="left", wraplength=860,
+            self,
+            text="",
+            anchor="w",
+            justify="left",
+            wraplength=860,
         )
         self.path_label.pack(fill="x", padx=theme.PAD_X, pady=(0, theme.PAD_SMALL))
 
         self.stats_label = ctk.CTkLabel(
-            self, text="", text_color=theme.MUTED_COLOR,
-            anchor="w", justify="left", wraplength=860,
+            self,
+            text="",
+            text_color=theme.MUTED_COLOR,
+            anchor="w",
+            justify="left",
+            wraplength=860,
         )
         self.stats_label.pack(fill="x", padx=theme.PAD_X)
 
@@ -32,13 +40,12 @@ class DoneStep(WizardStep):
         self.add_left_button("終了", self.app.close_app)
         self.add_action_button("出力フォルダを開く", self._open_folder, width=170)
         self.add_action_button(
-            "別の形式でもう一度書き出す", lambda: self.goto(STEP_CONVERT),
-            primary=False, width=210)
+            "別の形式でもう一度書き出す", lambda: self.goto(STEP_CONVERT), primary=False, width=210
+        )
         self.add_action_button(
-            "余白からやり直す", lambda: self.goto(STEP_TRIM),
-            primary=False, width=160)
-        self.add_action_button(
-            "次の本へ", lambda: self.goto(STEP_HOME), primary=False, width=120)
+            "余白からやり直す", lambda: self.goto(STEP_TRIM), primary=False, width=160
+        )
+        self.add_action_button("次の本へ", lambda: self.goto(STEP_HOME), primary=False, width=120)
 
     def on_enter(self):
         path = self.wizard.output_path or self.wizard.output_folder

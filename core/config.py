@@ -10,7 +10,7 @@ import os
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: dict = {
     "capture": {
         "active_profile": "kindle",
         # ビルトインプロファイルの正本は core/capture_profiles.py のみ。

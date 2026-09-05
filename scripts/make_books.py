@@ -58,8 +58,7 @@ EXIT_BAD_ARGS = 2
 
 # グループ定義で指定できるキー
 _GROUP_KEYS = frozenset(
-    ("name", "output", "match", "exclude", "sort", "take",
-     "title_replace", "defaults")
+    ("name", "output", "match", "exclude", "sort", "take", "title_replace", "defaults")
 )
 
 # Windows のファイル名に使えない文字（タイトルは出力ファイル名になる）
@@ -106,8 +105,7 @@ def load_library(path):
         items = data
     else:
         raise ValueError(
-            "ダンプの形式が認識できません"
-            "（{\"items\": [...]} または配列。Kindle の蔵書ダンプを指定）"
+            'ダンプの形式が認識できません（{"items": [...]} または配列。Kindle の蔵書ダンプを指定）'
         )
 
     books = []
@@ -123,8 +121,7 @@ def load_library(path):
             continue
         seen.add(asin)
         # Amazon のダンプは HTML エスケープが残ることがある（例: AI &amp; TECHNOLOGY）
-        books.append({"asin": str(asin),
-                      "title": html.unescape(str(title)).strip()})
+        books.append({"asin": str(asin), "title": html.unescape(str(title)).strip()})
     if not books:
         raise ValueError("ダンプに本が1冊もありません")
     return books
@@ -147,9 +144,7 @@ def load_selection(path):
     if isinstance(data, dict) and "groups" in data:
         data = data["groups"]
     if not isinstance(data, list) or not data:
-        raise ValueError(
-            "選書定義は {\"groups\": [...]} またはグループの配列にしてください"
-        )
+        raise ValueError('選書定義は {"groups": [...]} またはグループの配列にしてください')
 
     groups = []
     for i, g in enumerate(data, 1):
@@ -159,8 +154,7 @@ def load_selection(path):
         unknown = set(g) - _GROUP_KEYS
         if unknown:
             raise ValueError(
-                f"{label}: 未知のキー {sorted(unknown)}"
-                f"（指定可能: {sorted(_GROUP_KEYS)}）"
+                f"{label}: 未知のキー {sorted(unknown)}（指定可能: {sorted(_GROUP_KEYS)}）"
             )
         if not g.get("output") or not isinstance(g["output"], str):
             raise ValueError(f"{label}: output（出力ファイル名）が必要です")
@@ -174,28 +168,27 @@ def load_selection(path):
             try:
                 g["_exclude_re"] = re.compile(g["exclude"])
             except re.error as e:
-                raise ValueError(
-                    f"{label}: exclude が正規表現として不正です: {e}") from e
+                raise ValueError(f"{label}: exclude が正規表現として不正です: {e}") from e
         if g.get("sort") not in (None, "volume", "title"):
             raise ValueError(f"{label}: sort は volume / title のいずれかです")
         take = g.get("take")
-        if take is not None and (isinstance(take, bool)
-                                 or not isinstance(take, int) or take < 1):
+        if take is not None and (isinstance(take, bool) or not isinstance(take, int) or take < 1):
             raise ValueError(f"{label}: take は1以上の整数です")
         defaults = g.get("defaults", {})
         if not isinstance(defaults, dict):
             raise ValueError(f"{label}: defaults はオブジェクト（辞書）です")
         for key in ("asin", "url", "title"):
             if key in defaults:
-                raise ValueError(
-                    f"{label}: defaults に {key} は指定できません（本ごとに決まる値）")
+                raise ValueError(f"{label}: defaults に {key} は指定できません（本ごとに決まる値）")
         tr = g.get("title_replace", [])
-        if tr and (not isinstance(tr, list)
-                   or not all(isinstance(p, list) and len(p) == 2
-                              and all(isinstance(s, str) for s in p)
-                              for p in tr)):
-            raise ValueError(
-                f"{label}: title_replace は [[pattern, repl], ...] 形式です")
+        if tr and (
+            not isinstance(tr, list)
+            or not all(
+                isinstance(p, list) and len(p) == 2 and all(isinstance(s, str) for s in p)
+                for p in tr
+            )
+        ):
+            raise ValueError(f"{label}: title_replace は [[pattern, repl], ...] 形式です")
         g["name"] = g.get("name") or g["output"]
         groups.append(g)
     return groups
@@ -212,8 +205,9 @@ def select_group(library, group):
     sort = group.get("sort")
     if sort == "volume":
         # 巻数が取れない本は後ろに回す（安定ソートでダンプ順を保つ）
-        books.sort(key=lambda b: (volume_number(b["title"]) is None,
-                                  volume_number(b["title"]) or 0))
+        books.sort(
+            key=lambda b: (volume_number(b["title"]) is None, volume_number(b["title"]) or 0)
+        )
     elif sort == "title":
         books.sort(key=lambda b: b["title"])
 
@@ -252,15 +246,27 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Kindle 蔵書ダンプ + 選書定義から batch 用 books.json を生成する",
     )
-    parser.add_argument("--library", required=True, metavar="FILE",
-                        help="Kindle の蔵書ダンプ JSON（asin / title を含む）")
-    parser.add_argument("--select", required=True, metavar="FILE",
-                        help="選書定義 JSON（グループ・正規表現・defaults）")
-    parser.add_argument("--out-dir", default=".", metavar="FOLDER",
-                        help="出力先フォルダ（既定: カレント。グループの output を"
-                             "この下に書く）")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="選ばれる本の一覧だけ表示し、ファイルは書かない")
+    parser.add_argument(
+        "--library",
+        required=True,
+        metavar="FILE",
+        help="Kindle の蔵書ダンプ JSON（asin / title を含む）",
+    )
+    parser.add_argument(
+        "--select",
+        required=True,
+        metavar="FILE",
+        help="選書定義 JSON（グループ・正規表現・defaults）",
+    )
+    parser.add_argument(
+        "--out-dir",
+        default=".",
+        metavar="FOLDER",
+        help="出力先フォルダ（既定: カレント。グループの output をこの下に書く）",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="選ばれる本の一覧だけ表示し、ファイルは書かない"
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -273,13 +279,12 @@ def main(argv=None):
     print(f"蔵書ダンプ: {len(library)} 冊")
 
     failed = False
-    asin_seen = {}
+    asin_seen: dict = {}
     for group in groups:
         books, matched = select_group(library, group)
         print(f"\n[{group['name']}] マッチ {matched} 冊 → 採用 {len(books)} 冊")
         if not books:
-            print("  エラー: 1冊もマッチしませんでした（match を確認）",
-                  file=sys.stderr)
+            print("  エラー: 1冊もマッチしませんでした（match を確認）", file=sys.stderr)
             failed = True
             continue
         take = group.get("take")
@@ -288,8 +293,10 @@ def main(argv=None):
         for b in books:
             print(f"  {b['asin']}  {b['title']}")
             if b["asin"] in asin_seen:
-                print(f"  警告: {asin_seen[b['asin']]} にも含まれています"
-                      f"（同じ本を2回キャプチャします）")
+                print(
+                    f"  警告: {asin_seen[b['asin']]} にも含まれています"
+                    f"（同じ本を2回キャプチャします）"
+                )
             asin_seen[b["asin"]] = group["name"]
 
         if args.dry_run:

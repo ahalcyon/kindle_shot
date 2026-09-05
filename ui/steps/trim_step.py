@@ -54,7 +54,7 @@ class TrimStep(WizardStep):
     description = "ページの余白を自動で調べています。値を調整してからトリミングします。"
 
     def build(self):
-        self._detected_folder = None   # 自動検出済みのフォルダ（再入場時の再実行を防ぐ）
+        self._detected_folder = None  # 自動検出済みのフォルダ（再入場時の再実行を防ぐ）
         self._running = False
         self._preview_files = []
         self._preview_index = 0
@@ -67,32 +67,45 @@ class TrimStep(WizardStep):
         margin_row.pack(fill="x", padx=theme.PAD_X)
 
         self.spins = {}
-        for name, label in (("left", "左"), ("right", "右"),
-                            ("top", "上"), ("bottom", "下")):
-            spin = SpinBox(margin_row, label=label, value=0,
-                           command=self._schedule_preview_refresh)
+        for name, label in (("left", "左"), ("right", "右"), ("top", "上"), ("bottom", "下")):
+            spin = SpinBox(margin_row, label=label, value=0, command=self._schedule_preview_refresh)
             spin.pack(side="left", padx=(0, theme.PAD_X))
             self.spins[name] = spin
 
         self.redetect_btn = ctk.CTkButton(
-            margin_row, text="再検出", width=100, command=self._start_detect,
+            margin_row,
+            text="再検出",
+            width=100,
+            command=self._start_detect,
         )
         self.redetect_btn.pack(side="left")
 
         ctk.CTkLabel(
-            self, text=MARGIN_HELP, text_color=theme.MUTED_COLOR,
-            anchor="w", justify="left", wraplength=860,
+            self,
+            text=MARGIN_HELP,
+            text_color=theme.MUTED_COLOR,
+            anchor="w",
+            justify="left",
+            wraplength=860,
         ).pack(fill="x", padx=theme.PAD_X, pady=(4, 0))
 
         self.ui_band_label = ctk.CTkLabel(
-            self, text="", text_color=theme.MUTED_COLOR,
-            anchor="w", justify="left", wraplength=860,
+            self,
+            text="",
+            text_color=theme.MUTED_COLOR,
+            anchor="w",
+            justify="left",
+            wraplength=860,
         )
         self.ui_band_label.pack(fill="x", padx=theme.PAD_X)
 
         self.outlier_label = ctk.CTkLabel(
-            self, text="", text_color=theme.MUTED_COLOR,
-            anchor="w", justify="left", wraplength=860,
+            self,
+            text="",
+            text_color=theme.MUTED_COLOR,
+            anchor="w",
+            justify="left",
+            wraplength=860,
         )
         self.outlier_label.pack(fill="x", padx=theme.PAD_X)
 
@@ -121,37 +134,36 @@ class TrimStep(WizardStep):
         bg = theme.frame_bg()
         # before/after は同じ倍率で描くので、after は枠内で中央寄せにする
         # （削れた分だけ小さく表示され、切り取り量が目で分かる）
-        self.original_label = tk.Label(preview, bg=bg, bd=0, highlightthickness=0,
-                                       anchor="center")
+        self.original_label = tk.Label(preview, bg=bg, bd=0, highlightthickness=0, anchor="center")
         self.original_label.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-        self.trimmed_label = tk.Label(preview, bg=bg, bd=0, highlightthickness=0,
-                                      anchor="center")
+        self.trimmed_label = tk.Label(preview, bg=bg, bd=0, highlightthickness=0, anchor="center")
         self.trimmed_label.grid(row=1, column=1, sticky="nsew", padx=4, pady=4)
 
         nav = ctk.CTkFrame(preview, fg_color="transparent")
         nav.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 4))
         nav.grid_columnconfigure(1, weight=1)
-        ctk.CTkButton(nav, text="◀ 前へ", width=90,
-                      command=lambda: self._change_preview(-1)).grid(row=0, column=0)
+        ctk.CTkButton(nav, text="◀ 前へ", width=90, command=lambda: self._change_preview(-1)).grid(
+            row=0, column=0
+        )
         self.filename_label = ctk.CTkLabel(nav, text="", text_color=theme.MUTED_COLOR)
         self.filename_label.grid(row=0, column=1, sticky="ew")
-        ctk.CTkButton(nav, text="次へ ▶", width=90,
-                      command=lambda: self._change_preview(1)).grid(row=0, column=2)
+        ctk.CTkButton(nav, text="次へ ▶", width=90, command=lambda: self._change_preview(1)).grid(
+            row=0, column=2
+        )
 
         preview.bind("<Configure>", lambda _e: self._redraw_preview())
 
         # ウィンドウのリサイズにプレビューの高さを追従させる
         self._preview_height = PREVIEW_MIN_HEIGHT
-        self.winfo_toplevel().bind(
-            "<Configure>", lambda _e: self._update_preview_height(), add="+")
+        self.winfo_toplevel().bind("<Configure>", lambda _e: self._update_preview_height(), add="+")
 
     def build_footer(self):
         # 行き先は on_enter で入力源のステップに差し替える
         self.back_btn = self.add_back_button(STEP_HOME)
-        self.trim_btn = self.add_action_button(
-            "この余白でトリミング", self._run_trim)
+        self.trim_btn = self.add_action_button("この余白でトリミング", self._run_trim)
         self.skip_btn = self.add_action_button(
-            "トリミングせずに進む", self._skip_trim, primary=False, width=180)
+            "トリミングせずに進む", self._skip_trim, primary=False, width=180
+        )
 
     # --- 進入時 ---
 
@@ -185,20 +197,24 @@ class TrimStep(WizardStep):
 
         root = self.winfo_toplevel()
         on_progress = make_progress_cb(
-            root, self.progress.progress_bar, self.progress.status_var,
+            root,
+            self.progress.progress_bar,
+            self.progress.status_var,
             fmt="余白を検出中 {current}/{total} ページ",
         )
         # UI 帯の走査は別フェーズなので、何を見ているか分かる文言にする
         on_variation_progress = make_progress_cb(
-            root, self.progress.progress_bar, self.progress.status_var,
+            root,
+            self.progress.progress_bar,
+            self.progress.status_var,
             fmt="ビューアのUI帯を確認中 {current}/{total} ページ",
         )
 
         def thread():
             try:
                 margins, report = detect_margins_folder(
-                    folder, on_progress=on_progress,
-                    on_variation_progress=on_variation_progress)
+                    folder, on_progress=on_progress, on_variation_progress=on_variation_progress
+                )
             except Exception:
                 margins, report = None, None
             root.after(0, lambda: self._on_detect_done(folder, margins, report))
@@ -227,8 +243,7 @@ class TrimStep(WizardStep):
         # ユーザの「ギリギリを攻めず、そこから狭めていく」運用に合わせ、
         # 検出値より小さい値を入れて外側に余白を残す (CLI と同じ式・同じ既定値)。
         left, right, top, bottom = relax_margins(margins)
-        for name, value in (("left", left), ("right", right),
-                            ("top", top), ("bottom", bottom)):
+        for name, value in (("left", left), ("right", right), ("top", top), ("bottom", bottom)):
             self.spins[name].set(value)
 
         self._detected_folder = folder
@@ -243,7 +258,7 @@ class TrimStep(WizardStep):
         if outliers:
             self.outlier_label.configure(
                 text=f"全面表示のページ {len(outliers)} 件は、"
-                     "余白を適用せず無加工のままコピーします。"
+                "余白を適用せず無加工のままコピーします。"
             )
         else:
             self.outlier_label.configure(text="")
@@ -281,17 +296,18 @@ class TrimStep(WizardStep):
             return
         labels = ("左", "右", "上", "下")
         applied = variation_applied(content, variation, combined_margins)
-        removed = [f"{label}={v}px"
-                   for label, v, is_applied in zip(labels, variation, applied,
-                                                   strict=True)
-                   if is_applied]
+        removed = [
+            f"{label}={v}px"
+            for label, v, is_applied in zip(labels, variation, applied, strict=True)
+            if is_applied
+        ]
         if not removed:
             self.ui_band_label.configure(text="")
             return
         self.ui_band_label.configure(
             text="ページ間で絵が変わらない部分（ビューアのヘッダー・フッター等）を"
-                 f"除いて余白を決めました（{', '.join(removed)}）。"
-                 "ビューアの表示が残っている場合は、その辺の数値を増やしてください。"
+            f"除いて余白を決めました（{', '.join(removed)}）。"
+            "ビューアの表示が残っている場合は、その辺の数値を増やしてください。"
         )
 
     def _set_running(self, running):
@@ -321,12 +337,12 @@ class TrimStep(WizardStep):
         if getattr(self.app, "current_step_id", None) != STEP_TRIM:
             return
         body_height = self.app.body.winfo_height()
-        if body_height <= 1:   # まだレイアウトが確定していない
+        if body_height <= 1:  # まだレイアウトが確定していない
             return
-        used = sum(child.winfo_height() for child in self.winfo_children()
-                   if child is not self.preview)
-        height = max(PREVIEW_MIN_HEIGHT,
-                     body_height - used - PREVIEW_LAYOUT_MARGIN)
+        used = sum(
+            child.winfo_height() for child in self.winfo_children() if child is not self.preview
+        )
+        height = max(PREVIEW_MIN_HEIGHT, body_height - used - PREVIEW_LAYOUT_MARGIN)
         height -= height % 8
         if abs(height - self._preview_height) < 16:
             return
@@ -340,7 +356,7 @@ class TrimStep(WizardStep):
         self._trimmed_pil = None
         for label in (self.original_label, self.trimmed_label):
             label.configure(image="")
-            label.image = None
+            label.image = None  # type: ignore[attr-defined]  # GC 防止の参照保持
         self.filename_label.configure(text="")
         self.outlier_label.configure(text="")
         self.ui_band_label.configure(text="")
@@ -355,8 +371,7 @@ class TrimStep(WizardStep):
             self._load_preview_image()
 
     def _margins(self):
-        return tuple(self.spins[name].get()
-                     for name in ("left", "right", "top", "bottom"))
+        return tuple(self.spins[name].get() for name in ("left", "right", "top", "bottom"))
 
     def _schedule_preview_refresh(self):
         """スピンボックスの連続操作でプレビューを作り直しすぎないよう間引く。"""
@@ -380,7 +395,8 @@ class TrimStep(WizardStep):
             self.filename_label.configure(text=f"画像を開けません: {filename}")
             return
         self.filename_label.configure(
-            text=f"{filename}（{self._preview_index + 1}/{len(self._preview_files)}）")
+            text=f"{filename}（{self._preview_index + 1}/{len(self._preview_files)}）"
+        )
         self._redraw_preview()
 
     def _draw_guides(self, img, scale):
@@ -418,14 +434,13 @@ class TrimStep(WizardStep):
             (self._original_pil, self.original_label, True),
             (self._trimmed_pil, self.trimmed_label, False),
         ):
-            size = (max(1, round(pil_img.width * scale)),
-                    max(1, round(pil_img.height * scale)))
+            size = (max(1, round(pil_img.width * scale)), max(1, round(pil_img.height * scale)))
             img = pil_img.resize(size, Image.Resampling.LANCZOS)
             if guides:
                 img = self._draw_guides(img, scale)
             photo = ImageTk.PhotoImage(img)
             label.configure(image=photo)
-            label.image = photo
+            label.image = photo  # type: ignore[attr-defined]  # GC 防止の参照保持
 
     def _change_preview(self, delta):
         if not self._preview_files:
@@ -453,9 +468,12 @@ class TrimStep(WizardStep):
         self.progress.reset("トリミングを開始します...")
 
         root = self.winfo_toplevel()
-        emitter = GuiEmitter(root, progress_bar=self.progress.progress_bar,
-                             status_var=self.progress.status_var,
-                             phase_labels=TRIM_PHASE_LABELS)
+        emitter = GuiEmitter(
+            root,
+            progress_bar=self.progress.progress_bar,
+            status_var=self.progress.status_var,
+            phase_labels=TRIM_PHASE_LABELS,
+        )
         margins = self._margins()
 
         def thread():
@@ -465,8 +483,13 @@ class TrimStep(WizardStep):
             # よう overwrite=True。
             try:
                 code = run_trim(
-                    input_folder, output_folder, margins=margins,
-                    no_check=True, passthrough=True, overwrite=True, emit=emitter,
+                    input_folder,
+                    output_folder,
+                    margins=margins,
+                    no_check=True,
+                    passthrough=True,
+                    overwrite=True,
+                    emit=emitter,
                 )
             except Exception as e:
                 emitter("error", human=f"エラー: {e}", message=str(e))

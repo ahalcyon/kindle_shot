@@ -76,17 +76,27 @@ def plan(books, out, fmt):
 def convert_one(trimmed, out, fmt, title, source, log):
     """1冊分の cli.py convert を実行し、終了コードを返す。"""
     cmd = [
-        sys.executable, _CLI, "convert",
-        "--in", trimmed,
-        "--out", out,
-        "--format", fmt,
-        "--name", title,
+        sys.executable,
+        _CLI,
+        "convert",
+        "--in",
+        trimmed,
+        "--out",
+        out,
+        "--format",
+        fmt,
+        "--name",
+        title,
         "--json",
     ]
     if source:
         cmd += ["--source", source]
     proc = subprocess.run(
-        cmd, cwd=_REPO_ROOT, stdout=log, stderr=subprocess.STDOUT, text=True,
+        cmd,
+        cwd=_REPO_ROOT,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     return proc.returncode
 
@@ -94,24 +104,29 @@ def convert_one(trimmed, out, fmt, title, source, log):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="トリミング済み画像から2つ目の出力形式を作る"
-                    "（キャプチャ・トリミングをやり直さない）",
+        "（キャプチャ・トリミングをやり直さない）",
     )
-    parser.add_argument("--books", required=True, metavar="FILE",
-                        help="batch に渡したのと同じ本リスト JSON")
-    parser.add_argument("--out", required=True, metavar="FOLDER",
-                        help="batch の --out と同じ保存先フォルダ")
-    parser.add_argument("--format", required=True, choices=FORMATS,
-                        help="2つ目に作る出力形式")
-    parser.add_argument("--log", metavar="FILE",
-                        help="cli.py の JSON Lines を追記するファイル"
-                             "（省略時は標準出力へ）")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="実行する本・スキップする本の一覧だけ出す")
+    parser.add_argument(
+        "--books", required=True, metavar="FILE", help="batch に渡したのと同じ本リスト JSON"
+    )
+    parser.add_argument(
+        "--out", required=True, metavar="FOLDER", help="batch の --out と同じ保存先フォルダ"
+    )
+    parser.add_argument("--format", required=True, choices=FORMATS, help="2つ目に作る出力形式")
+    parser.add_argument(
+        "--log",
+        metavar="FILE",
+        help="cli.py の JSON Lines を追記するファイル（省略時は標準出力へ）",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="実行する本・スキップする本の一覧だけ出す"
+    )
     args = parser.parse_args(argv)
 
     errors = []
     books, code = load_batch_file(
-        args.books, lambda event, human=None, **f: (
+        args.books,
+        lambda event, human=None, **f: (
             errors.append(f.get("message", human)) if event == "error" else None
         ),
     )
@@ -147,14 +162,15 @@ def main(argv=None):
         for i, (book, trimmed, output, _) in enumerate(targets, 1):
             title = book["title"]
             print(f"[{i}/{len(targets)}] {title}", flush=True)
-            rc = convert_one(trimmed, out, args.format, title,
-                             book.get("asin"), log)
+            rc = convert_one(trimmed, out, args.format, title, book.get("asin"), log)
             if rc != EXIT_OK or not os.path.exists(output):
                 failed.append((title, rc))
                 print(f"  NG {title} (exit {rc})", file=sys.stderr)
 
-    print(f"\n完了: 成功 {len(targets) - len(failed)} / 失敗 {len(failed)}"
-          f" / スキップ {len(rows) - len(targets)}")
+    print(
+        f"\n完了: 成功 {len(targets) - len(failed)} / 失敗 {len(failed)}"
+        f" / スキップ {len(rows) - len(targets)}"
+    )
     for title, rc in failed:
         print(f"  NG {title} (exit {rc})", file=sys.stderr)
     return EXIT_ERROR if failed else EXIT_OK

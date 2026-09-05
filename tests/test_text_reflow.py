@@ -5,19 +5,22 @@ from core.text_reflow import reflow_markdown, reflow_text
 
 def test_japanese_lines_join_without_space():
     src = "これは長い文章でありページ幅の都合で\n改行されてしまった文の続きである。"
-    assert reflow_text(src) == "これは長い文章でありページ幅の都合で改行されてしまった文の続きである。"
+    assert (
+        reflow_text(src) == "これは長い文章でありページ幅の都合で改行されてしまった文の続きである。"
+    )
 
 
 def test_sentence_end_keeps_paragraph_break():
-    src = "これは一つ目の文でありきちんと句点で終わる。\nこれは二つ目の文でありこちらも句点で終わる。"
+    src = (
+        "これは一つ目の文でありきちんと句点で終わる。\nこれは二つ目の文でありこちらも句点で終わる。"
+    )
     assert reflow_text(src) == src
 
 
 def test_english_lines_join_with_space():
     src = "International cooperation is one of the most\nimportant mechanisms for peace."
     out = reflow_text(src)
-    assert out == ("International cooperation is one of the most "
-                   "important mechanisms for peace.")
+    assert out == ("International cooperation is one of the most important mechanisms for peace.")
 
 
 def test_english_hyphen_split_is_absorbed():
@@ -52,7 +55,7 @@ def test_roster_line_with_leaders_is_independent():
 
 
 def test_reflow_markdown_preserves_frontmatter():
-    src = "---\ntitle: \"本\"\ndate: 2026-07-05\n---\n\n本文の一行目でありそれなりの長さを持つ行である\n続きの行である。"
+    src = '---\ntitle: "本"\ndate: 2026-07-05\n---\n\n本文の一行目でありそれなりの長さを持つ行である\n続きの行である。'
     out = reflow_markdown(src)
     lines = out.split("\n")
     assert lines[0] == "---"

@@ -21,9 +21,14 @@ from dataclasses import asdict, dataclass
 # CLI の --page-turn / batch の page_turn / GUI のドロップダウンが
 # ここを唯一の定義として参照する。
 PAGE_TURN_KEYS = ("right", "left", "pagedown", "pageup", "down", "up")
-_REVERSE_KEYS = {"right": "left", "left": "right",
-                 "pagedown": "pageup", "pageup": "pagedown",
-                 "down": "up", "up": "down"}
+_REVERSE_KEYS = {
+    "right": "left",
+    "left": "right",
+    "pagedown": "pageup",
+    "pageup": "pagedown",
+    "down": "up",
+    "up": "down",
+}
 
 
 def reverse_page_turn_key(key):
@@ -34,6 +39,7 @@ def reverse_page_turn_key(key):
 @dataclass
 class CaptureProfile:
     """キャプチャ設定のプロファイル"""
+
     name: str = ""
     # GUI に出す日本語表示名。空なら name (さらに空ならキー) にフォールバックする。
     # 既存の name は CLI 出力・manifest の互換のため残す。
@@ -62,11 +68,11 @@ class CaptureProfile:
     # 有効時は「前ページから変化し、かつ連続 settle_frames フレーム静止した」
     # フレームだけを保存する (スピナーは回転し続けるので静止せず除外される)。
     settle_enabled: bool = False
-    settle_frames: int = 2          # 連続でこの回数静止したらロード完了とみなす
+    settle_frames: int = 2  # 連続でこの回数静止したらロード完了とみなす
     # しきい値は「変化ピクセル率(%)」。実測: 静止画同士≈0%、スピナー回転≈0.001-0.007%、
     # 本物のページ遷移≧0.58%。静止は0.0005%未満、変化は0.1%超で判定。
-    settle_threshold: float = 0.0005        # これ未満なら静止とみなす
-    settle_change_threshold: float = 0.1    # これ超で前ページから変化したとみなす
+    settle_threshold: float = 0.0005  # これ未満なら静止とみなす
+    settle_change_threshold: float = 0.1  # これ超で前ページから変化したとみなす
     settle_load_timeout: float = 20.0  # 変化後、静止しないまま待てる上限秒 (ロード失敗の保険)
 
     def to_dict(self):
@@ -226,9 +232,7 @@ def get_profile(profile_key, config=None):
     呼び出し側が page_turn_key 等を書き換えても BUILTIN_PROFILES が
     汚染されないよう、常に独立したインスタンスを返す。
     """
-    if profile_key not in BUILTIN_PROFILES and not _saved_profile_data(
-        profile_key, config
-    ):
+    if profile_key not in BUILTIN_PROFILES and not _saved_profile_data(profile_key, config):
         return None
     return CaptureProfile.from_dict(merge_profile_data(profile_key, config))
 

@@ -34,9 +34,15 @@ class Tooltip:
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
         label = tk.Label(
-            tw, text=self.text, justify="left",
-            background="#ffffe0", relief="solid", borderwidth=1,
-            font=("TkDefaultFont", 9), padx=6, pady=4,
+            tw,
+            text=self.text,
+            justify="left",
+            background="#ffffe0",
+            relief="solid",
+            borderwidth=1,
+            font=("TkDefaultFont", 9),
+            padx=6,
+            pady=4,
         )
         label.pack()
         self._tipwindow = tw
@@ -65,14 +71,19 @@ class ProgressPanel(ctk.CTkFrame):
         self.progress_bar.pack(fill="x", pady=(0, 4))
 
         ctk.CTkLabel(
-            self, textvariable=self.status_var, anchor="w",
+            self,
+            textvariable=self.status_var,
+            anchor="w",
             text_color=theme.MUTED_COLOR,
         ).pack(fill="x")
 
         self.log_text = None
         if show_log:
             self.log_text = ctk.CTkTextbox(
-                self, height=log_height, wrap="word", state="disabled",
+                self,
+                height=log_height,
+                wrap="word",
+                state="disabled",
             )
             self.log_text.pack(fill="both", expand=True, pady=(theme.PAD_SMALL, 0))
 
@@ -113,8 +124,18 @@ class SpinBox(ctk.CTkFrame):
     合わせて set_bounds() であとから変えられる。
     """
 
-    def __init__(self, master, *, label="", value=0, step=10, minimum=0,
-                 maximum=10000, width=64, command=None):
+    def __init__(
+        self,
+        master,
+        *,
+        label="",
+        value=0,
+        step=10,
+        minimum=0,
+        maximum=10000,
+        width=64,
+        command=None,
+    ):
         super().__init__(master, fg_color="transparent")
         self._step = step
         self._min = minimum
@@ -125,13 +146,18 @@ class SpinBox(ctk.CTkFrame):
         if label:
             ctk.CTkLabel(self, text=label, width=24, anchor="w").pack(side="left")
         ctk.CTkButton(
-            self, text="−", width=28, command=lambda: self._nudge(-self._step),
+            self,
+            text="−",
+            width=28,
+            command=lambda: self._nudge(-self._step),
         ).pack(side="left")
-        self._entry = ctk.CTkEntry(self, textvariable=self.var, width=width,
-                                   justify="center")
+        self._entry = ctk.CTkEntry(self, textvariable=self.var, width=width, justify="center")
         self._entry.pack(side="left", padx=2)
         ctk.CTkButton(
-            self, text="＋", width=28, command=lambda: self._nudge(self._step),
+            self,
+            text="＋",
+            width=28,
+            command=lambda: self._nudge(self._step),
         ).pack(side="left")
 
         self.var.trace_add("write", lambda *_: self._notify())

@@ -13,6 +13,7 @@ import pytest
 
 _SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts", "convert_2nd.py")
 _spec = importlib.util.spec_from_file_location("convert_2nd", _SCRIPT)
+assert _spec is not None and _spec.loader is not None, f"読み込めない: {_SCRIPT}"
 convert_2nd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(convert_2nd)
 
@@ -37,6 +38,7 @@ def make_out(tmp_path, trimmed=(), outputs=()):
 # ------------------------------------------------------------
 # plan（実行対象とスキップの振り分け）
 # ------------------------------------------------------------
+
 
 def test_plan_skips_missing_trimmed_and_existing_output(tmp_path):
     out = make_out(tmp_path, trimmed=["本A", "本B"], outputs=["本B.md"])
@@ -65,12 +67,16 @@ def test_plan_treats_split_markdown_as_done(tmp_path):
 # main（引数の組み立て・終了コード）
 # ------------------------------------------------------------
 
+
 def test_main_passes_asin_as_source_and_skips_done(tmp_path, monkeypatch, capsys):
     out = make_out(tmp_path, trimmed=["本A", "本B"], outputs=["本B.md"])
-    books = write_books(tmp_path, [
-        {"asin": "B001", "title": "本A"},
-        {"asin": "B002", "title": "本B"},
-    ])
+    books = write_books(
+        tmp_path,
+        [
+            {"asin": "B001", "title": "本A"},
+            {"asin": "B002", "title": "本B"},
+        ],
+    )
 
     calls = []
 
@@ -80,8 +86,7 @@ def test_main_passes_asin_as_source_and_skips_done(tmp_path, monkeypatch, capsys
         return 0
 
     monkeypatch.setattr(convert_2nd, "convert_one", fake_convert)
-    code = convert_2nd.main(["--books", books, "--out", str(out),
-                             "--format", "markdown"])
+    code = convert_2nd.main(["--books", books, "--out", str(out), "--format", "markdown"])
     assert code == convert_2nd.EXIT_OK
     # 本B は出力済みなので呼ばれない。本A は asin が --source に渡る
     assert calls == [("本A_trimmed", "markdown", "本A", "B001")]
@@ -91,10 +96,11 @@ def test_main_passes_asin_as_source_and_skips_done(tmp_path, monkeypatch, capsys
 def test_main_returns_error_when_a_book_fails(tmp_path, monkeypatch):
     out = make_out(tmp_path, trimmed=["本A"])
     books = write_books(tmp_path, [{"asin": "B001", "title": "本A"}])
-    monkeypatch.setattr(convert_2nd, "convert_one",
-                        lambda *a, **k: convert_2nd.EXIT_ERROR)
-    assert convert_2nd.main(["--books", books, "--out", str(out),
-                             "--format", "markdown"]) == convert_2nd.EXIT_ERROR
+    monkeypatch.setattr(convert_2nd, "convert_one", lambda *a, **k: convert_2nd.EXIT_ERROR)
+    assert (
+        convert_2nd.main(["--books", books, "--out", str(out), "--format", "markdown"])
+        == convert_2nd.EXIT_ERROR
+    )
 
 
 def test_main_returns_error_when_output_missing_despite_exit_zero(tmp_path, monkeypatch):
@@ -102,8 +108,10 @@ def test_main_returns_error_when_output_missing_despite_exit_zero(tmp_path, monk
     out = make_out(tmp_path, trimmed=["本A"])
     books = write_books(tmp_path, [{"asin": "B001", "title": "本A"}])
     monkeypatch.setattr(convert_2nd, "convert_one", lambda *a, **k: 0)
-    assert convert_2nd.main(["--books", books, "--out", str(out),
-                             "--format", "markdown"]) == convert_2nd.EXIT_ERROR
+    assert (
+        convert_2nd.main(["--books", books, "--out", str(out), "--format", "markdown"])
+        == convert_2nd.EXIT_ERROR
+    )
 
 
 def test_main_dry_run_does_not_convert(tmp_path, monkeypatch, capsys):
@@ -114,8 +122,9 @@ def test_main_dry_run_does_not_convert(tmp_path, monkeypatch, capsys):
         raise AssertionError("dry-run で変換してはいけない")
 
     monkeypatch.setattr(convert_2nd, "convert_one", boom)
-    code = convert_2nd.main(["--books", books, "--out", str(out),
-                             "--format", "markdown", "--dry-run"])
+    code = convert_2nd.main(
+        ["--books", books, "--out", str(out), "--format", "markdown", "--dry-run"]
+    )
     assert code == convert_2nd.EXIT_OK
     assert "実行予定: 本A" in capsys.readouterr().out
 
@@ -124,17 +133,20 @@ def test_main_rejects_bad_books_file_and_missing_out(tmp_path, capsys):
     out = make_out(tmp_path, trimmed=["本A"])
     # asin も url も無い本 → load_batch_file が弾く
     bad = write_books(tmp_path, [{"title": "本A"}])
-    assert convert_2nd.main(["--books", bad, "--out", str(out),
-                             "--format", "markdown"]) == convert_2nd.EXIT_BAD_ARGS
+    assert (
+        convert_2nd.main(["--books", bad, "--out", str(out), "--format", "markdown"])
+        == convert_2nd.EXIT_BAD_ARGS
+    )
 
     good = write_books(tmp_path, [{"asin": "B001", "title": "本A"}])
-    assert convert_2nd.main(["--books", good, "--out", str(tmp_path / "nope"),
-                             "--format", "markdown"]) == convert_2nd.EXIT_BAD_ARGS
+    assert (
+        convert_2nd.main(["--books", good, "--out", str(tmp_path / "nope"), "--format", "markdown"])
+        == convert_2nd.EXIT_BAD_ARGS
+    )
 
 
 def test_main_rejects_unknown_format(tmp_path):
     out = make_out(tmp_path, trimmed=["本A"])
     books = write_books(tmp_path, [{"asin": "B001", "title": "本A"}])
     with pytest.raises(SystemExit):
-        convert_2nd.main(["--books", books, "--out", str(out),
-                          "--format", "docx"])
+        convert_2nd.main(["--books", books, "--out", str(out), "--format", "docx"])

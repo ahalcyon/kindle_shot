@@ -48,8 +48,14 @@ def _copy_images(results, image_folder, output_path):
 
 
 def write_markdown(
-    results, output_path, title=None, source=None, reflow=False,
-    chapters=None, embed_images=False, image_folder=None,
+    results,
+    output_path,
+    title=None,
+    source=None,
+    reflow=False,
+    chapters=None,
+    embed_images=False,
+    image_folder=None,
 ):
     """OCR結果をMarkdownファイルとして出力する。
 
@@ -89,10 +95,10 @@ def write_markdown(
         with open(output_path, "w", encoding="utf-8") as f:
             # フロントマター
             f.write("---\n")
-            f.write(f"title: \"{title}\"\n")
+            f.write(f'title: "{title}"\n')
             f.write(f"date: {datetime.now().strftime('%Y-%m-%d')}\n")
             if source:
-                f.write(f"source: \"{source}\"\n")
+                f.write(f'source: "{source}"\n')
             f.write(f"pages: {len(results)}\n")
             f.write("---\n\n")
 
@@ -145,9 +151,7 @@ def _looks_like_boilerplate(text):
 
 def _drop_noise_lines(body):
     """本文から単独ページ番号・章番号行を除去する。"""
-    return "\n".join(
-        ln for ln in body.split("\n") if not _STANDALONE_NUM_RE.match(ln.strip())
-    )
+    return "\n".join(ln for ln in body.split("\n") if not _STANDALONE_NUM_RE.match(ln.strip()))
 
 
 def _strip_leading_title(body, title):
@@ -168,8 +172,9 @@ def _strip_leading_title(body, title):
     return "\n".join(out)
 
 
-def write_notebooklm_markdown(results, output_path, title=None, source=None,
-                              chapters=None, split_words=None):
+def write_notebooklm_markdown(
+    results, output_path, title=None, source=None, chapters=None, split_words=None
+):
     """NotebookLM 最適化 Markdown を出力する。
 
     ページ忠実型 (``write_markdown``) と違い、AI に読ませることに最適化する:
@@ -243,7 +248,11 @@ def write_notebooklm_markdown(results, output_path, title=None, source=None,
     try:
         if split_words and estimate(final_body)["words"] > split_words:
             return _write_split_parts(
-                final_body, output_path, title, source, split_words,
+                final_body,
+                output_path,
+                title,
+                source,
+                split_words,
             )
         _write_md_file(output_path, title, source, final_body)
         return True, f"Markdownファイルを作成しました: {output_path}", [output_path]
@@ -254,6 +263,7 @@ def write_notebooklm_markdown(results, output_path, title=None, source=None,
 # ============================================================
 # 分割出力（NotebookLM の 1 ソース上限対策）
 # ============================================================
+
 
 def _write_md_file(path, title, source, body, part=None):
     """フロントマター付きで 1 ファイル書き出す。part は (i, n) の部番号。"""
@@ -277,7 +287,8 @@ def _h2_segments(body):
     先頭に H2 より前の前置き（序文等）があればそれも 1 セグメントになる。
     H3 以下は章の中身としてセグメント内に留まる。
     """
-    segments, cur = [], []
+    segments: list = []
+    cur: list = []
     for ln in body.split("\n"):
         if ln.startswith("## ") and cur:
             segments.append("\n".join(cur).strip("\n"))
@@ -293,7 +304,9 @@ def _chunk_by_words(pieces, split_words):
 
     1 片単独で上限を超える場合はそのまま 1 塊にする（片の内部では切らない）。
     """
-    chunks, cur, cur_words = [], [], 0
+    chunks: list = []
+    cur: list = []
+    cur_words = 0
     for piece in pieces:
         words = estimate(piece)["words"]
         if cur and cur_words + words > split_words:
@@ -339,10 +352,12 @@ def _write_split_parts(final_body, output_path, title, source, split_words):
         part_title = f"{title}（{i}/{n}）"
         path = f"{base}_{i}{ext}"
         _write_md_file(
-            path, part_title, source,
-            f"# {part_title}\n\n{part_body}", part=(i, n),
+            path,
+            part_title,
+            source,
+            f"# {part_title}\n\n{part_body}",
+            part=(i, n),
         )
         written.append(path)
     names = " / ".join(os.path.basename(p) for p in written)
     return True, f"Markdownファイルを {n} 分割で作成しました: {names}", written
-

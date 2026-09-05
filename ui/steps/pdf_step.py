@@ -36,25 +36,32 @@ class PdfStep(WizardStep):
         form.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(form, text="PDFファイル:", anchor="w").grid(
-            row=0, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6)
+            row=0, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6
+        )
         self.pdf_var = tk.StringVar()
-        ctk.CTkEntry(form, textvariable=self.pdf_var).grid(
-            row=0, column=1, sticky="ew", pady=6)
+        ctk.CTkEntry(form, textvariable=self.pdf_var).grid(row=0, column=1, sticky="ew", pady=6)
         ctk.CTkButton(
-            form, text="参照", width=120, command=self._browse_pdf,
+            form,
+            text="参照",
+            width=120,
+            command=self._browse_pdf,
         ).grid(row=0, column=2, padx=(theme.PAD_SMALL, 0), pady=6)
 
         ctk.CTkLabel(form, text="展開先:", anchor="w").grid(
-            row=1, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6)
+            row=1, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6
+        )
         self.output_var = tk.StringVar()
         ctk.CTkLabel(
-            form, textvariable=self.output_var, text_color=theme.MUTED_COLOR,
-            anchor="w", justify="left", wraplength=680,
+            form,
+            textvariable=self.output_var,
+            text_color=theme.MUTED_COLOR,
+            anchor="w",
+            justify="left",
+            wraplength=680,
         ).grid(row=1, column=1, columnspan=2, sticky="w", pady=6)
 
         self.progress = ProgressPanel(self)
-        self.progress.pack(fill="both", expand=True,
-                           padx=theme.PAD_X, pady=theme.PAD_Y)
+        self.progress.pack(fill="both", expand=True, padx=theme.PAD_X, pady=theme.PAD_Y)
 
     def build_footer(self):
         self.back_btn = self.add_back_button(STEP_HOME)
@@ -104,20 +111,24 @@ class PdfStep(WizardStep):
 
         root = self.winfo_toplevel()
         on_progress = make_progress_cb(
-            root, self.progress.progress_bar, self.progress.status_var,
+            root,
+            self.progress.progress_bar,
+            self.progress.status_var,
             fmt="展開中 {current}/{total}",
         )
 
         def thread():
             try:
                 success, message = extract_pdf_to_images(
-                    pdf_path, output_folder, dpi=EXTRACT_DPI,
-                    image_format=EXTRACT_FORMAT, on_progress=on_progress,
+                    pdf_path,
+                    output_folder,
+                    dpi=EXTRACT_DPI,
+                    image_format=EXTRACT_FORMAT,
+                    on_progress=on_progress,
                 )
             except Exception as e:
                 success, message = False, str(e)
-            root.after(0, lambda: self._on_done(
-                success, message, pdf_path, output_folder))
+            root.after(0, lambda: self._on_done(success, message, pdf_path, output_folder))
 
         run_in_thread(thread)
 

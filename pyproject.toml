@@ -24,10 +24,14 @@ dependencies = [
 ]
 
 [dependency-groups]
+# CI (.github/workflows/ci.yml) は `pip install --group dev` でこれを入れる。
+# lint / format / type check はツールのバージョンで結果が変わるため、
+# CI が勝手に赤くならないようメジャー/マイナーの上限を切っておく。
 dev = [
-    "ruff>=0.15",
+    "ruff==0.16.6",  # format ゲートの基準。patch 更新でも整形結果が変わりうるため完全固定
     "uv>=0.11",
-    "pytest>=8",
+    "pytest>=9,<10",
+    "mypy>=2.3,<3",
 ]
 
 # ============================================================
@@ -37,6 +41,11 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# マーカー名を打ち間違えたら黙って通さずエラーにする
+addopts = ["--strict-markers"]
+markers = [
+    "e2e: CLI をサブプロセスで通しで動かす E2E テスト (pytest -m e2e で単独実行)",
+]
 
 # ============================================================
 # ruff (lint + format)
@@ -73,3 +82,25 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+# ============================================================
+# mypy (type check)
+# ============================================================
+
+[tool.mypy]
+python_version = "3.11"
+# Windows 専用アプリなので win32 として解析する。これがないと
+# ctypes.windll や core/win32_utils.py が「存在しない」と誤検出される。
+platform = "win32"
+files = ["app.py", "cli.py", "core", "ui", "scripts", "tests"]
+exclude = "^(kindle_env|ndlocr-lite)/"
+# customtkinter / pyautogui / cv2 などは型スタブを提供していない
+ignore_missing_imports = true
+# 既存コードは型注釈がほとんど無いため strict は使わない。
+# ただし check_untyped_defs は必須。これが false（既定）だと mypy は
+# 「引数にも戻り値にも注釈が無い関数」の本体を丸ごとスキップするため、
+# このリポジトリでは関数の約 95% が未検査になり、型チェックが名ばかりになる。
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true

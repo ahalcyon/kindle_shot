@@ -11,8 +11,7 @@ import os
 import pypdfium2 as pdfium
 
 
-def extract_pdf_to_images(pdf_path, output_folder, dpi=200,
-                          image_format="png", on_progress=None):
+def extract_pdf_to_images(pdf_path, output_folder, dpi=200, image_format="png", on_progress=None):
     """PDFの各ページを画像に書き出す。
 
     Args:

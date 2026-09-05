@@ -66,7 +66,8 @@ def analyze_folder(input_folder, on_progress=None):
             with Image.open(path) as im:
                 sizes[filename] = list(im.size)
                 thumb = np.asarray(
-                    im.convert("L").resize((32, 32)), dtype=np.float32,
+                    im.convert("L").resize((32, 32)),
+                    dtype=np.float32,
                 )
         except Exception as e:
             raise PageReadError(filename, e) from e
@@ -78,17 +79,15 @@ def analyze_folder(input_folder, on_progress=None):
         if prev_thumb is not None:
             diff = float(np.abs(thumb - prev_thumb).mean())
             if diff < NEAR_DUPLICATE_DIFF:
-                near_duplicates.append(
-                    {"pages": [prev_name, filename], "diff": round(diff, 2)}
-                )
+                near_duplicates.append({"pages": [prev_name, filename], "diff": round(diff, 2)})
         prev_thumb, prev_name = thumb, filename
         if on_progress:
             on_progress(i, total, filename)
 
-    size_counts = {}
+    size_counts: dict[tuple, int] = {}
     for s in sizes.values():
         size_counts[tuple(s)] = size_counts.get(tuple(s), 0) + 1
-    common_size = max(size_counts, key=size_counts.get) if size_counts else None
+    common_size = max(size_counts, key=lambda k: size_counts[k]) if size_counts else None
     size_mismatch = [f for f, s in sizes.items() if tuple(s) != common_size]
 
     return {
