@@ -273,6 +273,9 @@ python cli.py headless --asin B0XXXXXXXX --title 本のタイトル --out <保�
 出力は `capture` と同じ形（`<out>/<title>/` に `001.png...` と `manifest.json`）なので、
 後段の `trim` / `convert` はそのまま使えます。
 
+現時点では 1 冊ずつの実行です。`batch` による一括実行は画面キャプチャ経路のままなので、
+ディスプレイを切った状態での一括処理はまだできません（別途対応予定）。
+
 **ページ送りキーに注意**してください。既定は `left` です。
 縦書き（右→左）の本では `right` は**前のページ**に戻るため、表紙で押しても何も起きず、
 1 ページだけ撮って「最終ページ」と誤判定します。横書きの本は `--page-turn right` を使います。
@@ -292,7 +295,7 @@ kindle_env\Scripts\python.exe -m playwright install chromium
 `KINDLE_SHOT_AMAZON_PASSWORD` を使って自動でサインインします
 （`.env` は `.gitignore` 済み。値はログに出ません）。
 
-`.env` は `.env.example` をコピーして作ります。
+`.env` は `.env.example` をコピーして作ります（置くのは秘密情報だけです）。
 
 ```
 copy .env.example .env
