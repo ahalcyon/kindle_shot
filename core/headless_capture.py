@@ -20,8 +20,15 @@ import hashlib
 import json
 import os
 
-from core.image_files import clear_images
-from core.pipeline import EXIT_ERROR, EXIT_OK, emit_error, null_emit
+from core.pipeline import (
+    EXIT_BAD_ARGS,
+    EXIT_ERROR,
+    EXIT_NO_IMAGES,
+    EXIT_OK,
+    clear_output_images,
+    emit_error,
+    null_emit,
+)
 
 BOOK_URL = "https://read.amazon.co.jp/?asin={asin}"
 SIGNIN_MARKER = "/ap/signin"
@@ -78,7 +85,17 @@ def digest(data):
 
 
 def build_manifest(
-    *, title, profile_key, profile, total, save_dir, stopped_reason, started, finished
+    *,
+    title,
+    profile_key,
+    profile,
+    total,
+    save_dir,
+    stopped_reason,
+    started,
+    finished,
+    page_turn=None,
+    page_wait=None,
 ):
     """run_capture が書くものと同じ形の manifest を組み立てる。"""
     return {
@@ -87,6 +104,9 @@ def build_manifest(
         "profile_key": profile_key,
         "profile": profile.to_dict() if profile is not None else {},
         "backend": "headless",
+        # 実行に使った値。profile の既定と違うことがあるので別に残す
+        "page_turn": page_turn,
+        "page_wait": page_wait,
         "total_pages": total,
         "save_dir": save_dir,
         "stopped_reason": stopped_reason,
@@ -133,42 +153,59 @@ def capture_pages(
 ):
     """ページを順に撮る。(枚数, stopped_reason) を返す。
 
-    同じ画像が続いたら max_retries 回までめくり直し、それでも変わらなければ
-    最終ページとみなす。run_capture のページ変化検出と同じ考え方。
+    **直前のページとだけ**比べる。全履歴と比べると、本文中に何度も現れる
+    白紙・章扉・見開き調整の余白ページを「送れていない」と誤認し、
+    そのページを落としたり途中で打ち切ったりする（core/capture_engine.py の
+    _wait_stable_page も直前ページとだけ比べている）。
+
+    stopped_reason:
+        max_pages       上限に達した
+        end_of_book     送っても変わらなくなった（最終ページ到達とみなす）
+        no_change       1 ページも進めなかった（送りキーの向き違い・モーダル等）
+        signin_required 途中でセッションが切れた
     """
-    seen = set()
+    prev = None
     total = 0
-    stopped_reason = "timeout"
     while True:
+        # 途中でセッションが切れると、サインイン画面を本文として保存してしまう
+        if not is_signed_in(page.url):
+            emit("signin_required", human="キャプチャ中にセッションが切れました")
+            return total, "signin_required"
+
         shot = page.screenshot()
         current = digest(shot)
-        if current in seen:
+
+        if prev is not None and current == prev:
             retried = 0
-            while retried < max_retries:
+            while retried < max_retries and current == prev:
                 retried += 1
-                emit("status", human=f"ページ変化なし、めくり再送 ({retried}/{max_retries})")
+                emit(
+                    "status",
+                    human=f"ページ変化なし、めくり再送 ({retried}/{max_retries})",
+                    message=f"ページ変化なし、めくり再送 ({retried}/{max_retries})",
+                )
+                # 途中で出たモーダルはキー入力を吸うので閉じてから押し直す
+                dismiss_dialogs(page)
                 page.keyboard.press(key)
                 page.wait_for_timeout(int(page_wait * 1000))
                 shot = page.screenshot()
                 current = digest(shot)
-                if current not in seen:
-                    break
-            if current in seen:
-                break
+            if current == prev:
+                # 1 枚も進めていないなら最終ページではなく送りに失敗している
+                return total, "end_of_book" if total > 1 else "no_change"
 
         total += 1
-        seen.add(current)
         filename = f"{total:03d}.png"
         with open(os.path.join(save_dir, filename), "wb") as f:
             f.write(shot)
         emit("page", human=f"Page {total}: {filename}", page=total, file=filename)
 
         if max_pages and total >= max_pages:
-            stopped_reason = "max_pages"
-            break
+            return total, "max_pages"
+
+        prev = current
         page.keyboard.press(key)
         page.wait_for_timeout(int(page_wait * 1000))
-    return total, stopped_reason
 
 
 def run_headless_capture(
@@ -197,49 +234,78 @@ def run_headless_capture(
 
     if not asin and not url:
         emit_error(emit, "asin か url のどちらかが必要です")
-        return EXIT_ERROR
+        return EXIT_BAD_ARGS
 
     save_dir = os.path.join(os.path.abspath(output_folder), title)
+    # 前回の残骸が混ざると後段の PDF に古いページが紛れる（README の契約）
+    code = clear_output_images(
+        save_dir,
+        overwrite,
+        emit,
+        label="保存先",
+        reason="前回の残骸が混ざるのを防ぐため中止しました。",
+    )
+    if code is not None:
+        return code
     os.makedirs(save_dir, exist_ok=True)
-    if overwrite:
-        clear_images(save_dir)
 
     started = datetime.datetime.now()
     target = url or book_url(asin)
+    key = turn_key(page_turn or getattr(profile, "page_turn_key", None))
     total = 0
-    stopped_reason = "timeout"
+    stopped_reason = "error"
 
-    with open_reader(target, profile_dir=profile_dir, headless=headless, emit=emit) as page:
-        if page is None:
-            return EXIT_ERROR
-        page.wait_for_timeout(int(load_wait * 1000))
-        dismiss_dialogs(page)
-        page.add_style_tag(content=hide_ui_css())
-        emit("status", human="ビューアの UI を隠しました")
-        key = turn_key(page_turn or getattr(profile, "page_turn_key", None))
-        emit("status", human=f"ページ送りキー: {key}")
-        total, stopped_reason = capture_pages(
-            page, save_dir, key=key, max_pages=max_pages, page_wait=page_wait, emit=emit
+    def write_manifest():
+        """途中終了でもどこまで撮れたか分かるよう必ず書く。"""
+        manifest = build_manifest(
+            title=title,
+            profile_key=profile_key,
+            profile=profile,
+            total=total,
+            save_dir=save_dir,
+            stopped_reason=stopped_reason,
+            started=started,
+            finished=datetime.datetime.now(),
+            page_turn=key,
+            page_wait=page_wait,
         )
+        path = os.path.join(save_dir, "manifest.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        return path
 
-    finished = datetime.datetime.now()
+    try:
+        with open_reader(target, profile_dir=profile_dir, headless=headless, emit=emit) as page:
+            if page is None:
+                return EXIT_ERROR
+            page.wait_for_timeout(int(load_wait * 1000))
+            dismiss_dialogs(page)
+            page.add_style_tag(content=hide_ui_css())
+            emit("status", human="ビューアの UI を隠しました", message="ビューアの UI を隠しました")
+            emit("status", human=f"ページ送りキー: {key}", message=f"ページ送りキー: {key}")
+            total, stopped_reason = capture_pages(
+                page, save_dir, key=key, max_pages=max_pages, page_wait=page_wait, emit=emit
+            )
+    except KeyboardInterrupt:
+        stopped_reason = "user"
+        write_manifest()
+        raise
+
+    manifest_path = write_manifest()
+
     if total == 0:
         emit_error(emit, "1 ページも取得できませんでした")
+        return EXIT_NO_IMAGES
+    if stopped_reason == "no_change":
+        emit_error(
+            emit,
+            f"{total} ページで進まなくなりました。ページ送りキー ({key}) の向きが逆か、"
+            "モーダルが出ている可能性があります（--page-turn で切り替えられます）",
+        )
         return EXIT_ERROR
-
-    manifest = build_manifest(
-        title=title,
-        profile_key=profile_key,
-        profile=profile,
-        total=total,
-        save_dir=save_dir,
-        stopped_reason=stopped_reason,
-        started=started,
-        finished=finished,
-    )
-    manifest_path = os.path.join(save_dir, "manifest.json")
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    if stopped_reason == "signin_required":
+        emit_error(emit, f"{total} ページでセッションが切れたため中断しました")
+        return EXIT_ERROR
 
     emit(
         "result",

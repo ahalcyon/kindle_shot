@@ -25,22 +25,27 @@ from core.headless_capture import (
 
 
 class FakePage:
-    """screenshot / keyboard.press / wait_for_timeout だけを持つ page の代役。
+    """screenshot / keyboard.press / wait_for_timeout / url を持つ page の代役。
 
     frames には各回のスクリーンショット内容を順に入れる。
-    キーが押されるたびに次へ進む。
+    swallow に指定した回数だけキー入力を食う（モーダルが出ている状況の再現）。
     """
 
-    def __init__(self, frames):
+    def __init__(self, frames, url="https://read.amazon.co.jp/?asin=B0X", swallow=0):
         self.frames = list(frames)
         self.index = 0
+        self.url = url
         self.pressed: list[str] = []
+        self.swallow = swallow
 
         page = self
 
         class Keyboard:
             def press(self, key):
                 page.pressed.append(key)
+                if page.swallow > 0:
+                    page.swallow -= 1
+                    return
                 if page.index < len(page.frames) - 1:
                     page.index += 1
 
@@ -102,7 +107,62 @@ def test_stops_at_last_page(tmp_path):
     """変化しなくなったら最終ページとみなす（リトライ後）。"""
     page = FakePage([b"a", b"b"])
     total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
-    assert (total, reason) == (2, "timeout")
+    assert (total, reason) == (2, "end_of_book")
+
+
+def test_repeated_blank_page_is_not_dropped(tmp_path):
+    """本文中に再登場する白紙ページを落とさない。
+
+    全履歴と比較すると a の再登場を「送れていない」と誤認し、
+    そのページを落として後続を詰めてしまう（実際に踏んだ回帰）。
+    """
+    page = FakePage([b"a", b"b", b"a", b"c"])
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert (total, reason) == (4, "end_of_book")
+    assert (tmp_path / "003.png").read_bytes() == b"a"
+    assert (tmp_path / "004.png").read_bytes() == b"c"
+
+
+def test_consecutive_blank_pages_do_not_truncate(tmp_path):
+    """白紙が連続しても打ち切らず、その先まで撮り切る。
+
+    連続する同一ページは画素だけでは「送り失敗」と区別できないため
+    1 枚にまとまる（core/capture_engine.py も同じ制約）。ここで守りたいのは
+    枚数の一致ではなく、**そこで打ち切って以降を失わないこと**。
+    """
+    page = FakePage([b"a", b"b", b"x", b"x", b"x", b"c"])
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
+    assert reason == "end_of_book"
+    # 白紙の先にある c まで到達している（打ち切られていない）
+    saved = [(tmp_path / n).read_bytes() for n in sorted(p.name for p in tmp_path.iterdir())]
+    assert saved[-1] == b"c"
+    assert saved == [b"a", b"b", b"x", b"c"]
+
+
+def test_no_change_when_nothing_advances(tmp_path):
+    """1 ページも進めなければ最終ページではなく送り失敗として報告する。
+
+    縦書きの本で送りキーの向きを間違えると表紙から動かない。
+    これを end_of_book にすると「正常に 1 ページの本を撮った」ことになる。
+    """
+    page = FakePage([b"cover", b"next"], swallow=99)
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowRight", max_retries=2)
+    assert (total, reason) == (1, "no_change")
+
+
+def test_modal_swallowing_keys_recovers(tmp_path):
+    """一時的にキーを食われても、リトライ内で回復すれば継続する。"""
+    page = FakePage([b"a", b"b", b"c"], swallow=1)
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
+    assert total == 3
+
+
+def test_session_loss_is_reported(tmp_path):
+    """途中でサインイン画面へ飛んだら、それを本文として保存せず中断する。"""
+    page = FakePage([b"a", b"b"], url="https://www.amazon.co.jp/ap/signin?x=1")
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert (total, reason) == (0, "signin_required")
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_uses_the_given_key(tmp_path):
@@ -121,7 +181,7 @@ def test_saved_bytes_match_the_screenshot(tmp_path):
 def test_single_page_book(tmp_path):
     page = FakePage([b"only"])
     total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=1)
-    assert (total, reason) == (1, "timeout")
+    assert (total, reason) == (1, "no_change")
 
 
 # ------------------------------------------------------------
@@ -157,8 +217,13 @@ def test_manifest_is_json_serializable_and_marks_backend():
         stopped_reason="max_pages",
         started=started,
         finished=finished,
+        page_turn="ArrowLeft",
+        page_wait=2.5,
     )
     assert manifest["backend"] == "headless"
+    # 実行に使った値が残らないと manifest から実行内容を再現できない
+    assert manifest["page_turn"] == "ArrowLeft"
+    assert manifest["page_wait"] == 2.5
     assert manifest["total_pages"] == 3
     assert manifest["duration_seconds"] == 30.0
     json.dumps(manifest, ensure_ascii=False)

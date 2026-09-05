@@ -273,6 +273,7 @@ def cmd_headless(args, rep):
         max_pages=args.max_pages,
         page_wait=args.page_wait,
         page_turn=args.page_turn,
+        load_wait=args.load_wait,
         overwrite=args.overwrite,
         headless=not args.headed,
         emit=rep.event,
@@ -927,8 +928,9 @@ def build_parser():
         parents=[common],
         help="headless ブラウザで本を開いてキャプチャする（画面もセッションも不要）",
     )
-    p_head.add_argument("--asin", help="対象の ASIN")
-    p_head.add_argument("--url", help="開く URL の直接指定（--asin より優先）")
+    head_target = p_head.add_mutually_exclusive_group(required=True)
+    head_target.add_argument("--asin", help="対象の ASIN")
+    head_target.add_argument("--url", help="開く URL の直接指定")
     p_head.add_argument("--title", required=True, help="タイトル（保存先のサブフォルダ名になる）")
     p_head.add_argument(
         "--out",
@@ -954,6 +956,13 @@ def build_parser():
         default=2.5,
         metavar="SEC",
         help="ページ送り後の待機秒（既定: 2.5）",
+    )
+    p_head.add_argument(
+        "--load-wait",
+        type=float,
+        default=12,
+        metavar="SEC",
+        help="本の読み込みを待つ秒数（既定: 12）",
     )
     p_head.add_argument(
         "--page-turn",
