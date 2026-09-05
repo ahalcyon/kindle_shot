@@ -24,11 +24,14 @@ dependencies = [
 ]
 
 [dependency-groups]
+# CI (.github/workflows/ci.yml) は `pip install --group dev` でこれを入れる。
+# lint / format / type check はツールのバージョンで結果が変わるため、
+# CI が勝手に赤くならないようメジャー/マイナーの上限を切っておく。
 dev = [
-    "ruff>=0.15",
+    "ruff>=0.16.6,<0.17",
     "uv>=0.11",
-    "pytest>=8",
-    "mypy>=1.14",
+    "pytest>=9,<10",
+    "mypy>=2.3,<3",
 ]
 
 # ============================================================
