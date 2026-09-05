@@ -10,6 +10,14 @@ __pycache__/
 kindle_env/
 ndlocr-lite/
 
+# 資格情報・ローカル環境変数 (誤コミット防止。なお本アプリは認証情報を一切使わない)
+.env
+.env.*
+!.env.example
+
+# 開発者ごとのローカルな Python ピン (uv / pyenv が読む)
+.python-version
+
 # ユーザーのローカル設定 (config.example.json がテンプレート)
 core/config.json
 

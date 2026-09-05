@@ -8,7 +8,10 @@ name = "kindle_shot"
 version = "0.1.0"
 description = "電子書籍のスクリーンキャプチャ・PDF読込・トリミング・PDF変換・OCR統合ツール (Windows専用)"
 readme = "README.md"
-requires-python = ">=3.11"
+# 上限 3.14 は numpy==2.2.2 / lxml==5.4.0 に cp314 wheel が無いことに由来する。
+# numpy の pin は NDLOCR-Lite の requirements.txt (strict pin) に揃えているため
+# 単独では上げられない。詳細は README「動作環境」を参照。
+requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }
 
 dependencies = [

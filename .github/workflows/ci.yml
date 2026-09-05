@@ -7,7 +7,7 @@
 # (mypy は pyproject.toml で platform = "win32" を指定しているため、
 #  Linux 上でも Windows 前提で解析される)。
 #
-# Python はローカル開発環境と同じ 3.12 に固定する。
+# Python は setup.bat が既定で入れる 3.13 に固定する。
 name: CI
 
 on:
@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 env:
-  PYTHON_VERSION: "3.12"
+  PYTHON_VERSION: "3.13"
   # 日本語のファイル名・パス・標準出力が cp932 で壊れないようにする
   PYTHONUTF8: "1"
   PYTHONIOENCODING: "utf-8"

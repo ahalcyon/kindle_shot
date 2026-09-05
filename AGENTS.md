@@ -53,7 +53,105 @@ Refs #<issue番号>
 **テストの実行には Windows が必要**（後述）。Windows で実行できない環境で作業した場合は、
 未検証の範囲を PR 説明に明記し、ユーザーに実行を依頼する。
 
-### 5. push 前のコードレビュー
+### 5. 実機スモーク（キャプチャ経路に触るときは必須）
+
+次のいずれかに触れる変更は、**push 前に実機で動作確認する**。
+自動テストも CI もこの層を一切カバーしていないため、ここだけは実機確認が要る。
+
+- `core/capture_engine.py` / `core/capture_runner.py` / `core/capture_profiles.py`
+- `core/win32_utils.py` / `core/dpi.py` / `core/reader_navigator.py`
+- `core/boundary_detector.py` の境界検出（トリミングの純ロジックは対象外）
+- `cli.py` の `capture` / `open` / `run` / `batch` / `check` コマンド
+
+**Playwright などのブラウザ自動化は使えない。** このアプリはブラウザを操作していない。
+Win32 API でネイティブウィンドウを探し、`ImageGrab` で画面そのものを物理ピクセルで
+撮り、pyautogui で OS レベルのキーストロークを送る。Cloud Reader を対象にする場合も
+Chrome の DOM ではなく画面を撮っているので、DOM を触るツールでは代替も観測もできない。
+
+#### 対象は Cloud Reader を使う（PC アプリではなく）
+
+本番の運用は数百冊の一括処理で、`cli.py batch` が `open → capture → validate →
+trim → convert` を無人で回す。その `open` は **Kindle Cloud Reader (`kindle_cloud`
+プロファイル)** を ASIN で開く実装なので、スモークも同じ経路で行う。
+
+PC アプリの `kindle` プロファイルには**プログラムから本を開く手段が無い**。
+人が本を開いておく必要があり、無人運用にも一括処理にも使えない。
+PC アプリ固有の不具合を追うとき以外は選ばないこと。
+
+#### pre-push フックで強制する
+
+クローンごとに 1 回、次を実行しておく。以後、キャプチャ経路のファイルを含む
+push は実機スモークが通らない限りブロックされる。
+
+```
+git config core.hooksPath .githooks
+git config kindleshot.smokeAsin B0XXXXXXXX
+```
+
+実機が使えないときは `git push --no-verify` で迂回できるが、
+**PR に未検証である旨と範囲を必ず書く**こと。
+
+フックは `scripts/smoke_capture.py` を呼ぶだけなので、同じスクリプトを
+self-hosted runner のワークフローから呼べば CI 化もできる
+（GitHub ホストのランナーは対話的なデスクトップが無いため不可）。
+
+#### 手順
+
+1. **検出のみの確認**（無害。フォーカスを奪わない）
+
+   ```
+   python cli.py check --profile kindle_cloud
+   ```
+
+2. **1 冊を 3 ページだけ通す**（ここからデスクトップを占有する）
+
+   ```
+   python scripts/smoke_capture.py --asin <ASIN>
+   ```
+
+   `cli.py run` を叩いて結果を機械的に検証する（後述）。本を開くところから
+   全自動なので、人が Kindle を操作する必要はない。素の CLI で見たいときは:
+
+   ```
+   python cli.py run --asin <ASIN> --title smoke --out <folder> \
+       --format image_pdf --max-pages 3
+   ```
+
+   `--max-pages` を必ず付ける。付けないと最終ページまで走り続ける。
+   `--format image_pdf` なら OCR エンジン不要で変換まで通せる。
+
+3. **一括経路まで見るとき**は 2 冊程度の `books.json` を作って `batch` を回す。
+
+   ```
+   python cli.py batch --books <books.json> --out <folder>
+   ```
+
+#### 確認すること
+
+`scripts/smoke_capture.py` が以下を自動で判定する（手で見る必要はない）。
+
+- 終了コードが 0
+- `manifest.json` の `total_pages` が指定どおり、`stopped_reason` が `max_pages`
+  （`timeout` なら本が開けていないか、ページが送れていない）
+- 取得画像が全て別物（同一内容が並んでいたらページ送りが効いていない）
+- 出力 PDF が存在し、ページ数が合っている
+
+#### 注意
+
+- 先頭ページへの巻き戻しは Kindle の読書位置 (Whispersync) を動かす。
+  本番の蔵書で試すときはそのつもりで
+- キャプチャ中は前面ウィンドウとマウスを占有する
+
+#### 結果の残し方
+
+PR 説明に、実行したコマンドと `manifest.json` の要点
+（`total_pages` / `stopped_reason` / `duration_seconds`）を貼る。
+実機確認をしていない場合は、**その旨と未検証の範囲を明記する**。
+
+キャプチャ経路に触れていない変更（CI 整備・依存の更新・トリミングやテキスト処理の
+純ロジックなど）では不要。
+
+### 6. push 前のコードレビュー
 
 **push する前に、必ず独立したレビュー担当（Claude Code ならサブエージェント）に
 コードレビューを依頼する。**
@@ -68,7 +166,7 @@ Refs #<issue番号>
 - 指摘を鵜呑みにせず、事実確認してから採否を決める。見送る場合は理由を PR 説明に書く
 - 指摘を反映してから push する
 
-### 6. PR
+### 7. PR
 
 - 本文の冒頭に `Closes #<issue番号>` を書く
 - 何を・なぜ変えたかを書く。特に**挙動を変えていない**ことの根拠
