@@ -37,3 +37,7 @@ dist/
 
 # 実行時の生成物
 *.log
+
+# Playwright スパイク (#9) の作業用
+.playwright-profile/
+.spike-out/
