@@ -1100,8 +1100,20 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
 
         # 実行する本は「未完成」なので、途中で終わった残骸画像は消して作り直す
         # （run_book の overwrite。完成済みのスキップ判定はバッチ側で済ませている）
+        # ログアウト状態は「以後の全冊が確実に同じ理由で失敗する」種類のエラー。
+        # 気づかず走り続けると Amazon へ失敗ログインを冊数分投げることになり、
+        # アカウントロックや CAPTCHA 常時化を招く。この本の実行中に
+        # signin_required が出たかを見て、出ていたらバッチごと止める。
+        signin_required = False
+
+        def watch(event, human=None, **fields):
+            nonlocal signin_required
+            if event == "signin_required":
+                signin_required = True
+            emit(event, human=human, **fields)
+
         try:
-            code = run_book(output=out, config=cfg, emit=emit, overwrite=True, **merged)
+            code = run_book(output=out, config=cfg, emit=watch, overwrite=True, **merged)
         except Exception as e:  # noqa: BLE001 - 1冊の想定外エラーでバッチを止めない
             emit_error(emit, f"予期しないエラー: {e}")
             code = EXIT_ERROR
@@ -1130,6 +1142,15 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
             ok=ok,
             output=output_path if ok else None,
         )
+
+        if not ok and signin_required:
+            emit_error(
+                emit,
+                "Kindle からログアウトされているため、残りの本も同じ理由で失敗します。"
+                "バッチを中断しました。サインインし直してから再実行してください"
+                "（完成済みの本はスキップされます）",
+            )
+            break
 
         if not ok and stop_on_error:
             emit(
