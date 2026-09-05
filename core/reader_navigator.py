@@ -171,6 +171,34 @@ def open_book(
         allow_sleep()
 
 
+def _signin_blocks_open(profile, emit):
+    """サインインページが開いていないか調べ、開いていれば報告して True を返す。
+
+    セッション切れだと Amazon はサインインページへリダイレクトする。
+    タイトルに Kindle が入らないため対象ウィンドウの待機は素通りするが、
+    原因は「ブラウザが無い」ではなく「ログアウトされている」なので、
+    汎用のエラーに混ぜず区別して報告する。
+    """
+    from core import amazon_signin
+
+    if (
+        amazon_signin.find_signin_window(process_name=profile.process_name, exclude_pid=os.getpid())
+        is None
+    ):
+        return False
+
+    emit(
+        "signin_required",
+        human="Kindle からログアウトされています（Amazon のサインインページが開いています）",
+    )
+    emit_error(
+        emit,
+        "Kindle からログアウトされているため本を開けません。"
+        "ブラウザで一度サインインしてから再実行してください",
+    )
+    return True
+
+
 def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind, max_rewind, load_wait, emit):
     import numpy as np
     import pyautogui as pag
@@ -203,6 +231,10 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind, max_rewind, load
                 break
         time.sleep(1)
     if hwnd is None:
+        # ログアウト起因なら専用のメッセージだけを出して終える
+        # (汎用の「ウィンドウが見つかりません」を続けて出すと原因を見失う)
+        if _signin_blocks_open(profile, emit):
+            return EXIT_WINDOW_NOT_FOUND
         emit_error(
             emit,
             f"対象ウィンドウが見つかりません: {profile.window_title_keyword} "
