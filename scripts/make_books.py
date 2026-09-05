@@ -279,7 +279,7 @@ def main(argv=None):
     print(f"蔵書ダンプ: {len(library)} 冊")
 
     failed = False
-    asin_seen = {}
+    asin_seen: dict = {}
     for group in groups:
         books, matched = select_group(library, group)
         print(f"\n[{group['name']}] マッチ {matched} 冊 → 採用 {len(books)} 冊")

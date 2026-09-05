@@ -209,7 +209,7 @@ def test_load_split_words_accepted(tmp_path):
 
 
 def test_run_batch_happy_path(tmp_path, monkeypatch):
-    calls = []
+    calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
     out = tmp_path / "out"
     books = [{"asin": "B0A", "title": "本1"}, {"asin": "B0B", "title": "本2"}]
@@ -233,7 +233,7 @@ def test_run_batch_happy_path(tmp_path, monkeypatch):
 
 
 def test_run_batch_skips_completed_books(tmp_path, monkeypatch):
-    calls = []
+    calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
     out = tmp_path / "out"
     out.mkdir()
@@ -253,7 +253,7 @@ def test_run_batch_skips_completed_books(tmp_path, monkeypatch):
 
 
 def test_run_batch_overwrite_reprocesses_completed(tmp_path, monkeypatch):
-    calls = []
+    calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
     out = tmp_path / "out"
     out.mkdir()
@@ -270,7 +270,7 @@ def test_run_batch_overwrite_reprocesses_completed(tmp_path, monkeypatch):
 
 
 def test_run_batch_continues_on_failure(tmp_path, monkeypatch):
-    calls = []
+    calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls, fail_titles={"本2"}))
     out = tmp_path / "out"
     books = [
@@ -294,7 +294,7 @@ def test_run_batch_continues_on_failure(tmp_path, monkeypatch):
 
 
 def test_run_batch_stop_on_error(tmp_path, monkeypatch):
-    calls = []
+    calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls, fail_titles={"本2"}))
     out = tmp_path / "out"
     books = [
@@ -316,7 +316,7 @@ def test_run_batch_stop_on_error(tmp_path, monkeypatch):
 
 
 def test_run_batch_per_book_overrides_defaults(tmp_path, monkeypatch):
-    calls = []
+    calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
     out = tmp_path / "out"
     # 全体既定は searchable_pdf、本2 だけ markdown に上書き
@@ -339,7 +339,7 @@ def test_run_batch_per_book_overrides_defaults(tmp_path, monkeypatch):
 
 
 def test_run_batch_skip_uses_per_book_format_extension(tmp_path, monkeypatch):
-    calls = []
+    calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
     out = tmp_path / "out"
     out.mkdir()
@@ -354,7 +354,7 @@ def test_run_batch_skip_uses_per_book_format_extension(tmp_path, monkeypatch):
 
 
 def test_run_batch_skip_recognizes_split_markdown_output(tmp_path, monkeypatch):
-    calls = []
+    calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
     out = tmp_path / "out"
     out.mkdir()
@@ -376,7 +376,7 @@ def test_run_batch_skip_recognizes_split_markdown_output(tmp_path, monkeypatch):
 
 
 def test_cli_batch_json(tmp_path, monkeypatch, isolated_config, capsys):
-    calls = []
+    calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
     path = write_books(
         tmp_path,
@@ -399,7 +399,7 @@ def test_cli_batch_json(tmp_path, monkeypatch, isolated_config, capsys):
 
 
 def test_cli_batch_ui_bands_default_and_flag(tmp_path, monkeypatch, isolated_config, capsys):
-    calls = []
+    calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
     path = write_books(tmp_path, [{"asin": "B0A", "title": "本1"}])
 

@@ -153,7 +153,7 @@ class ConvertStep(WizardStep):
         for value, _label, _desc, needs_ocr in FORMAT_CHOICES:
             if needs_ocr:
                 self._format_buttons[value].configure(state="normal" if available else "disabled")
-        if available:
+        if engine is not None and available:
             self.ocr_note.configure(
                 text=f"OCRエンジン: {engine.get('description', 'NDLOCR-Lite')}",
                 text_color=theme.MUTED_COLOR,

@@ -101,7 +101,7 @@ def test_probe_profile_for_uses_fast_settings_without_mutating_original():
 
 
 def test_probe_returns_first_working_key():
-    calls = []
+    calls: list = []
     emit = Recorder()
     key = probe_page_turn_key(
         make_profile(),
@@ -122,7 +122,7 @@ def test_probe_returns_first_working_key():
 
 
 def test_probe_skips_dead_keys_in_order():
-    calls = []
+    calls: list = []
     key = probe_page_turn_key(
         make_profile(),
         capture_fn=fake_capture({"pagedown": (EXIT_OK, 2)}, calls),
@@ -162,7 +162,7 @@ def test_probe_passes_fast_profile_settings_to_capture_fn():
 
 def test_probe_returns_none_when_all_keys_fail():
     emit = Recorder()
-    calls = []
+    calls: list = []
     key = probe_page_turn_key(
         make_profile(),
         emit=emit,
@@ -180,7 +180,7 @@ def test_probe_returns_none_when_all_keys_fail():
 
 def test_probe_aborts_on_window_not_found():
     emit = Recorder()
-    calls = []
+    calls: list = []
     key = probe_page_turn_key(
         make_profile(),
         emit=emit,
@@ -241,7 +241,7 @@ def test_probe_honors_stop_event():
     emit = Recorder()
     stop = threading.Event()
     stop.set()
-    calls = []
+    calls: list = []
     key = probe_page_turn_key(
         make_profile(),
         emit=emit,
@@ -254,7 +254,7 @@ def test_probe_honors_stop_event():
 
 
 def test_probe_accepts_custom_key_list():
-    calls = []
+    calls: list = []
     key = probe_page_turn_key(
         make_profile(),
         keys=("up", "down"),

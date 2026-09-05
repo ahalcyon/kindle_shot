@@ -287,7 +287,8 @@ def _h2_segments(body):
     先頭に H2 より前の前置き（序文等）があればそれも 1 セグメントになる。
     H3 以下は章の中身としてセグメント内に留まる。
     """
-    segments, cur = [], []
+    segments: list = []
+    cur: list = []
     for ln in body.split("\n"):
         if ln.startswith("## ") and cur:
             segments.append("\n".join(cur).strip("\n"))
@@ -303,7 +304,9 @@ def _chunk_by_words(pieces, split_words):
 
     1 片単独で上限を超える場合はそのまま 1 塊にする（片の内部では切らない）。
     """
-    chunks, cur, cur_words = [], [], 0
+    chunks: list = []
+    cur: list = []
+    cur_words = 0
     for piece in pieces:
         words = estimate(piece)["words"]
         if cur and cur_words + words > split_words:

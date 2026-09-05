@@ -356,7 +356,7 @@ class TrimStep(WizardStep):
         self._trimmed_pil = None
         for label in (self.original_label, self.trimmed_label):
             label.configure(image="")
-            label.image = None
+            label.image = None  # type: ignore[attr-defined]  # GC 防止の参照保持
         self.filename_label.configure(text="")
         self.outlier_label.configure(text="")
         self.ui_band_label.configure(text="")
@@ -440,7 +440,7 @@ class TrimStep(WizardStep):
                 img = self._draw_guides(img, scale)
             photo = ImageTk.PhotoImage(img)
             label.configure(image=photo)
-            label.image = photo
+            label.image = photo  # type: ignore[attr-defined]  # GC 防止の参照保持
 
     def _change_preview(self, delta):
         if not self._preview_files:

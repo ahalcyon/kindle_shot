@@ -165,7 +165,7 @@ def probe_page_turn_key(
     keys = tuple(keys) if keys else PROBE_KEY_ORDER
     capture_fn = capture_fn or _capture_probe_pages
     rewind_fn = rewind_fn or _press_key
-    tried = []
+    tried: list = []
 
     def finish(ok, key, exit_code, **fields):
         emit(

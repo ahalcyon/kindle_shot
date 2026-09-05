@@ -330,6 +330,8 @@ def run_trim(
                 on_progress=phase_progress(emit, "check"),
             )
             _, report = aggregate_margins(pages)
+        # pages と report は必ず同時にセットされる（上の分岐かマージン検出時）
+        assert report is not None
         passthrough_files = set(report.get("outliers") or ())
         if passthrough_files:
             emit(
@@ -386,7 +388,10 @@ def run_trim(
     success, message = process_images(
         input_folder,
         output_folder,
-        *margins,
+        margins[0],
+        margins[1],
+        margins[2],
+        margins[3],
         on_progress=phase_progress(emit, "trim"),
         passthrough_files=passthrough_files,
     )
@@ -656,7 +661,7 @@ def run_book(
     total_steps = 5 if (asin or url) else 4
     step_no = 0
     t_start = time.perf_counter()
-    timings = []  # [ステップ名, 開始時刻→確定後は所要秒]
+    timings: list = []  # [ステップ名, 開始時刻→確定後は所要秒]
 
     def step(name):
         nonlocal step_no
@@ -932,7 +937,7 @@ def load_batch_file(path, emit=null_emit):
 
     books = []
     errors = []
-    seen_titles = {}
+    seen_titles: dict = {}
     for i, entry in enumerate(data, 1):
         kwargs, err = _coerce_book(entry, i)
         if err is not None:

@@ -322,7 +322,7 @@ def aggregate_margins(pages):
         (margins, report) のタプル。1ページも検出できなければ (None, report)。
     """
     detected = [(f, m) for f, m in pages if m is not None]
-    report = {
+    report: dict = {
         "pages_total": len(pages),
         "pages_detected": len(detected),
         "pages_skipped": [f for f, m in pages if m is None],
@@ -640,7 +640,7 @@ def page_variation_margins(input_folder, sample_pages=VARIATION_SAMPLE_PAGES, on
     files = list_images(input_folder)
     # 表紙・購入画面は絵が大きく違うため、候補から外して本文だけを見る
     candidates = files[2:-2] if len(files) > 10 else files
-    report = {
+    report: dict = {
         "sampled": [],
         "skipped": [],
         "size": None,
@@ -680,6 +680,8 @@ def page_variation_margins(input_folder, sample_pages=VARIATION_SAMPLE_PAGES, on
                 # サイズ違いが混ざると画素同士を比較できない
                 report["skipped"].append(filename)
             else:
+                # shape が確定している = acc_max / acc_min も代入済み
+                assert acc_max is not None and acc_min is not None
                 np.maximum(acc_max, arr, out=acc_max)
                 np.minimum(acc_min, arr, out=acc_min)
                 used += 1
@@ -691,6 +693,8 @@ def page_variation_margins(input_folder, sample_pages=VARIATION_SAMPLE_PAGES, on
         report["reason"] = "too_few_readable"
         return None, report
 
+    # acc_max / acc_min は shape がセットされるのと同時に必ず代入される
+    assert acc_max is not None and acc_min is not None
     height, width = shape
     report["size"] = [width, height]
     varies = (acc_max.astype(np.int16) - acc_min.astype(np.int16)) > VARIATION_PIXEL_DIFF

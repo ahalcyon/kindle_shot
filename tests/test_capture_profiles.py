@@ -118,7 +118,7 @@ def test_profile_display_order_follows_spec():
 
 
 def test_profile_display_order_appends_custom_keys():
-    config = {"capture": {"profiles": {"my_viewer": {}, "kindle": {}}}}
+    config: dict = {"capture": {"profiles": {"my_viewer": {}, "kindle": {}}}}
     keys = profile_display_order(config)
     assert keys[-1] == "my_viewer"  # カスタムは末尾
     assert keys.count("kindle") == 1  # ビルトインは重複しない
@@ -258,7 +258,7 @@ def test_reverse_page_turn_key_unknown_falls_back_left():
 
 
 def test_get_all_profile_keys_merges_builtin_and_config():
-    config = {"capture": {"profiles": {"kindle": {}, "my_viewer": {}}}}
+    config: dict = {"capture": {"profiles": {"kindle": {}, "my_viewer": {}}}}
     keys = get_all_profile_keys(config)
     assert "kindle" in keys
     assert "kindle_cloud" in keys

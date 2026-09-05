@@ -148,7 +148,7 @@ def run_capture(
     done = threading.Event()
     if stop_event is None:
         stop_event = threading.Event()
-    result = {"total": 0, "dir": ""}
+    result: dict = {"total": 0, "dir": ""}
 
     def on_page(page, filename):
         emit("page", human=f"Page {page}: {filename}", page=page, file=filename)

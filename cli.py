@@ -108,7 +108,7 @@ def _setup_stdio():
     for stream in (sys.stdout, sys.stderr):
         try:
             if not stream.isatty():
-                stream.reconfigure(encoding="utf-8", errors="replace")
+                stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
         except Exception:
             pass
 

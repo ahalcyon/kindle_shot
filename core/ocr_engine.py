@@ -247,10 +247,11 @@ class NDLOCREngine:
             errors="replace",
             env=env,
         )
-        tail = collections.deque(maxlen=20)
-        line_queue = queue.Queue()
+        tail: collections.deque = collections.deque(maxlen=20)
+        line_queue: queue.Queue = queue.Queue()
 
         def _pump():
+            assert proc.stdout is not None  # stdout=PIPE 固定
             for line in proc.stdout:
                 line_queue.put(line)
             line_queue.put(None)

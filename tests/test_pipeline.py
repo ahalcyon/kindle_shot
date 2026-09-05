@@ -52,13 +52,13 @@ def test_relax_margins_none_min_margins():
 
 
 def test_check_input_folder_ok(pages_folder):
-    events = []
+    events: list = []
     assert check_input_folder(str(pages_folder), _collect_emit(events)) is None
     assert events == []
 
 
 def test_check_input_folder_missing(tmp_path):
-    events = []
+    events: list = []
     code = check_input_folder(str(tmp_path / "nope"), _collect_emit(events))
     assert code == EXIT_BAD_ARGS
     assert events[0]["event"] == "error"
@@ -67,7 +67,7 @@ def test_check_input_folder_missing(tmp_path):
 def test_check_input_folder_empty(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
-    events = []
+    events: list = []
     code = check_input_folder(str(empty), _collect_emit(events))
     assert code == EXIT_NO_IMAGES
 
@@ -76,7 +76,7 @@ def test_clear_output_images_blocks_without_overwrite(tmp_path):
     out = tmp_path / "out"
     out.mkdir()
     make_page(out / "old.png")
-    events = []
+    events: list = []
     code = clear_output_images(str(out), False, _collect_emit(events))
     assert code == EXIT_BAD_ARGS
     assert "--overwrite" in events[0]["message"]
@@ -87,7 +87,7 @@ def test_clear_output_images_removes_with_overwrite(tmp_path):
     out = tmp_path / "out"
     out.mkdir()
     make_page(out / "old.png")
-    events = []
+    events: list = []
     code = clear_output_images(str(out), True, _collect_emit(events))
     assert code is None
     assert not (out / "old.png").exists()
@@ -116,7 +116,7 @@ def test_run_trim_with_explicit_margins_no_emit(pages_folder, tmp_path):
 
 
 def test_run_trim_auto_detect_events(pages_folder, tmp_path):
-    events = []
+    events: list = []
     code = run_trim(
         str(pages_folder), str(tmp_path / "out"), margins=None, safety=8, emit=_collect_emit(events)
     )
@@ -158,7 +158,7 @@ def test_run_trim_reports_applied_and_rejected_variation_sides(tmp_path, monkeyp
         ),
     )
 
-    events = []
+    events: list = []
     code = run_trim(
         str(folder),
         margins=None,
@@ -181,7 +181,7 @@ def test_run_trim_auto_passes_through_full_bleed_cover(cover_folder, tmp_path):
     from PIL import Image
 
     out = tmp_path / "out"
-    events = []
+    events: list = []
     code = run_trim(str(cover_folder), str(out), margins=None, safety=8, emit=_collect_emit(events))
     assert code == EXIT_OK
 
