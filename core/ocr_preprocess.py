@@ -37,7 +37,7 @@ def preprocess_image(
 
     if upscale and upscale != 1.0:
         new_size = (int(img.width * upscale), int(img.height * upscale))
-        img = img.resize(new_size, Image.LANCZOS)
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
 
     if enhance_contrast or binarize:
         # autocontrast / 二値化のためにグレースケール化する

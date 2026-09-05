@@ -22,6 +22,7 @@
 import os
 import statistics
 from abc import ABC, abstractmethod
+from typing import cast
 
 import numpy as np
 from PIL import Image, ImageChops
@@ -135,11 +136,16 @@ class ManualBoundary(BoundaryDetector):
 def _corner_bg(rgb: Image.Image, region: tuple[int, int, int, int]) -> tuple[int, ...]:
     """region の 4 隅のピクセル中央値を背景色として返す。"""
     left, top, right, bottom = region
+    # rgb は RGB モード前提なので getpixel は必ず (R, G, B) タプルを返す。
+    # 型検査には mode からそれが分からないため cast で明示する。
     corners = [
-        rgb.getpixel((left, top)),
-        rgb.getpixel((right - 1, top)),
-        rgb.getpixel((left, bottom - 1)),
-        rgb.getpixel((right - 1, bottom - 1)),
+        cast(tuple[int, ...], rgb.getpixel(xy))
+        for xy in (
+            (left, top),
+            (right - 1, top),
+            (left, bottom - 1),
+            (right - 1, bottom - 1),
+        )
     ]
     return tuple(int(np.median([c[i] for c in corners])) for i in range(3))
 

@@ -10,6 +10,7 @@ import os
 
 _SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts", "make_books.py")
 _spec = importlib.util.spec_from_file_location("make_books", _SCRIPT)
+assert _spec is not None and _spec.loader is not None, f"読み込めない: {_SCRIPT}"
 make_books = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(make_books)
 

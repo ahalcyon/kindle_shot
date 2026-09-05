@@ -13,6 +13,7 @@ import pytest
 
 _SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts", "convert_2nd.py")
 _spec = importlib.util.spec_from_file_location("convert_2nd", _SCRIPT)
+assert _spec is not None and _spec.loader is not None, f"読み込めない: {_SCRIPT}"
 convert_2nd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(convert_2nd)
 

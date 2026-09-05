@@ -28,6 +28,7 @@ dev = [
     "ruff>=0.15",
     "uv>=0.11",
     "pytest>=8",
+    "mypy>=1.14",
 ]
 
 # ============================================================
@@ -37,6 +38,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "e2e: CLI をサブプロセスで通しで動かす E2E テスト (pytest -m e2e で単独実行)",
+]
 
 # ============================================================
 # ruff (lint + format)
@@ -73,3 +77,22 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+# ============================================================
+# mypy (type check)
+# ============================================================
+
+[tool.mypy]
+python_version = "3.11"
+# Windows 専用アプリなので win32 として解析する。これがないと
+# ctypes.windll や core/win32_utils.py が「存在しない」と誤検出される。
+platform = "win32"
+files = ["app.py", "cli.py", "core", "ui", "scripts", "tests"]
+exclude = "^(kindle_env|ndlocr-lite)/"
+# customtkinter / pyautogui / cv2 などは型スタブを提供していない
+ignore_missing_imports = true
+# 既存コードは型注釈がほとんど無いため strict は使わない。
+# 注釈のある箇所の矛盾と、None 由来の実バグだけを検出する運用にする。
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
