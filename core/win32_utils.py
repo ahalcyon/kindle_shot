@@ -12,6 +12,8 @@ from ctypes import (
     byref,
     c_bool,
     c_int,
+    c_void_p,
+    cast,
     create_unicode_buffer,
     pointer,
     windll,
@@ -128,6 +130,21 @@ def get_window_title(hwnd):
     buff = create_unicode_buffer(length + 1)
     GetWindowText(hwnd, buff, length + 1)
     return buff.value
+
+
+def hwnd_value(hwnd):
+    """ウィンドウハンドルを比較可能な整数に正規化する。
+
+    find_window は EnumWindows のコールバック宣言の都合で ctypes の
+    ポインタ (LP_c_long) を返すのに対し、Win32 API を直に呼ぶと int が
+    返る。型が違うと == / != が常に不一致になり、ハンドルの比較が
+    黙って壊れる（実測で確認）。比較する前に必ずここを通すこと。
+    """
+    if hwnd is None:
+        return None
+    if isinstance(hwnd, int):
+        return hwnd
+    return cast(hwnd, c_void_p).value
 
 
 def get_window_rect(hwnd):
@@ -259,7 +276,7 @@ def activate_window(hwnd, click_position="center", use_bring_to_top=False):
 
         # フォールバック: TOPMOST → NOTOPMOST で確実に前面化
         time.sleep(0.1)
-        if GetForegroundWindow() != hwnd:
+        if hwnd_value(GetForegroundWindow()) != hwnd_value(hwnd):
             SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
             SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
     finally:
