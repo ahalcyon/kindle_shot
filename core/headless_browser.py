@@ -60,6 +60,9 @@ def credentials():
     return email, password
 
 
+_user_agent_cache = None
+
+
 def realistic_user_agent(playwright):
     """実際のエンジンと矛盾しない UA を組み立てる。
 
@@ -67,12 +70,17 @@ def realistic_user_agent(playwright):
     検出されうる。文字列を決め打ちするとエンジンのバージョンとずれて逆に
     不自然になるため、起動中のブラウザ自身の UA から Headless を外して使う。
     """
+    global _user_agent_cache
+    if _user_agent_cache is not None:
+        return _user_agent_cache
+
     browser = playwright.chromium.launch(headless=True)
     try:
         page = browser.new_page()
-        return page.evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
+        _user_agent_cache = page.evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
     finally:
         browser.close()
+    return _user_agent_cache
 
 
 def _fill_first(page, selectors, value):

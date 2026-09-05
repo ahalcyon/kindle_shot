@@ -608,8 +608,9 @@ def run_book(
     expect_pages=None,
     max_pages=None,
     max_rewind=1000,
-    load_wait=45,
+    load_wait=None,
     no_rewind=False,
+    headless=False,
     safety=8,
     min_margins=None,
     ui_bands=True,
@@ -658,7 +659,8 @@ def run_book(
     out = os.path.abspath(output)
     save_dir = os.path.join(out, title)
     trimmed_dir = save_dir + "_trimmed"
-    total_steps = 5 if (asin or url) else 4
+    # headless は本を開く処理がキャプチャに含まれるので open のステップが無い
+    total_steps = 4 if headless else (5 if (asin or url) else 4)
     step_no = 0
     t_start = time.perf_counter()
     timings: list = []  # [ステップ名, 開始時刻→確定後は所要秒]
@@ -697,38 +699,65 @@ def run_book(
     # open / capture 個別の抑止に加えて、1冊の処理全体で画面消灯を抑止する。
     # trim / OCR 中に画面が消えると復帰時のサインインでセッションがロックされ、
     # 以降の open / capture が全滅するため (2026-08-01 の B群バッチで実測)
-    prevent_sleep()
+    # headless は画面を使わないので、消灯まで抑えるとディスプレイを切って
+    # 無人実行するという目的と逆行する
+    prevent_sleep(keep_display=not headless)
     try:
-        if asin or url:
-            step("open: 本を開いて先頭ページへ")
-            code = open_book(
+        if headless:
+            # 画面を使わない経路。本を開くところからキャプチャまでブラウザ内で
+            # 完結するので open のステップが無い。
+            from core.headless_capture import run_headless_capture
+
+            step("capture: headless ブラウザでキャプチャ")
+            code = run_headless_capture(
                 profile,
+                title,
+                out,
                 asin=asin,
                 url=url,
+                profile_key=profile_key,
                 page_turn=page_turn,
-                no_fullscreen=False,
+                page_wait=page_wait,
+                max_pages=max_pages,
+                load_wait=load_wait,
                 no_rewind=no_rewind,
                 max_rewind=max_rewind,
-                load_wait=load_wait,
+                overwrite=overwrite,
                 emit=emit,
             )
             if code != EXIT_OK:
                 return finish(code)
+        else:
+            if asin or url:
+                step("open: 本を開いて先頭ページへ")
+                code = open_book(
+                    profile,
+                    asin=asin,
+                    url=url,
+                    page_turn=page_turn,
+                    no_fullscreen=False,
+                    no_rewind=no_rewind,
+                    max_rewind=max_rewind,
+                    load_wait=45 if load_wait is None else load_wait,
+                    emit=emit,
+                )
+                if code != EXIT_OK:
+                    return finish(code)
 
-        step("capture: ページを自動キャプチャ")
-        code = run_capture(
-            profile,
-            title,
-            out,
-            profile_key=profile_key,
-            page_turn=page_turn,
-            page_wait=page_wait,
-            max_pages=max_pages,
-            overwrite=overwrite,
-            emit=emit,
-        )
-        if code != EXIT_OK:
-            return finish(code)
+            step("capture: ページを自動キャプチャ")
+            code = run_capture(
+                profile,
+                title,
+                out,
+                profile_key=profile_key,
+                page_turn=page_turn,
+                page_wait=page_wait,
+                max_pages=max_pages,
+                overwrite=overwrite,
+                emit=emit,
+            )
+            if code != EXIT_OK:
+                return finish(code)
 
         step("validate: キャプチャ結果を検証")
         code = run_validate(save_dir, expect_pages=expect_pages, strict=False, emit=emit)

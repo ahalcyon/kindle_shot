@@ -314,7 +314,7 @@ _ES_DISPLAY_REQUIRED = 0x00000002
 _sleep_block = threading.local()
 
 
-def prevent_sleep():
+def prevent_sleep(*, keep_display=True):
     """スリープ・画面消灯を抑止する（呼び出したスレッドで有効）。
 
     長時間の無人キャプチャ中に画面が消えると真っ黒画像になり、さらに
@@ -322,13 +322,18 @@ def prevent_sleep():
     全滅するため、処理の間は呼び続ける。ネスト可能（run_book 全体 → その中の
     open / capture のように重ねて呼べる）。終了時は必ず対で allow_sleep() を
     呼ぶこと。実際の解除は最後の allow_sleep() で行われる。
+
+    keep_display=False にすると画面消灯だけは許す。headless キャプチャは
+    画面を使わないため、消灯まで抑止すると「ディスプレイを切って無人実行」
+    という目的と逆行する。
     """
     count = getattr(_sleep_block, "count", 0)
     _sleep_block.count = count + 1
     if count == 0:
-        windll.kernel32.SetThreadExecutionState(
-            _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED | _ES_DISPLAY_REQUIRED
-        )
+        flags = _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED
+        if keep_display:
+            flags |= _ES_DISPLAY_REQUIRED
+        windll.kernel32.SetThreadExecutionState(flags)
 
 
 def allow_sleep():

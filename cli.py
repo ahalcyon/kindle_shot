@@ -396,6 +396,7 @@ def cmd_run(args, rep):
         max_rewind=args.max_rewind,
         load_wait=args.load_wait,
         no_rewind=args.no_rewind,
+        headless=args.headless,
         safety=args.safety,
         min_margins=min_margins,
         ui_bands=args.ui_bands,
@@ -439,6 +440,7 @@ def cmd_batch(args, rep):
         "max_rewind": args.max_rewind,
         "load_wait": args.load_wait,
         "no_rewind": args.no_rewind,
+        "headless": args.headless,
         "safety": args.safety,
         "min_margins": min_margins,
         "ui_bands": args.ui_bands,
@@ -677,9 +679,14 @@ def build_parser():
     p_run.add_argument(
         "--load-wait",
         type=int,
-        default=45,
         metavar="SEC",
-        help="open の読み込み待ち最大秒数（既定: 45）",
+        help="読み込み待ちの秒数（省略時: 画面キャプチャ 45 / headless 12）",
+    )
+    p_run.add_argument(
+        "--headless",
+        action="store_true",
+        help="headless ブラウザでキャプチャする。画面もデスクトップセッションも不要なので、"
+        "ディスプレイを切った状態や画面ロック中でも動く（Playwright が必要）",
     )
     p_run.add_argument("--no-rewind", action="store_true", help="先頭ページへの巻き戻しをスキップ")
     p_run.add_argument(
@@ -798,13 +805,19 @@ def build_parser():
     p_batch.add_argument(
         "--load-wait",
         type=int,
-        default=45,
         metavar="SEC",
-        help="open の読み込み待ち最大秒数（全本の既定。既定: 45）",
+        help="読み込み待ちの秒数（全本の既定。省略時: 画面キャプチャ 45 / headless 12）",
     )
     p_batch.add_argument(
         "--no-rewind", action="store_true", help="先頭ページへの巻き戻しをスキップ（全本の既定）"
     )
+    p_batch.add_argument(
+        "--headless",
+        action="store_true",
+        help="headless ブラウザでキャプチャする。画面もデスクトップセッションも不要なので、"
+        "ディスプレイを切った状態や画面ロック中でも動く（Playwright が必要）。全本に適用",
+    )
+
     p_batch.add_argument(
         "--safety",
         type=int,
@@ -966,8 +979,9 @@ def build_parser():
     )
     p_head.add_argument(
         "--page-turn",
-        choices=PAGE_TURN_KEYS,
-        help="ページ送りキー（既定: left）。縦書きの本は left、横書きは right",
+        choices=(*PAGE_TURN_KEYS, "auto"),
+        default="auto",
+        help="ページ送りキー（既定: auto）。auto は読書位置が増える向きを実測で判定する。縦書きは left、横書きは right",
     )
     p_head.add_argument(
         "--overwrite", action="store_true", help="保存先の既存画像を削除してから実行する"
