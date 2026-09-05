@@ -59,7 +59,12 @@ def test_process_images_reports_progress_in_name_order(tmp_path):
 
     seen = []
     success, _ = process_images(
-        str(src), str(tmp_path / "out"), 0, 0, 0, 0,
+        str(src),
+        str(tmp_path / "out"),
+        0,
+        0,
+        0,
+        0,
         on_progress=lambda cur, total, fn: seen.append(fn),
     )
     assert success

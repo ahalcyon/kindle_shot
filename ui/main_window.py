@@ -92,7 +92,9 @@ class KindleShotApp(ctk.CTk):
         for index, (label, _steps) in enumerate(PHASES):
             if index > 0:
                 ctk.CTkLabel(
-                    inner, text="→", text_color=theme.MUTED_COLOR,
+                    inner,
+                    text="→",
+                    text_color=theme.MUTED_COLOR,
                 ).pack(side="left", padx=theme.PAD_SMALL)
             widget = ctk.CTkLabel(inner, text=label)
             widget.pack(side="left")

@@ -81,7 +81,9 @@ def preprocess_file(
         if ext in ("jpg", "jpeg"):
             # 二値化後は L モードなので JPG にもそのまま保存できる
             out.convert("L" if out.mode != "L" else out.mode).save(
-                dst_path, "JPEG", quality=95,
+                dst_path,
+                "JPEG",
+                quality=95,
             )
         else:
             out.save(dst_path)

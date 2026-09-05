@@ -180,7 +180,7 @@ def reflow_text(text: str) -> str:
     cleaned: list[str] = []
     prev_blank = False
     for p in paragraphs:
-        is_blank = (p == "")
+        is_blank = p == ""
         if is_blank and prev_blank:
             continue
         cleaned.append(p)

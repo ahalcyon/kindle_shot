@@ -25,6 +25,7 @@ from core.image_files import OCR_IMAGE_EXTENSIONS, list_images
 # NDLOCR-Lite エンジン
 # ============================================================
 
+
 class NDLOCREngine:
     """NDLOCR-Lite エンジン (書籍・印刷物全般、レイアウト解析付き)。"""
 
@@ -66,7 +67,11 @@ class NDLOCREngine:
                 os.makedirs(ocr_out, exist_ok=True)
                 cmd = self._build_command(input_for_ocr, ocr_out, use_system)
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, encoding="utf-8", timeout=120,
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=120,
                 )
                 if result.returncode != 0:
                     return False, f"OCRエラー: {result.stderr}"
@@ -77,8 +82,9 @@ class NDLOCREngine:
             except Exception as e:
                 return False, f"OCR処理中にエラー: {e}"
 
-    def process_folder(self, input_folder, image_files, preprocess_opts=None,
-                       on_progress=None, workers=1):
+    def process_folder(
+        self, input_folder, image_files, preprocess_opts=None, on_progress=None, workers=1
+    ):
         """フォルダ内の画像を ndlocr-lite の --sourcedir で一括 OCR する。
 
         ページ毎にサブプロセスを起動する方式はモデルロードを毎回やり直す
@@ -108,8 +114,12 @@ class NDLOCREngine:
             try:
                 chunks = self._split_chunks(image_files, workers)
                 src_dirs = self._prepare_batch_inputs(
-                    input_folder, chunks, tmpdir, preprocess_opts,
-                    on_progress, total,
+                    input_folder,
+                    chunks,
+                    tmpdir,
+                    preprocess_opts,
+                    on_progress,
+                    total,
                 )
                 use_system = bool(shutil.which("ndlocr-lite"))
 
@@ -169,12 +179,13 @@ class NDLOCREngine:
         for i in range(workers):
             size = base + (1 if i < rem else 0)
             if size:
-                chunks.append(image_files[start:start + size])
+                chunks.append(image_files[start : start + size])
             start += size
         return chunks
 
-    def _prepare_batch_inputs(self, input_folder, chunks, tmpdir,
-                              preprocess_opts, on_progress, total):
+    def _prepare_batch_inputs(
+        self, input_folder, chunks, tmpdir, preprocess_opts, on_progress, total
+    ):
         """チャンクごとの入力フォルダを準備する。
 
         前処理が有効なら前処理済み画像 (<stem>.png) を、無効なら元画像への
@@ -196,7 +207,8 @@ class NDLOCREngine:
                 if enabled:
                     stem = os.path.splitext(filename)[0]
                     ocr_preprocess.preprocess_file(
-                        src, os.path.join(chunk_dir, stem + ".png"),
+                        src,
+                        os.path.join(chunk_dir, stem + ".png"),
                         upscale=float(preprocess_opts.get("upscale", 1.5)),
                         enhance_contrast=bool(preprocess_opts.get("enhance_contrast", True)),
                         binarize=bool(preprocess_opts.get("binarize", False)),
@@ -227,8 +239,13 @@ class NDLOCREngine:
         # まとめて届いてストール誤検出になるため、アンバッファを強制する
         env = dict(os.environ, PYTHONUNBUFFERED="1")
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", env=env,
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
         )
         tail = collections.deque(maxlen=20)
         line_queue = queue.Queue()
@@ -301,7 +318,8 @@ class NDLOCREngine:
             ext = ".png"
         dst = os.path.join(tmpdir, "_preprocessed" + ext)
         ocr_preprocess.preprocess_file(
-            image_path, dst,
+            image_path,
+            dst,
             upscale=float(opts.get("upscale", 1.5)),
             enhance_contrast=bool(opts.get("enhance_contrast", True)),
             binarize=bool(opts.get("binarize", False)),
@@ -393,12 +411,14 @@ _ENGINE = NDLOCREngine()
 def get_available_engines():
     """利用可能な OCR エンジンのリストを返す (NDLOCR-Lite のみ)。"""
     available, message = _ENGINE.is_available()
-    return [{
-        "key": _ENGINE.key,
-        "description": _ENGINE.description,
-        "available": available,
-        "message": message,
-    }]
+    return [
+        {
+            "key": _ENGINE.key,
+            "description": _ENGINE.description,
+            "available": available,
+            "message": message,
+        }
+    ]
 
 
 def is_available():
@@ -468,8 +488,11 @@ def _process_folder_per_page(input_folder, image_files, preprocess_opts, on_prog
 
 
 def process_folder_collect(
-    input_folder, on_progress=None,
-    preprocess_opts=None, replacements_opts=None, workers=None,
+    input_folder,
+    on_progress=None,
+    preprocess_opts=None,
+    replacements_opts=None,
+    workers=None,
 ):
     """フォルダ内の画像を一括 OCR 処理し、結果をリストで返す。
 
@@ -501,13 +524,18 @@ def process_folder_collect(
     stems = [os.path.splitext(f)[0] for f in image_files]
     if len(set(stems)) == len(stems):
         success, results = _ENGINE.process_folder(
-            input_folder, image_files,
-            preprocess_opts=opts, on_progress=on_progress,
+            input_folder,
+            image_files,
+            preprocess_opts=opts,
+            on_progress=on_progress,
             workers=_resolve_workers(workers),
         )
     else:
         success, results = _process_folder_per_page(
-            input_folder, image_files, opts, on_progress,
+            input_folder,
+            image_files,
+            opts,
+            on_progress,
         )
     if not success:
         return False, results

@@ -59,7 +59,8 @@ def find_verified_window(engine, profile, emit=null_emit, *, strict_process=True
     emit(
         "window_found",
         human=f'検出ウィンドウ: "{win_title}" ({win_exe})',
-        title=win_title, process=win_exe,
+        title=win_title,
+        process=win_exe,
     )
     return hwnd, None
 
@@ -87,10 +88,20 @@ def choose_cursor_park_point(window_rect, monitor_rects):
     return None
 
 
-def run_capture(profile, title, output_folder, *, profile_key=None,
-                page_turn=None, page_wait=None, max_pages=None,
-                overwrite=False, stop_event=None, strict_process=True,
-                emit=null_emit):
+def run_capture(
+    profile,
+    title,
+    output_folder,
+    *,
+    profile_key=None,
+    page_turn=None,
+    page_wait=None,
+    max_pages=None,
+    overwrite=False,
+    stop_event=None,
+    strict_process=True,
+    emit=null_emit,
+):
     """ページを自動キャプチャする（本を開いて先頭ページを表示しておくこと）。
 
     Args:
@@ -125,8 +136,11 @@ def run_capture(profile, title, output_folder, *, profile_key=None,
     save_folder = os.path.abspath(output_folder)
     save_dir = os.path.join(save_folder, title)
     code = clear_output_images(
-        save_dir, overwrite, emit,
-        label="保存先", reason="前回の残骸が混ざるのを防ぐため中止。",
+        save_dir,
+        overwrite,
+        emit,
+        label="保存先",
+        reason="前回の残骸が混ざるのを防ぐため中止。",
     )
     if code is not None:
         return code
@@ -154,10 +168,8 @@ def run_capture(profile, title, output_folder, *, profile_key=None,
         result["dir"] = sdir
         done.set()
 
-    engine = CaptureEngine(profile, on_page, on_status, on_complete,
-                           exclude_pid=os.getpid())
-    hwnd, err = find_verified_window(engine, profile, emit,
-                                     strict_process=strict_process)
+    engine = CaptureEngine(profile, on_page, on_status, on_complete, exclude_pid=os.getpid())
+    hwnd, err = find_verified_window(engine, profile, emit, strict_process=strict_process)
     if err is not None:
         return err
 
@@ -167,6 +179,7 @@ def run_capture(profile, title, output_folder, *, profile_key=None,
     engine.activate_target_window(hwnd)
 
     import pyautogui as pag
+
     rect = get_window_rect(hwnd)
     pag.moveTo((rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2)
     already_fullscreen = is_window_fullscreen(hwnd)
@@ -183,8 +196,7 @@ def run_capture(profile, title, output_folder, *, profile_key=None,
     if not is_window_fullscreen(hwnd):
         # ウィンドウのままのキャプチャも正当な使い方なのでエラーにはしない
         not_fullscreen = (
-            "対象ウィンドウは全画面ではありません"
-            "（現在のウィンドウ範囲でキャプチャします）"
+            "対象ウィンドウは全画面ではありません（現在のウィンドウ範囲でキャプチャします）"
         )
         emit("status", human=not_fullscreen, message=not_fullscreen)
 
@@ -251,8 +263,11 @@ def run_capture(profile, title, output_folder, *, profile_key=None,
         emit(
             "result",
             human=f"キャプチャ完了: {total} ページ\n保存先: {save_dir}",
-            ok=True, total_pages=total, save_dir=save_dir,
-            stopped_reason=stopped_reason, manifest=manifest_path,
+            ok=True,
+            total_pages=total,
+            save_dir=save_dir,
+            stopped_reason=stopped_reason,
+            manifest=manifest_path,
         )
         return EXIT_OK
 

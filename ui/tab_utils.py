@@ -49,11 +49,13 @@ def make_progress_cb(root, progress_bar, status_var, fmt="{current}/{total}"):
     進捗バーとステータス文字列を root.after で UI スレッドから更新する。
     fmt には {current} {total} {filename} が使える。
     """
+
     def cb(current, total, filename):
         ratio = current / total if total else 0
         text = fmt.format(current=current, total=total, filename=filename)
         root.after(0, lambda: progress_bar.set(ratio))
         root.after(0, lambda: status_var.set(text))
+
     return cb
 
 
@@ -74,8 +76,7 @@ class GuiEmitter:
     ダイアログや結果表示に使う。
     """
 
-    def __init__(self, root, *, log=None, progress_bar=None, status_var=None,
-                 phase_labels=None):
+    def __init__(self, root, *, log=None, progress_bar=None, status_var=None, phase_labels=None):
         self.root = root
         self.log = log
         self.progress_bar = progress_bar
@@ -99,10 +100,7 @@ class GuiEmitter:
                 self._ui(lambda: self.progress_bar.set(ratio))
             if self.status_var is not None:
                 phase = fields.get("phase")
-                prefix = (
-                    f"{self.phase_labels.get(phase, f'[{phase}]')} "
-                    if phase else ""
-                )
+                prefix = f"{self.phase_labels.get(phase, f'[{phase}]')} " if phase else ""
                 text = f"{prefix}{current}/{total} ({fields.get('file', '')})"
                 self._ui(lambda: self.status_var.set(text))
             return  # 進捗はログに流さない (量が多い)

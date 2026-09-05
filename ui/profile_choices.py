@@ -46,6 +46,4 @@ def resolve_profile(profile_key, config=None, overrides=None):
 
     ビルトイン → config 保存値 → overrides の優先順位（画面仕様書 §6-2）。
     """
-    return CaptureProfile.from_dict(
-        merge_profile_data(profile_key, config, overrides)
-    )
+    return CaptureProfile.from_dict(merge_profile_data(profile_key, config, overrides))

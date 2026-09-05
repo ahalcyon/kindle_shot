@@ -44,9 +44,9 @@ def _layered_image():
 
     im = Image.new("RGB", (400, 500), (0, 0, 0))
     draw = ImageDraw.Draw(im)
-    draw.rectangle((13, 13, 386, 486), fill=(59, 59, 59))     # 台紙のグレー帯
+    draw.rectangle((13, 13, 386, 486), fill=(59, 59, 59))  # 台紙のグレー帯
     draw.rectangle((33, 33, 366, 466), fill=(255, 255, 255))  # 白いページ
-    draw.rectangle((100, 120, 200, 200), fill=(0, 0, 0))      # 本文ブロック
+    draw.rectangle((100, 120, 200, 200), fill=(0, 0, 0))  # 本文ブロック
     draw.rectangle((150, 220, 250, 300), fill=(0, 0, 0))
     return im
 
@@ -204,11 +204,12 @@ def test_create_detector_mapping():
 # ページ間変化ベースの UI 帯検出
 # ============================================================
 
+
 def _frac(length, bands):
     """(start, end, peak) の帯を並べた変化率(%) 配列を作る（帯の外は 0）。"""
     frac = np.zeros(length)
     for start, end, peak in bands:
-        frac[start:end + 1] = peak
+        frac[start : end + 1] = peak
     return frac
 
 
@@ -248,8 +249,9 @@ def test_content_extent_keeps_vertical_text_columns():
     最大変化率は 74.54 / 45.60 / 47.41 / 43.56% で本体の 6 割前後あるため、
     末尾の列も落とさず 468..3393 にまとめる。
     """
-    frac = _frac(3840, [(468, 3195, 74.54), (3217, 3245, 45.60),
-                        (3267, 3344, 47.41), (3366, 3393, 43.56)])
+    frac = _frac(
+        3840, [(468, 3195, 74.54), (3217, 3245, 45.60), (3267, 3344, 47.41), (3366, 3393, 43.56)]
+    )
     assert content_extent(frac) == (468, 3393)
 
 
@@ -259,8 +261,12 @@ def test_content_extent_returns_none_without_variation():
 
 def test_combine_margins_takes_max_per_side():
     # 3840x2160 では上限が左右 576px / 上下 324px なので、どの辺も採用される
-    assert combine_margins((10, 20, 30, 40), (468, 446, 93, 135),
-                           (3840, 2160)) == (468, 446, 93, 135)
+    assert combine_margins((10, 20, 30, 40), (468, 446, 93, 135), (3840, 2160)) == (
+        468,
+        446,
+        93,
+        135,
+    )
 
 
 def test_combine_margins_rejects_side_over_max_ratio():
@@ -269,8 +275,7 @@ def test_combine_margins_rejects_side_over_max_ratio():
     assert VARIATION_MAX_MARGIN_RATIO * size[0] == 90
     assert VARIATION_MAX_MARGIN_RATIO * size[1] == 135
     # 左 90 と上 135 は上限内 → max。右 91 と下 136 は上限超え → 内容ベース
-    assert combine_margins((10, 10, 10, 10), (90, 91, 135, 136), size) \
-        == (90, 10, 135, 10)
+    assert combine_margins((10, 10, 10, 10), (90, 91, 135, 136), size) == (90, 10, 135, 10)
 
 
 def test_combine_margins_without_variation_keeps_content():
@@ -283,22 +288,31 @@ def test_variation_applied_reports_only_adopted_extra_margins():
     combined = (202, 606, 202, 23)
 
     assert variation_applied(content, variation, combined) == (
-        False, True, False, False,
+        False,
+        True,
+        False,
+        False,
     )
 
 
 def test_variation_applied_rejects_unapplied_variation():
     assert variation_applied(
-        (10, 10, 10, 10), (90, 91, 135, 136), (90, 10, 135, 10),
+        (10, 10, 10, 10),
+        (90, 91, 135, 136),
+        (90, 10, 135, 10),
     ) == (True, False, True, False)
 
 
 def test_variation_applied_returns_false_when_none_is_mixed():
-    assert variation_applied((10, 10, 10, 10), None, (10, 10, 10, 10)) \
+    assert variation_applied((10, 10, 10, 10), None, (10, 10, 10, 10)) == (False,) * 4
+    assert (
+        variation_applied(
+            (10, 10, 10, 10),
+            (20, None, 20, 20),
+            (20, 10, 20, 20),
+        )
         == (False,) * 4
-    assert variation_applied(
-        (10, 10, 10, 10), (20, None, 20, 20), (20, 10, 20, 20),
-    ) == (False,) * 4
+    )
 
 
 def _make_viewer_pages(folder, count=12):
@@ -316,7 +330,7 @@ def _make_viewer_pages(folder, count=12):
     for i in range(1, count + 1):
         im = Image.new("L", (800, 1200), 255)
         draw = ImageDraw.Draw(im)
-        draw.rectangle((40, 20, 759, 100), fill=0)      # 固定ヘッダー
+        draw.rectangle((40, 20, 759, 100), fill=0)  # 固定ヘッダー
         draw.rectangle((300, 1150, 360, 1180), fill=0)  # 固定フッター
         if i % 2 == 0:
             draw.rectangle((380, 1150, 400, 1180), fill=0)  # ページ番号相当
@@ -378,19 +392,23 @@ def test_content_extent_2d_drops_band_beyond_body():
     varies[50:56, :] = True
 
     rows, cols, info = content_extent_2d(
-        varies, gap_min=5, cross_tolerance=5,
+        varies,
+        gap_min=5,
+        cross_tolerance=5,
     )
 
     assert rows == (5, 40)
     assert cols == (10, 29)
     assert info["order"] == "rows"
-    assert info["ui_bands"] == [{
-        "axis": "row",
-        "start": 50,
-        "end": 55,
-        "cross": [0, 39],
-        "body": [10, 29],
-    }]
+    assert info["ui_bands"] == [
+        {
+            "axis": "row",
+            "start": 50,
+            "end": 55,
+            "cross": [0, 39],
+            "body": [10, 29],
+        }
+    ]
 
 
 def test_content_extent_2d_keeps_inner_footer():
@@ -399,7 +417,9 @@ def test_content_extent_2d_keeps_inner_footer():
     varies[45:48, 12:28] = True
 
     rows, cols, info = content_extent_2d(
-        varies, gap_min=2, cross_tolerance=5,
+        varies,
+        gap_min=2,
+        cross_tolerance=5,
     )
 
     assert rows == (5, 47)
@@ -413,19 +433,23 @@ def test_content_extent_2d_symmetric_vertical_bar():
     varies[50:56, :] = True
 
     rows, cols, info = content_extent_2d(
-        varies.T, gap_min=5, cross_tolerance=5,
+        varies.T,
+        gap_min=5,
+        cross_tolerance=5,
     )
 
     assert rows == (10, 29)
     assert cols == (5, 40)
     assert info["order"] == "cols"
-    assert info["ui_bands"] == [{
-        "axis": "col",
-        "start": 50,
-        "end": 55,
-        "cross": [0, 39],
-        "body": [10, 29],
-    }]
+    assert info["ui_bands"] == [
+        {
+            "axis": "col",
+            "start": 50,
+            "end": 55,
+            "cross": [0, 39],
+            "body": [10, 29],
+        }
+    ]
 
 
 def test_content_extent_2d_no_ui_matches_content_extent():
@@ -452,8 +476,7 @@ def test_page_variation_margins_removes_fixed_ui(tmp_path):
     assert report["sampled"] == [f"page_{i:03d}.png" for i in range(3, 11)]
     assert report["skipped"] == []
     # 行の帯は「本文」と「ページ番号」の 2 本。採用されるのは本文だけ
-    assert [(s, e) for s, e, _peak in report["row_runs"]] \
-        == [(150, 1099), (1150, 1180)]
+    assert [(s, e) for s, e, _peak in report["row_runs"]] == [(150, 1099), (1150, 1180)]
 
 
 def test_page_variation_margins_removes_moving_slider(tmp_path):
@@ -463,8 +486,7 @@ def test_page_variation_margins_removes_moving_slider(tmp_path):
     assert margins == (350, 350, 30, 70)
     assert report["order"] == "rows"
     assert any(
-        band["axis"] == "row"
-        and (band["start"], band["end"]) == (760, 789)
+        band["axis"] == "row" and (band["start"], band["end"]) == (760, 789)
         for band in report["ui_bands"]
     )
 
@@ -476,8 +498,7 @@ def test_page_variation_margins_removes_vertical_scrollbar(tmp_path):
     assert margins == (30, 70, 350, 350)
     assert report["order"] == "cols"
     assert any(
-        band["axis"] == "col"
-        and (band["start"], band["end"]) == (760, 789)
+        band["axis"] == "col" and (band["start"], band["end"]) == (760, 789)
         for band in report["ui_bands"]
     )
 
@@ -491,22 +512,21 @@ def test_page_variation_margins_ignores_size_mismatch(tmp_path):
     assert report["skipped"] == ["page_005b.png"]
 
 
-def test_page_variation_margins_skips_too_few_pages_without_reading(
-        tmp_path, monkeypatch):
+def test_page_variation_margins_skips_too_few_pages_without_reading(tmp_path, monkeypatch):
     folder = tmp_path / "few"
     folder.mkdir()
     for i in range(1, VARIATION_MIN_PAGES):
         make_page(folder / f"page_{i:03d}.png")
     seen = []
     monkeypatch.setattr(
-        Image, "open",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("画像を読んではいけない")
-        ),
+        Image,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("画像を読んではいけない")),
     )
 
     margins, report = page_variation_margins(
-        str(folder), on_progress=lambda *args: seen.append(args),
+        str(folder),
+        on_progress=lambda *args: seen.append(args),
     )
     assert margins is None
     assert report["sampled"] == []
@@ -575,5 +595,5 @@ def test_detect_margins_folder_variation_progress_is_separate(tmp_path):
         on_progress=lambda c, t, f: content.append(c),
         on_variation_progress=lambda c, t, f: variation.append(c),
     )
-    assert len(content) == 12   # 全ページ走査
+    assert len(content) == 12  # 全ページ走査
     assert len(variation) == 8  # サンプリングした本文ページのみ

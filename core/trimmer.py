@@ -33,9 +33,16 @@ def trim_margins(im, left_margin, right_margin, top_margin, bottom_margin):
     return im.crop((left, top, right, bottom))
 
 
-def process_images(input_folder, output_folder, left_margin, right_margin,
-                   top_margin, bottom_margin, on_progress=None,
-                   passthrough_files=None):
+def process_images(
+    input_folder,
+    output_folder,
+    left_margin,
+    right_margin,
+    top_margin,
+    bottom_margin,
+    on_progress=None,
+    passthrough_files=None,
+):
     """指定フォルダ内の画像を一括トリミングする。
 
     Args:
@@ -71,8 +78,9 @@ def process_images(input_folder, output_folder, left_margin, right_margin,
                 copied_count += 1
             else:
                 with Image.open(input_path) as img:
-                    trimmed = trim_margins(img, left_margin, right_margin,
-                                           top_margin, bottom_margin)
+                    trimmed = trim_margins(
+                        img, left_margin, right_margin, top_margin, bottom_margin
+                    )
                     trimmed.save(output_path)
                 trimmed_count += 1
         except Exception as e:

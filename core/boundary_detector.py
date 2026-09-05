@@ -135,8 +135,12 @@ class ManualBoundary(BoundaryDetector):
 def _corner_bg(rgb: Image.Image, region: tuple[int, int, int, int]) -> tuple[int, ...]:
     """region の 4 隅のピクセル中央値を背景色として返す。"""
     left, top, right, bottom = region
-    corners = [rgb.getpixel((left, top)), rgb.getpixel((right - 1, top)),
-               rgb.getpixel((left, bottom - 1)), rgb.getpixel((right - 1, bottom - 1))]
+    corners = [
+        rgb.getpixel((left, top)),
+        rgb.getpixel((right - 1, top)),
+        rgb.getpixel((left, bottom - 1)),
+        rgb.getpixel((right - 1, bottom - 1)),
+    ]
     return tuple(int(np.median([c[i] for c in corners])) for i in range(3))
 
 
@@ -149,8 +153,7 @@ def _content_bbox_in(rgb, region, bg, threshold):
     sub = mask.getbbox()
     if sub is None:
         return None
-    return (region[0] + sub[0], region[1] + sub[1],
-            region[0] + sub[2], region[1] + sub[3])
+    return (region[0] + sub[0], region[1] + sub[1], region[0] + sub[2], region[1] + sub[3])
 
 
 def detect_content_box(
@@ -346,6 +349,7 @@ def aggregate_margins(pages):
 # ページ間の変化に基づく UI 帯検出
 # ============================================================
 
+
 def active_runs(frac, gap_min=VARIATION_GAP_MIN, active_pct=VARIATION_ACTIVE_PCT):
     """変化率の並びを「変化のある帯」の (start, end) 列にする（純粋関数）。
 
@@ -375,13 +379,16 @@ def active_runs(frac, gap_min=VARIATION_GAP_MIN, active_pct=VARIATION_ACTIVE_PCT
 def run_peaks(frac, runs):
     """各帯の最大変化率を付けて [(start, end, peak_pct), ...] を返す（純粋関数）。"""
     frac = np.asarray(frac)
-    return [(s, e, float(frac[s:e + 1].max())) for s, e in runs]
+    return [(s, e, float(frac[s : e + 1].max())) for s, e in runs]
 
 
-def content_extent(frac, gap_min=VARIATION_GAP_MIN,
-                   active_pct=VARIATION_ACTIVE_PCT,
-                   peak_ratio=VARIATION_PEAK_RATIO,
-                   peak_min_pct=VARIATION_PEAK_MIN_PCT):
+def content_extent(
+    frac,
+    gap_min=VARIATION_GAP_MIN,
+    active_pct=VARIATION_ACTIVE_PCT,
+    peak_ratio=VARIATION_PEAK_RATIO,
+    peak_min_pct=VARIATION_PEAK_MIN_PCT,
+):
     """変化率の並びから「内容が占める範囲」を (first, last) で返す（純粋関数）。
 
     最も長い帯を本体とみなし、他の帯は最大変化率が
@@ -398,10 +405,9 @@ def content_extent(frac, gap_min=VARIATION_GAP_MIN,
         return None
     frac = np.asarray(frac)
     main = max(runs, key=lambda r: r[1] - r[0])
-    main_peak = float(frac[main[0]:main[1] + 1].max())
+    main_peak = float(frac[main[0] : main[1] + 1].max())
     limit = max(peak_min_pct, peak_ratio * main_peak)
-    kept = [r for r in runs
-            if r == main or float(frac[r[0]:r[1] + 1].max()) >= limit]
+    kept = [r for r in runs if r == main or float(frac[r[0] : r[1] + 1].max()) >= limit]
     return min(r[0] for r in kept), max(r[1] for r in kept)
 
 
@@ -420,9 +426,9 @@ def cross_extent(varies, band, axis, active_pct=VARIATION_ACTIVE_PCT):
     varies = np.asarray(varies, dtype=bool)
     start, end = band
     if axis == 0:
-        frac = varies[start:end + 1, :].mean(axis=0) * 100
+        frac = varies[start : end + 1, :].mean(axis=0) * 100
     elif axis == 1:
-        frac = varies[:, start:end + 1].mean(axis=1) * 100
+        frac = varies[:, start : end + 1].mean(axis=1) * 100
     else:
         raise ValueError("axis must be 0 (rows) or 1 (cols)")
 
@@ -466,7 +472,7 @@ def content_extent_2d(
             return None
 
         main = max(runs, key=lambda r: r[1] - r[0])
-        main_peak = float(frac[main[0]:main[1] + 1].max())
+        main_peak = float(frac[main[0] : main[1] + 1].max())
         limit = max(peak_min_pct, peak_ratio * main_peak)
         body_cross = cross_extent(varies, main, first_axis, active_pct)
         if body_cross is None:
@@ -478,7 +484,7 @@ def content_extent_2d(
         for run in runs:
             if run == main:
                 continue
-            peak = float(frac[run[0]:run[1] + 1].max())
+            peak = float(frac[run[0] : run[1] + 1].max())
             if peak < limit:
                 continue
             cross = cross_extent(varies, run, first_axis, active_pct)
@@ -489,21 +495,23 @@ def content_extent_2d(
                 or cross[1] > body_cross[1] + cross_tolerance
             )
             if protrudes:
-                ui_bands.append({
-                    "axis": axis_name,
-                    "start": run[0],
-                    "end": run[1],
-                    "cross": list(cross),
-                    "body": list(body_cross),
-                })
+                ui_bands.append(
+                    {
+                        "axis": axis_name,
+                        "start": run[0],
+                        "end": run[1],
+                        "cross": list(cross),
+                        "body": list(body_cross),
+                    }
+                )
             else:
                 kept.append(run)
 
         extent1 = (min(r[0] for r in kept), max(r[1] for r in kept))
         if first_axis == 0:
-            second_frac = varies[extent1[0]:extent1[1] + 1, :].mean(axis=0) * 100
+            second_frac = varies[extent1[0] : extent1[1] + 1, :].mean(axis=0) * 100
         else:
-            second_frac = varies[:, extent1[0]:extent1[1] + 1].mean(axis=1) * 100
+            second_frac = varies[:, extent1[0] : extent1[1] + 1].mean(axis=1) * 100
 
         # 第2軸でははみ出し判定をしない。全長で cross_extent を取ると、
         # 第1軸で捨てた UI 帯を通過する位置まで含み、縦書き本文端などの
@@ -527,16 +535,14 @@ def content_extent_2d(
         area = (rows[1] - rows[0] + 1) * (cols[1] - cols[0] + 1)
         return rows, cols, {"order": order, "ui_bands": ui_bands}, area
 
-    candidates = [result for axis in (0, 1)
-                  if (result := candidate(axis)) is not None]
+    candidates = [result for axis in (0, 1) if (result := candidate(axis)) is not None]
     if not candidates:
         return None
     rows, cols, info, _area = min(candidates, key=lambda result: result[3])
     return rows, cols, info
 
 
-def combine_margins(content_margins, variation_margins, size,
-                    max_ratio=VARIATION_MAX_MARGIN_RATIO):
+def combine_margins(content_margins, variation_margins, size, max_ratio=VARIATION_MAX_MARGIN_RATIO):
     """内容ベースと変化ベースの余白を辺ごとに合成する（純粋関数）。
 
     辺ごとに大きい方を採る。ただし変化ベースの値がその辺の長さ × max_ratio
@@ -556,12 +562,10 @@ def combine_margins(content_margins, variation_margins, size,
     if content_margins is None:
         return variation_margins
     width, height = size
-    limits = (width * max_ratio, width * max_ratio,
-              height * max_ratio, height * max_ratio)
+    limits = (width * max_ratio, width * max_ratio, height * max_ratio, height * max_ratio)
     return tuple(
         c if v > limit else max(c, v)
-        for c, v, limit in zip(content_margins, variation_margins, limits,
-                               strict=True)
+        for c, v, limit in zip(content_margins, variation_margins, limits, strict=True)
     )
 
 
@@ -595,8 +599,7 @@ def _sample_indices(count, sample_pages):
     return sorted({int(round(i * step)) for i in range(sample_pages)})
 
 
-def page_variation_margins(input_folder, sample_pages=VARIATION_SAMPLE_PAGES,
-                           on_progress=None):
+def page_variation_margins(input_folder, sample_pages=VARIATION_SAMPLE_PAGES, on_progress=None):
     """ページ間の画素変化から、ビューアの固定 UI を除いた余白を検出する。
 
     ビューアの固定 UI (書名ヘッダー・ページ番号フッター等) は毎ページ
@@ -631,16 +634,21 @@ def page_variation_margins(input_folder, sample_pages=VARIATION_SAMPLE_PAGES,
     files = list_images(input_folder)
     # 表紙・購入画面は絵が大きく違うため、候補から外して本文だけを見る
     candidates = files[2:-2] if len(files) > 10 else files
-    report = {"sampled": [], "skipped": [], "size": None,
-              "row_runs": [], "col_runs": [], "order": None,
-              "ui_bands": []}
+    report = {
+        "sampled": [],
+        "skipped": [],
+        "size": None,
+        "row_runs": [],
+        "col_runs": [],
+        "order": None,
+        "ui_bands": [],
+    }
     if len(candidates) < VARIATION_MIN_PAGES:
         report["reason"] = "too_few_pages"
         report["min_pages"] = VARIATION_MIN_PAGES
         return None, report
 
-    sampled = [candidates[i]
-               for i in _sample_indices(len(candidates), sample_pages)]
+    sampled = [candidates[i] for i in _sample_indices(len(candidates), sample_pages)]
     report["sampled"] = sampled
 
     # np.stack はサンプル全枚数をメモリに載せるため使わない。
@@ -681,8 +689,8 @@ def page_variation_margins(input_folder, sample_pages=VARIATION_SAMPLE_PAGES,
     report["size"] = [width, height]
     varies = (acc_max.astype(np.int16) - acc_min.astype(np.int16)) > VARIATION_PIXEL_DIFF
 
-    row_frac = varies.mean(axis=1) * 100   # 各行の変化率(%)
-    col_frac = varies.mean(axis=0) * 100   # 各列の変化率(%)
+    row_frac = varies.mean(axis=1) * 100  # 各行の変化率(%)
+    col_frac = varies.mean(axis=0) * 100  # 各列の変化率(%)
     report["row_runs"] = run_peaks(row_frac, active_runs(row_frac))
     report["col_runs"] = run_peaks(col_frac, active_runs(col_frac))
 
@@ -692,13 +700,13 @@ def page_variation_margins(input_folder, sample_pages=VARIATION_SAMPLE_PAGES,
     rows, cols, info = extent
     report.update(info)
 
-    margins = (cols[0], max(0, width - 1 - cols[1]),
-               rows[0], max(0, height - 1 - rows[1]))
+    margins = (cols[0], max(0, width - 1 - cols[1]), rows[0], max(0, height - 1 - rows[1]))
     return margins, report
 
 
-def detect_margins_folder(input_folder, threshold=12, on_progress=None,
-                          ui_bands=True, on_variation_progress=None):
+def detect_margins_folder(
+    input_folder, threshold=12, on_progress=None, ui_bands=True, on_variation_progress=None
+):
     """フォルダ内の**全ページ**を走査して、共通の安全な余白を検出する。
 
     各ページのコンテンツ境界を検出し、辺ごとに外れ値ページ (全面表示の
@@ -734,8 +742,7 @@ def detect_margins_folder(input_folder, threshold=12, on_progress=None,
             "variation_applied": UI 帯除去として採用された辺の bool 4 要素,
         }
     """
-    pages = folder_page_margins(input_folder, threshold=threshold,
-                                 on_progress=on_progress)
+    pages = folder_page_margins(input_folder, threshold=threshold, on_progress=on_progress)
     margins, report = aggregate_margins(pages)
     report["content_margins"] = list(margins) if margins else None
     report["variation_margins"] = None
@@ -753,9 +760,7 @@ def detect_margins_folder(input_folder, threshold=12, on_progress=None,
         return margins, report
     report["variation_margins"] = list(variation)
     combined = combine_margins(margins, variation, vreport["size"])
-    report["variation_applied"] = list(
-        variation_applied(margins, variation, combined)
-    )
+    report["variation_applied"] = list(variation_applied(margins, variation, combined))
     return combined, report
 
 
@@ -802,8 +807,7 @@ def find_clipped_pages(input_folder, margins, threshold=12, on_progress=None):
         [{"filename": str, "sides": {"left": 不足px, ...}}, ...] のリスト。
         空リストなら、検出できた範囲では 1 ページも内容が切れない。
     """
-    pages = folder_page_margins(input_folder, threshold=threshold,
-                                 on_progress=on_progress)
+    pages = folder_page_margins(input_folder, threshold=threshold, on_progress=on_progress)
     return clipped_pages_from(pages, margins)
 
 

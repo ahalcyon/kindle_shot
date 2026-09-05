@@ -50,12 +50,17 @@ def emit_error(emit, message):
 
 def phase_progress(emit, phase):
     """Reporter.progress と同形の progress イベントを発行する on_progress を作る。"""
+
     def cb(current, total, filename):
         emit(
             "progress",
             human=f"[{phase}] {current}/{total} {filename}",
-            phase=phase, current=current, total=total, file=filename,
+            phase=phase,
+            current=current,
+            total=total,
+            file=filename,
         )
+
     return cb
 
 
@@ -109,8 +114,7 @@ def check_input_folder(input_folder, emit=null_emit):
     return None
 
 
-def clear_output_images(folder, overwrite, emit=null_emit, *,
-                        label="出力フォルダ", reason=""):
+def clear_output_images(folder, overwrite, emit=null_emit, *, label="出力フォルダ", reason=""):
     """出力先の既存画像を検査し、overwrite 指定があれば削除する。
 
     前回実行の残骸画像が混ざると後段の PDF 化で古いページが紛れ込むため、
@@ -128,7 +132,7 @@ def clear_output_images(folder, overwrite, emit=null_emit, *,
         emit_error(
             emit,
             f"{label}に既存の画像が {len(existing)} 枚あります: {folder}"
-            f"（{reason}--overwrite で消去して実行）"
+            f"（{reason}--overwrite で消去して実行）",
         )
         return EXIT_BAD_ARGS
     removed = clear_images(folder)
@@ -144,19 +148,31 @@ def clear_output_images(folder, overwrite, emit=null_emit, *,
 # trim
 # ============================================================
 
+
 def _clipped_human(clipped):
     """clipped_pages イベントの human 文面を組み立てる。"""
     return "以下のページで内容が切れます:\n" + "\n".join(
-        f"  {c['filename']}: " + ", ".join(
-            f"{side} {px}px 不足" for side, px in c["sides"].items()
-        ) for c in clipped
+        f"  {c['filename']}: " + ", ".join(f"{side} {px}px 不足" for side, px in c["sides"].items())
+        for c in clipped
     )
 
 
-def run_trim(input_folder, output_folder=None, *, margins=None, safety=8,
-             min_margins=None, no_check=False, force=False, overwrite=False,
-             dry_run=False, passthrough=None, threshold=12, ui_bands=True,
-             emit=null_emit):
+def run_trim(
+    input_folder,
+    output_folder=None,
+    *,
+    margins=None,
+    safety=8,
+    min_margins=None,
+    no_check=False,
+    force=False,
+    overwrite=False,
+    dry_run=False,
+    passthrough=None,
+    threshold=12,
+    ui_bands=True,
+    emit=null_emit,
+):
     """画像フォルダの余白を一括トリミングする。
 
     Args:
@@ -214,7 +230,8 @@ def run_trim(input_folder, output_folder=None, *, margins=None, safety=8,
     if not manual:
         # 自動検出: 全ページ走査で共通の安全マージンを検出
         pages = folder_page_margins(
-            input_folder, threshold=threshold,
+            input_folder,
+            threshold=threshold,
             on_progress=phase_progress(emit, "detect"),
         )
         raw, report = aggregate_margins(pages)
@@ -233,7 +250,8 @@ def run_trim(input_folder, output_folder=None, *, margins=None, safety=8,
         applied = (False,) * 4
         if ui_bands:
             variation, vreport = page_variation_margins(
-                input_folder, on_progress=phase_progress(emit, "ui_bands"),
+                input_folder,
+                on_progress=phase_progress(emit, "ui_bands"),
             )
             report["variation"] = vreport
             if variation is not None:
@@ -252,8 +270,7 @@ def run_trim(input_folder, output_folder=None, *, margins=None, safety=8,
         if variation is not None:
             applied_sides = [
                 f"{label}={value}"
-                for label, value, is_applied in zip(labels, variation, applied,
-                                                     strict=True)
+                for label, value, is_applied in zip(labels, variation, applied, strict=True)
                 if is_applied
             ]
         ui_note = ""
@@ -291,8 +308,10 @@ def run_trim(input_folder, output_folder=None, *, margins=None, safety=8,
                 + ")"
                 + ui_note
             ),
-            margins=list(margins), raw=list(raw),
-            safety=safety, min_margins=min_margins_str,
+            margins=list(margins),
+            raw=list(raw),
+            safety=safety,
+            min_margins=min_margins_str,
             content_margins=list(content_raw),
             variation_margins=list(variation) if variation is not None else None,
             variation_applied=list(applied),
@@ -306,7 +325,8 @@ def run_trim(input_folder, output_folder=None, *, margins=None, safety=8,
     if passthrough:
         if pages is None:
             pages = folder_page_margins(
-                input_folder, threshold=threshold,
+                input_folder,
+                threshold=threshold,
                 on_progress=phase_progress(emit, "check"),
             )
             _, report = aggregate_margins(pages)
@@ -315,8 +335,8 @@ def run_trim(input_folder, output_folder=None, *, margins=None, safety=8,
             emit(
                 "passthrough_pages",
                 human="以下のページは全面表示（本文と余白構成が大きく異なる）と"
-                      "判定したため無加工でコピーします:\n"
-                      + "\n".join(f"  {name}" for name in sorted(passthrough_files)),
+                "判定したため無加工でコピーします:\n"
+                + "\n".join(f"  {name}" for name in sorted(passthrough_files)),
                 pages=sorted(passthrough_files),
             )
 
@@ -326,12 +346,12 @@ def run_trim(input_folder, output_folder=None, *, margins=None, safety=8,
     if manual and not no_check:
         if pages is None:
             pages = folder_page_margins(
-                input_folder, threshold=threshold,
+                input_folder,
+                threshold=threshold,
                 on_progress=phase_progress(emit, "check"),
             )
         clipped = [
-            c for c in clipped_pages_from(pages, margins)
-            if c["filename"] not in passthrough_files
+            c for c in clipped_pages_from(pages, margins) if c["filename"] not in passthrough_files
         ]
         if clipped:
             emit("clipped_pages", human=_clipped_human(clipped), pages=clipped)
@@ -349,8 +369,10 @@ def run_trim(input_folder, output_folder=None, *, margins=None, safety=8,
         emit(
             "result",
             human=f"dry-run: マージン 左={margins[0]}, 右={margins[1]}, "
-                  f"上={margins[2]}, 下={margins[3]}（トリミングは実行していません）",
-            ok=True, dry_run=True, margins=list(margins),
+            f"上={margins[2]}, 下={margins[3]}（トリミングは実行していません）",
+            ok=True,
+            dry_run=True,
+            margins=list(margins),
             passthrough=len(passthrough_files),
         )
         return EXIT_OK
@@ -362,14 +384,19 @@ def run_trim(input_folder, output_folder=None, *, margins=None, safety=8,
         return code
 
     success, message = process_images(
-        input_folder, output_folder, *margins,
+        input_folder,
+        output_folder,
+        *margins,
         on_progress=phase_progress(emit, "trim"),
         passthrough_files=passthrough_files,
     )
     emit(
-        "result", human=message,
-        ok=success, message=message,
-        margins=list(margins), output=output_folder,
+        "result",
+        human=message,
+        ok=success,
+        message=message,
+        margins=list(margins),
+        output=output_folder,
         passthrough=len(passthrough_files),
     )
     return EXIT_OK if success else EXIT_ERROR
@@ -379,11 +406,26 @@ def run_trim(input_folder, output_folder=None, *, margins=None, safety=8,
 # convert
 # ============================================================
 
-def run_convert(input_folder, output_folder, fmt, *, name=None, config=None,
-                preprocess_opts=None, replacements_opts=None, ocr_workers=None,
-                no_bookmarks=False, no_reflow=False, faithful=False,
-                no_cleanup=False, source=None, embed_images=False,
-                split_words=None, emit=null_emit):
+
+def run_convert(
+    input_folder,
+    output_folder,
+    fmt,
+    *,
+    name=None,
+    config=None,
+    preprocess_opts=None,
+    replacements_opts=None,
+    ocr_workers=None,
+    no_bookmarks=False,
+    no_reflow=False,
+    faithful=False,
+    no_cleanup=False,
+    source=None,
+    embed_images=False,
+    split_words=None,
+    emit=null_emit,
+):
     """画像フォルダを PDF / Markdown に変換する（必要に応じて OCR）。
 
     Args:
@@ -427,7 +469,9 @@ def run_convert(input_folder, output_folder, fmt, *, name=None, config=None,
     if fmt == "image_pdf":
         filename = _ensure_ext(filename, ".pdf")
         success, message = images_to_pdf(
-            input_folder, output_folder, filename,
+            input_folder,
+            output_folder,
+            filename,
             on_progress=phase_progress(emit, "pdf"),
         )
         output_path = os.path.join(output_folder, filename)
@@ -448,14 +492,16 @@ def run_convert(input_folder, output_folder, fmt, *, name=None, config=None,
             emit_error(emit, results)
             return EXIT_ERROR
 
-        bookmarks_enabled = bool(
-            cfg.get("ocr", {}).get("chapter_bookmarks", {}).get("enabled", True)
-        ) and not no_bookmarks
+        bookmarks_enabled = (
+            bool(cfg.get("ocr", {}).get("chapter_bookmarks", {}).get("enabled", True))
+            and not no_bookmarks
+        )
 
         # Markdown 出力時は行内クリーニング（句読点直後スペース等の除去）を
         # 章検出より前に適用し、見出しと本文の表記を揃える
         if fmt == "markdown" and not no_cleanup:
             from core.text_cleanup import clean_text
+
             results = [(fn, clean_text(t)) for fn, t in results]
 
         chapters = detect_chapters(results) if bookmarks_enabled else None
@@ -464,15 +510,20 @@ def run_convert(input_folder, output_folder, fmt, *, name=None, config=None,
             filename = _ensure_ext(filename, ".pdf")
             output_path = os.path.join(output_folder, filename)
             success, message = text_to_pdf(
-                results, output_path,
-                on_progress=phase_progress(emit, "pdf"), chapters=chapters,
+                results,
+                output_path,
+                on_progress=phase_progress(emit, "pdf"),
+                chapters=chapters,
             )
         elif fmt == "searchable_pdf":
             filename = _ensure_ext(filename, ".pdf")
             output_path = os.path.join(output_folder, filename)
             success, message = images_to_searchable_pdf(
-                input_folder, results, output_path,
-                on_progress=phase_progress(emit, "pdf"), chapters=chapters,
+                input_folder,
+                results,
+                output_path,
+                on_progress=phase_progress(emit, "pdf"),
+                chapters=chapters,
             )
         else:  # markdown
             filename = _ensure_ext(filename, ".md")
@@ -480,20 +531,27 @@ def run_convert(input_folder, output_folder, fmt, *, name=None, config=None,
             book_title = os.path.splitext(os.path.basename(filename))[0]
             if faithful:
                 # ページ忠実型（原画像へ戻る導線を残す従来出力）
-                reflow = bool(cfg.get("ocr", {}).get("reflow_paragraphs", True)) \
-                    and not no_reflow
+                reflow = bool(cfg.get("ocr", {}).get("reflow_paragraphs", True)) and not no_reflow
                 success, message = write_markdown(
-                    results, output_path, title=book_title,
-                    reflow=reflow, chapters=chapters,
+                    results,
+                    output_path,
+                    title=book_title,
+                    reflow=reflow,
+                    chapters=chapters,
                     embed_images=embed_images,
                     image_folder=input_folder if embed_images else None,
                 )
             else:
                 # NotebookLM 最適化（既定）: ページまたぎ結合・マーカー除去・H1/H2
                 from core.markdown_writer import write_notebooklm_markdown
+
                 success, message, written = write_notebooklm_markdown(
-                    results, output_path, title=book_title,
-                    source=source, chapters=chapters, split_words=split_words,
+                    results,
+                    output_path,
+                    title=book_title,
+                    source=source,
+                    chapters=chapters,
+                    split_words=split_words,
                 )
                 # 分割出力時は <名前>_1.md が実体。result の output もそこを指す
                 if success and written:
@@ -502,19 +560,26 @@ def run_convert(input_folder, output_folder, fmt, *, name=None, config=None,
                     extra_fields = {"outputs": written, "parts": len(written)}
 
     emit(
-        "result", human=message,
-        ok=success, message=message,
-        format=fmt, output=output_path if success else None,
+        "result",
+        human=message,
+        ok=success,
+        message=message,
+        format=fmt,
+        output=output_path if success else None,
         **extra_fields,
     )
 
     # Markdown は NotebookLM の 50万語/200MB 制限に対する分量目安を表示する
     if success and fmt == "markdown":
         from core.text_stats import estimate, format_stats
+
         st = estimate("\n".join(t for _, t in results))
         emit(
-            "markdown_stats", human=format_stats(st),
-            chars=st["chars"], words_est=st["words"], bytes=st["bytes"],
+            "markdown_stats",
+            human=format_stats(st),
+            chars=st["chars"],
+            words_est=st["words"],
+            bytes=st["bytes"],
         )
 
     return EXIT_OK if success else EXIT_ERROR
@@ -524,12 +589,33 @@ def run_convert(input_folder, output_folder, fmt, *, name=None, config=None,
 # run (1冊通し実行)
 # ============================================================
 
-def run_book(*, title, output, profile_key="kindle_cloud", asin=None, url=None,
-             fmt="searchable_pdf", page_turn=None, page_wait=None,
-             expect_pages=None, max_pages=None, max_rewind=1000, load_wait=45,
-             no_rewind=False, safety=8, min_margins=None, ui_bands=True,
-             overwrite=False, ocr_workers=None, faithful=False,
-             no_cleanup=False, split_words=None, config=None, emit=null_emit):
+
+def run_book(
+    *,
+    title,
+    output,
+    profile_key="kindle_cloud",
+    asin=None,
+    url=None,
+    fmt="searchable_pdf",
+    page_turn=None,
+    page_wait=None,
+    expect_pages=None,
+    max_pages=None,
+    max_rewind=1000,
+    load_wait=45,
+    no_rewind=False,
+    safety=8,
+    min_margins=None,
+    ui_bands=True,
+    overwrite=False,
+    ocr_workers=None,
+    faithful=False,
+    no_cleanup=False,
+    split_words=None,
+    config=None,
+    emit=null_emit,
+):
     """1冊を通しで実行する: open → capture → validate → trim → convert。
 
     asin / url を指定すると Cloud Reader で本を開くところから実行する。
@@ -559,7 +645,9 @@ def run_book(*, title, output, profile_key="kindle_cloud", asin=None, url=None,
     cfg = config if config is not None else load_config()
     profile = get_profile(profile_key, cfg)
     if profile is None:
-        emit_error(emit, f"プロファイルが見つかりません: {profile_key}（profiles コマンドで一覧表示）")
+        emit_error(
+            emit, f"プロファイルが見つかりません: {profile_key}（profiles コマンドで一覧表示）"
+        )
         return EXIT_BAD_ARGS
 
     out = os.path.abspath(output)
@@ -577,8 +665,13 @@ def run_book(*, title, output, profile_key="kindle_cloud", asin=None, url=None,
         if timings:
             timings[-1][1] = now - timings[-1][1]
         timings.append([name.split(":")[0], now])
-        emit("run_step", human=f"===== [{step_no}/{total_steps}] {name} =====",
-             step=name, current=step_no, total=total_steps)
+        emit(
+            "run_step",
+            human=f"===== [{step_no}/{total_steps}] {name} =====",
+            step=name,
+            current=step_no,
+            total=total_steps,
+        )
 
     def finish(code):
         """最後のステップを確定し、所要時間サマリを出力して code を返す。"""
@@ -604,25 +697,36 @@ def run_book(*, title, output, profile_key="kindle_cloud", asin=None, url=None,
         if asin or url:
             step("open: 本を開いて先頭ページへ")
             code = open_book(
-                profile, asin=asin, url=url, page_turn=page_turn,
-                no_fullscreen=False, no_rewind=no_rewind,
-                max_rewind=max_rewind, load_wait=load_wait, emit=emit,
+                profile,
+                asin=asin,
+                url=url,
+                page_turn=page_turn,
+                no_fullscreen=False,
+                no_rewind=no_rewind,
+                max_rewind=max_rewind,
+                load_wait=load_wait,
+                emit=emit,
             )
             if code != EXIT_OK:
                 return finish(code)
 
         step("capture: ページを自動キャプチャ")
         code = run_capture(
-            profile, title, out, profile_key=profile_key,
-            page_turn=page_turn, page_wait=page_wait,
-            max_pages=max_pages, overwrite=overwrite, emit=emit,
+            profile,
+            title,
+            out,
+            profile_key=profile_key,
+            page_turn=page_turn,
+            page_wait=page_wait,
+            max_pages=max_pages,
+            overwrite=overwrite,
+            emit=emit,
         )
         if code != EXIT_OK:
             return finish(code)
 
         step("validate: キャプチャ結果を検証")
-        code = run_validate(save_dir, expect_pages=expect_pages, strict=False,
-                            emit=emit)
+        code = run_validate(save_dir, expect_pages=expect_pages, strict=False, emit=emit)
         if code != EXIT_OK:
             return finish(code)
 
@@ -633,19 +737,34 @@ def run_book(*, title, output, profile_key="kindle_cloud", asin=None, url=None,
         if min_margins is None and profile_key == "kindle_cloud":
             min_margins = (0, 0, 80, 80)
         code = run_trim(
-            save_dir, trimmed_dir, margins=None, safety=safety,
-            min_margins=min_margins, ui_bands=ui_bands,
-            overwrite=overwrite, emit=emit,
+            save_dir,
+            trimmed_dir,
+            margins=None,
+            safety=safety,
+            min_margins=min_margins,
+            ui_bands=ui_bands,
+            overwrite=overwrite,
+            emit=emit,
         )
         if code != EXIT_OK:
             return finish(code)
 
         step(f"convert: {fmt} に変換")
-        return finish(run_convert(
-            trimmed_dir, out, fmt, name=title, config=cfg,
-            ocr_workers=ocr_workers, faithful=faithful, no_cleanup=no_cleanup,
-            split_words=split_words, source=(asin or None), emit=emit,
-        ))
+        return finish(
+            run_convert(
+                trimmed_dir,
+                out,
+                fmt,
+                name=title,
+                config=cfg,
+                ocr_workers=ocr_workers,
+                faithful=faithful,
+                no_cleanup=no_cleanup,
+                split_words=split_words,
+                source=(asin or None),
+                emit=emit,
+            )
+        )
     finally:
         allow_sleep()
 
@@ -653,6 +772,7 @@ def run_book(*, title, output, profile_key="kindle_cloud", asin=None, url=None,
 # ============================================================
 # batch (複数冊を一括実行)
 # ============================================================
+
 
 def _v_str(v):
     if isinstance(v, str) and v.strip():
@@ -684,6 +804,7 @@ def _v_choice(choices):
         if isinstance(v, str) and v in choices:
             return v, None
         return None, f"次のいずれかを指定してください: {', '.join(choices)}"
+
     return check
 
 
@@ -751,8 +872,7 @@ def _coerce_book(entry, human_index):
     unknown = set(entry) - _BOOK_ALLOWED_KEYS
     if unknown:
         return None, (
-            f"{label}: 未知のキー {sorted(unknown)}"
-            f"（指定可能: {sorted(_BOOK_ALLOWED_KEYS)}）"
+            f"{label}: 未知のキー {sorted(unknown)}（指定可能: {sorted(_BOOK_ALLOWED_KEYS)}）"
         )
 
     kwargs = {}
@@ -802,8 +922,9 @@ def load_batch_file(path, emit=null_emit):
     if isinstance(data, dict) and "books" in data:
         data = data["books"]
     if not isinstance(data, list):
-        emit_error(emit, "batch ファイルは本オブジェクトの配列、"
-                         "または {\"books\": [...]} 形式にしてください")
+        emit_error(
+            emit, 'batch ファイルは本オブジェクトの配列、または {"books": [...]} 形式にしてください'
+        )
         return None, EXIT_BAD_ARGS
     if not data:
         emit_error(emit, "batch ファイルに本が1冊もありません")
@@ -851,8 +972,16 @@ def _batch_output_path(out, title, fmt):
     return path
 
 
-def run_batch(books, *, output, defaults=None, overwrite=False,
-              stop_on_error=False, config=None, emit=null_emit):
+def run_batch(
+    books,
+    *,
+    output,
+    defaults=None,
+    overwrite=False,
+    stop_on_error=False,
+    config=None,
+    emit=null_emit,
+):
     """検証済みの本リストを1冊ずつ run_book で通し実行する。
 
     各本は ``{**defaults, **book}`` で run_book を呼ぶ（本ごとの設定が
@@ -880,14 +1009,12 @@ def run_batch(books, *, output, defaults=None, overwrite=False,
     out = os.path.abspath(output)
     total = len(books)
 
-    emit("batch_start", human=f"バッチ開始: {total} 冊 → {out}",
-         total_books=total, output=out)
+    emit("batch_start", human=f"バッチ開始: {total} 冊 → {out}", total_books=total, output=out)
 
     # 本と本の間も含めてバッチ全体で画面消灯を抑止する (run_book と同趣旨)
     prevent_sleep()
     try:
-        return _run_batch_impl(books, out, defaults, cfg, overwrite,
-                               stop_on_error, emit)
+        return _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit)
     finally:
         allow_sleep()
 
@@ -905,42 +1032,75 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
 
         # 完成済み（出力ファイルが既にある）本はスキップして再開できる
         if not overwrite and os.path.exists(output_path):
-            emit("book_skipped",
-                 human=f"##### [{i}/{total}] スキップ（出力済み）: {title} #####",
-                 index=i, total=total, asin=asin, title=title,
-                 output=output_path, reason="exists")
-            results.append({"asin": asin, "title": title, "exit_code": EXIT_OK,
-                            "ok": True, "skipped": True, "output": output_path})
+            emit(
+                "book_skipped",
+                human=f"##### [{i}/{total}] スキップ（出力済み）: {title} #####",
+                index=i,
+                total=total,
+                asin=asin,
+                title=title,
+                output=output_path,
+                reason="exists",
+            )
+            results.append(
+                {
+                    "asin": asin,
+                    "title": title,
+                    "exit_code": EXIT_OK,
+                    "ok": True,
+                    "skipped": True,
+                    "output": output_path,
+                }
+            )
             continue
 
-        emit("book_start",
-             human=f"##### [{i}/{total}] {ref} {title} ({fmt}) #####",
-             index=i, total=total, asin=asin, title=title, format=fmt)
+        emit(
+            "book_start",
+            human=f"##### [{i}/{total}] {ref} {title} ({fmt}) #####",
+            index=i,
+            total=total,
+            asin=asin,
+            title=title,
+            format=fmt,
+        )
 
         # 実行する本は「未完成」なので、途中で終わった残骸画像は消して作り直す
         # （run_book の overwrite。完成済みのスキップ判定はバッチ側で済ませている）
         try:
-            code = run_book(output=out, config=cfg, emit=emit,
-                            overwrite=True, **merged)
+            code = run_book(output=out, config=cfg, emit=emit, overwrite=True, **merged)
         except Exception as e:  # noqa: BLE001 - 1冊の想定外エラーでバッチを止めない
             emit_error(emit, f"予期しないエラー: {e}")
             code = EXIT_ERROR
 
-        ok = (code == EXIT_OK)
+        ok = code == EXIT_OK
         # 分割 Markdown 出力なら実体は <title>_1.md。実行後に取り直す
         output_path = _batch_output_path(out, title, fmt)
-        results.append({"asin": asin, "title": title, "exit_code": code,
-                        "ok": ok, "skipped": False,
-                        "output": output_path if ok else None})
-        emit("book_result",
-             human=f"[{i}/{total}] {'OK' if ok else 'NG'} {title} (exit {code})",
-             index=i, total=total, asin=asin, title=title,
-             exit_code=code, ok=ok, output=output_path if ok else None)
+        results.append(
+            {
+                "asin": asin,
+                "title": title,
+                "exit_code": code,
+                "ok": ok,
+                "skipped": False,
+                "output": output_path if ok else None,
+            }
+        )
+        emit(
+            "book_result",
+            human=f"[{i}/{total}] {'OK' if ok else 'NG'} {title} (exit {code})",
+            index=i,
+            total=total,
+            asin=asin,
+            title=title,
+            exit_code=code,
+            ok=ok,
+            output=output_path if ok else None,
+        )
 
         if not ok and stop_on_error:
-            emit("status",
-                 human="--stop-on-error によりバッチを中断します",
-                 message="stop_on_error")
+            emit(
+                "status", human="--stop-on-error によりバッチを中断します", message="stop_on_error"
+            )
             break
 
     return _emit_batch_summary(emit, results, total)
@@ -959,14 +1119,19 @@ def _emit_batch_summary(emit, results, total):
         + f"（全 {total} 冊）"
     ]
     for r in failures:
-        lines.append(f"  NG {r['asin'] or r['title']} {r['title']} "
-                     f"(exit {r['exit_code']})")
+        lines.append(f"  NG {r['asin'] or r['title']} {r['title']} (exit {r['exit_code']})")
 
-    emit("batch_summary", human="\n".join(lines),
-         ok=(not failures), total=total,
-         succeeded=succeeded, failed=len(failures),
-         skipped=skipped, unprocessed=unprocessed,
-         results=results)
+    emit(
+        "batch_summary",
+        human="\n".join(lines),
+        ok=(not failures),
+        total=total,
+        succeeded=succeeded,
+        failed=len(failures),
+        skipped=skipped,
+        unprocessed=unprocessed,
+        results=results,
+    )
     return EXIT_OK if not failures else EXIT_ERROR
 
 
@@ -974,8 +1139,8 @@ def _emit_batch_summary(emit, results, total):
 # validate
 # ============================================================
 
-def run_validate(input_folder, *, expect_pages=None, strict=False,
-                 emit=null_emit):
+
+def run_validate(input_folder, *, expect_pages=None, strict=False, emit=null_emit):
     """キャプチャ結果を機械検証する（白紙・重複・サイズ違い・ページ数）。
 
     Args:
@@ -996,7 +1161,8 @@ def run_validate(input_folder, *, expect_pages=None, strict=False,
 
     try:
         report = analyze_folder(
-            input_folder, on_progress=phase_progress(emit, "validate"),
+            input_folder,
+            on_progress=phase_progress(emit, "validate"),
         )
     except PageReadError as e:
         emit_error(emit, str(e))
@@ -1008,20 +1174,20 @@ def run_validate(input_folder, *, expect_pages=None, strict=False,
     common_size = report["common_size"]
 
     count = len(report["files"])
-    count_shortfall = (
-        expect_pages is not None and count < expect_pages
-    )
+    count_shortfall = expect_pages is not None and count < expect_pages
 
     warnings = []
     if blank_pages:
-        warnings.append(f"一様なページ (白紙/真っ黒) {len(blank_pages)} 枚: "
-                        + ", ".join(blank_pages[:10]))
+        warnings.append(
+            f"一様なページ (白紙/真っ黒) {len(blank_pages)} 枚: " + ", ".join(blank_pages[:10])
+        )
     if near_duplicates:
         pairs = ", ".join("/".join(d["pages"]) for d in near_duplicates[:10])
         warnings.append(f"ほぼ同一の隣接ページ {len(near_duplicates)} 組: {pairs}")
     if size_mismatch:
-        warnings.append(f"サイズが他と異なるページ {len(size_mismatch)} 枚: "
-                        + ", ".join(size_mismatch[:10]))
+        warnings.append(
+            f"サイズが他と異なるページ {len(size_mismatch)} 枚: " + ", ".join(size_mismatch[:10])
+        )
 
     errors = []
     if count_shortfall:

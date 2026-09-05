@@ -52,9 +52,7 @@ def test_register_japanese_font_falls_back(font_cache_reset, monkeypatch):
     assert pdf_builder.register_japanese_font() == pdf_builder.FALLBACK_FONT_NAME
 
 
-def test_register_japanese_font_skips_unreadable_candidate(
-    font_cache_reset, monkeypatch, tmp_path
-):
+def test_register_japanese_font_skips_unreadable_candidate(font_cache_reset, monkeypatch, tmp_path):
     """壊れた候補は飛ばして次の候補を使う。"""
     broken = tmp_path / "broken.ttc"
     broken.write_bytes(b"not a font")
@@ -70,7 +68,9 @@ def test_searchable_pdf_text_is_extractable(font_cache_reset, image_folder, tmp_
     """検索可能PDFの日本語テキストが pypdfium2 で抽出できる。"""
     out = tmp_path / "searchable.pdf"
     ok, msg = pdf_builder.images_to_searchable_pdf(
-        str(image_folder), [("001.png", SAMPLE_TEXT)], str(out),
+        str(image_folder),
+        [("001.png", SAMPLE_TEXT)],
+        str(out),
     )
     assert ok, msg
 
@@ -83,7 +83,9 @@ def test_searchable_pdf_embeds_font_file(font_cache_reset, image_folder, tmp_pat
     """生成PDFに TrueType 埋め込み (/FontFile2) が含まれる。"""
     out = tmp_path / "searchable.pdf"
     ok, msg = pdf_builder.images_to_searchable_pdf(
-        str(image_folder), [("001.png", SAMPLE_TEXT)], str(out),
+        str(image_folder),
+        [("001.png", SAMPLE_TEXT)],
+        str(out),
     )
     assert ok, msg
     assert b"/FontFile2" in out.read_bytes()
@@ -96,7 +98,9 @@ def test_searchable_pdf_fallback_still_builds(
     monkeypatch.setattr(pdf_builder, "JAPANESE_FONT_CANDIDATES", [])
     out = tmp_path / "fallback.pdf"
     ok, msg = pdf_builder.images_to_searchable_pdf(
-        str(image_folder), [("001.png", SAMPLE_TEXT)], str(out),
+        str(image_folder),
+        [("001.png", SAMPLE_TEXT)],
+        str(out),
     )
     assert ok, msg
     assert out.exists()

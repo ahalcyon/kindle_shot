@@ -111,14 +111,19 @@ class WizardStep(ctk.CTkFrame):
         if not self.heading:
             return
         ctk.CTkLabel(
-            self, text=self.heading,
+            self,
+            text=self.heading,
             font=ctk.CTkFont(size=theme.FONT_SIZE_HEADING, weight="bold"),
             anchor="w",
         ).pack(fill="x", padx=theme.PAD_X, pady=(theme.PAD_Y, 2))
         if self.description:
             ctk.CTkLabel(
-                self, text=self.description, text_color=theme.MUTED_COLOR,
-                anchor="w", justify="left", wraplength=860,
+                self,
+                text=self.description,
+                text_color=theme.MUTED_COLOR,
+                anchor="w",
+                justify="left",
+                wraplength=860,
             ).pack(fill="x", padx=theme.PAD_X, pady=(0, theme.PAD_Y))
 
     def goto(self, step_id):
@@ -128,9 +133,13 @@ class WizardStep(ctk.CTkFrame):
     def add_left_button(self, text, command, *, width=110):
         """フッター左端にサブ導線のボタンを置く（「戻る」と同じ見た目）。"""
         btn = ctk.CTkButton(
-            self.footer, text=text, width=width,
-            fg_color="transparent", border_width=1,
-            text_color=theme.text_color(), command=command,
+            self.footer,
+            text=text,
+            width=width,
+            fg_color="transparent",
+            border_width=1,
+            text_color=theme.text_color(),
+            command=command,
         )
         btn.pack(side="left", padx=(0, theme.PAD_SMALL))
         return btn
@@ -147,12 +156,17 @@ class WizardStep(ctk.CTkFrame):
         kwargs = {}
         if not primary:
             kwargs = {
-                "fg_color": "transparent", "border_width": 1,
+                "fg_color": "transparent",
+                "border_width": 1,
                 "text_color": theme.text_color(),
             }
         btn = ctk.CTkButton(
-            self.footer, text=text, width=width, height=36,
-            command=command, **kwargs,
+            self.footer,
+            text=text,
+            width=width,
+            height=36,
+            command=command,
+            **kwargs,
         )
         btn.pack(side="right", padx=(theme.PAD_SMALL, 0))
         return btn

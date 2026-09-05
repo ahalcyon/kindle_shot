@@ -89,11 +89,15 @@ class CaptureStep(WizardStep):
 
         # 1. サイト
         ctk.CTkLabel(form, text="サイト:", anchor="w").grid(
-            row=0, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6)
+            row=0, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6
+        )
         self.profile_label_var = tk.StringVar()
         self.profile_combo = ctk.CTkComboBox(
-            form, variable=self.profile_label_var, values=[""],
-            state="readonly", command=self._on_profile_changed,
+            form,
+            variable=self.profile_label_var,
+            values=[""],
+            state="readonly",
+            command=self._on_profile_changed,
         )
         self.profile_combo.grid(row=0, column=1, columnspan=2, sticky="ew", pady=6)
 
@@ -101,63 +105,91 @@ class CaptureStep(WizardStep):
         self.keyword_label = ctk.CTkLabel(form, text="本のタイトルの一部:", anchor="w")
         self.keyword_var = tk.StringVar()
         self.keyword_entry = ctk.CTkEntry(
-            form, textvariable=self.keyword_var,
+            form,
+            textvariable=self.keyword_var,
             placeholder_text="ビューアのウィンドウ名に出ている書名の一部",
         )
         self.keyword_hint = ctk.CTkLabel(
             form,
             text="このビューアは本ごとにウィンドウ名が変わるため、対象の本を特定する言葉が要ります。",
-            text_color=theme.MUTED_COLOR, anchor="w", justify="left", wraplength=820,
+            text_color=theme.MUTED_COLOR,
+            anchor="w",
+            justify="left",
+            wraplength=820,
         )
         self._keyword_widgets = (
-            (self.keyword_label, {"row": 1, "column": 0, "sticky": "w",
-                                  "padx": (0, theme.PAD_SMALL), "pady": 6}),
-            (self.keyword_entry, {"row": 1, "column": 1, "columnspan": 2,
-                                  "sticky": "ew", "pady": 6}),
-            (self.keyword_hint, {"row": 2, "column": 1, "columnspan": 2,
-                                 "sticky": "w", "pady": (0, 6)}),
+            (
+                self.keyword_label,
+                {"row": 1, "column": 0, "sticky": "w", "padx": (0, theme.PAD_SMALL), "pady": 6},
+            ),
+            (
+                self.keyword_entry,
+                {"row": 1, "column": 1, "columnspan": 2, "sticky": "ew", "pady": 6},
+            ),
+            (
+                self.keyword_hint,
+                {"row": 2, "column": 1, "columnspan": 2, "sticky": "w", "pady": (0, 6)},
+            ),
         )
 
         # 3. 保存する本のタイトル
         ctk.CTkLabel(form, text="保存する本のタイトル:", anchor="w").grid(
-            row=3, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6)
+            row=3, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6
+        )
         self.title_var = tk.StringVar()
         ctk.CTkEntry(form, textvariable=self.title_var).grid(
-            row=3, column=1, columnspan=2, sticky="ew", pady=6)
+            row=3, column=1, columnspan=2, sticky="ew", pady=6
+        )
 
         # 4. 保存先フォルダ
         ctk.CTkLabel(form, text="保存先フォルダ:", anchor="w").grid(
-            row=4, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6)
+            row=4, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6
+        )
         self.folder_var = tk.StringVar()
-        ctk.CTkEntry(form, textvariable=self.folder_var).grid(
-            row=4, column=1, sticky="ew", pady=6)
+        ctk.CTkEntry(form, textvariable=self.folder_var).grid(row=4, column=1, sticky="ew", pady=6)
         ctk.CTkButton(
-            form, text="参照", width=170,
+            form,
+            text="参照",
+            width=170,
             command=lambda: browse_folder_into(self.folder_var),
         ).grid(row=4, column=2, padx=(theme.PAD_SMALL, 0), pady=6)
 
         ctk.CTkLabel(
-            form, text=SAVE_FOLDER_HELP, text_color=theme.MUTED_COLOR,
-            anchor="w", justify="left", wraplength=820,
+            form,
+            text=SAVE_FOLDER_HELP,
+            text_color=theme.MUTED_COLOR,
+            anchor="w",
+            justify="left",
+            wraplength=820,
         ).grid(row=5, column=1, columnspan=2, sticky="w", pady=(0, 6))
 
         # 5. ページ送り
         ctk.CTkLabel(form, text="ページ送り:", anchor="w").grid(
-            row=6, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6)
+            row=6, column=0, sticky="w", padx=(0, theme.PAD_SMALL), pady=6
+        )
         self.page_turn_label_var = tk.StringVar(value=_LABEL_BY_KEY["right"])
         self.page_turn_combo = ctk.CTkComboBox(
-            form, variable=self.page_turn_label_var,
-            values=[label for _, label in PAGE_TURN_CHOICES], state="readonly",
+            form,
+            variable=self.page_turn_label_var,
+            values=[label for _, label in PAGE_TURN_CHOICES],
+            state="readonly",
         )
         self.page_turn_combo.grid(row=6, column=1, sticky="ew", pady=6)
         self.probe_btn = ctk.CTkButton(
-            form, text="自動で調べる", width=170, command=self._start_probe,
+            form,
+            text="自動で調べる",
+            width=170,
+            command=self._start_probe,
         )
         self.probe_btn.grid(row=6, column=2, padx=(theme.PAD_SMALL, 0), pady=6)
 
         ctk.CTkLabel(
-            form, text=PROBE_NOTE, text_color=theme.MUTED_COLOR,
-            anchor="w", justify="left", wraplength=820,
+            form,
+            text=PROBE_NOTE,
+            text_color=theme.MUTED_COLOR,
+            anchor="w",
+            justify="left",
+            wraplength=820,
         ).grid(row=7, column=1, columnspan=2, sticky="w", pady=(0, 6))
 
         # 開始前ガイダンス（実行中は隠してログ欄に高さを譲る。_set_running 参照）
@@ -165,24 +197,30 @@ class CaptureStep(WizardStep):
         self._guide_pack = dict(fill="x", padx=theme.PAD_X, pady=(theme.PAD_Y, 0))
         guide.pack(**self._guide_pack)
         ctk.CTkLabel(
-            guide, text=START_GUIDE, anchor="w", justify="left", wraplength=840,
+            guide,
+            text=START_GUIDE,
+            anchor="w",
+            justify="left",
+            wraplength=840,
         ).pack(fill="x", padx=theme.PAD_X, pady=(theme.PAD_SMALL, 2))
         self.profile_note = ctk.CTkLabel(
-            guide, text="", text_color=theme.MUTED_COLOR,
-            anchor="w", justify="left", wraplength=840,
+            guide,
+            text="",
+            text_color=theme.MUTED_COLOR,
+            anchor="w",
+            justify="left",
+            wraplength=840,
         )
         self.profile_note.pack(fill="x", padx=theme.PAD_X, pady=(0, theme.PAD_SMALL))
 
         # 進捗・ログ
         self.progress = ProgressPanel(self)
-        self.progress.pack(fill="both", expand=True,
-                           padx=theme.PAD_X, pady=theme.PAD_Y)
+        self.progress.pack(fill="both", expand=True, padx=theme.PAD_X, pady=theme.PAD_Y)
 
     def build_footer(self):
         self.back_btn = self.add_back_button(STEP_HOME)
         self.start_btn = self.add_action_button("キャプチャ開始", self._start_capture)
-        self.stop_btn = self.add_action_button(
-            "停止", self._stop_capture, primary=False, width=110)
+        self.stop_btn = self.add_action_button("停止", self._stop_capture, primary=False, width=110)
         self.stop_btn.configure(state="disabled")
 
     # --- 表示更新 ---
@@ -192,8 +230,7 @@ class CaptureStep(WizardStep):
         self._refresh_profiles()
         if not self.folder_var.get():
             last = self.config_data.get("gui", {}).get("last_save_folder", "")
-            self.folder_var.set(
-                self.wizard.save_folder or last or default_save_folder())
+            self.folder_var.set(self.wizard.save_folder or last or default_save_folder())
 
     def on_reset(self):
         # 保存先フォルダは覚えておき、本ごとに変わる値だけ消す
@@ -211,8 +248,7 @@ class CaptureStep(WizardStep):
             return
         keys = [key for key, _label in self._choices]
         if selected not in keys:
-            selected = self.config_data.get("capture", {}).get(
-                "active_profile", keys[0])
+            selected = self.config_data.get("capture", {}).get("active_profile", keys[0])
             if selected not in keys:
                 selected = keys[0]
         self.profile_label_var.set(labels[keys.index(selected)])
@@ -303,14 +339,15 @@ class CaptureStep(WizardStep):
         self.progress.log("ページ送りキーの自動判定を開始します")
 
         root = self.winfo_toplevel()
-        emitter = GuiEmitter(root, log=self.progress.log_text,
-                             status_var=self.progress.status_var)
+        emitter = GuiEmitter(root, log=self.progress.log_text, status_var=self.progress.status_var)
 
         def thread():
             try:
                 found = probe_page_turn_key(
-                    profile, stop_event=self._stop_event,
-                    strict_process=False, emit=emitter,
+                    profile,
+                    stop_event=self._stop_event,
+                    strict_process=False,
+                    emit=emitter,
                 )
             except Exception as e:
                 emitter("error", human=f"エラー: {e}", message=str(e))
@@ -325,7 +362,8 @@ class CaptureStep(WizardStep):
         if found:
             self._set_page_turn(found)
             self.progress.status_var.set(
-                f"ページ送りキーを {_LABEL_BY_KEY.get(found, found)} に設定しました")
+                f"ページ送りキーを {_LABEL_BY_KEY.get(found, found)} に設定しました"
+            )
         else:
             self.progress.status_var.set("ページ送りキーを特定できませんでした")
             messagebox.showwarning(
@@ -357,8 +395,7 @@ class CaptureStep(WizardStep):
         try:
             os.makedirs(save_folder, exist_ok=True)
         except OSError as e:
-            messagebox.showerror(
-                "エラー", f"保存先フォルダを作成できません:\n{save_folder}\n{e}")
+            messagebox.showerror("エラー", f"保存先フォルダを作成できません:\n{save_folder}\n{e}")
             return
 
         # 前回の残骸が混ざるのを防ぐため、既存画像がある場合は確認してから消す
@@ -390,24 +427,26 @@ class CaptureStep(WizardStep):
         self._start_wait_countdown(profile.fullscreen_wait)
 
         root = self.winfo_toplevel()
-        emitter = GuiEmitter(root, log=self.progress.log_text,
-                             status_var=self.progress.status_var)
+        emitter = GuiEmitter(root, log=self.progress.log_text, status_var=self.progress.status_var)
 
         def thread():
             # GUI は人間が画面を見ている前提なのでプロセス名照合は警告のみ
             # (strict_process=False)。manifest.json とスリープ抑止は CLI と共通。
             try:
                 code = run_capture(
-                    profile, title, save_folder,
-                    profile_key=key, overwrite=overwrite,
-                    stop_event=self._stop_event, strict_process=False,
+                    profile,
+                    title,
+                    save_folder,
+                    profile_key=key,
+                    overwrite=overwrite,
+                    stop_event=self._stop_event,
+                    strict_process=False,
                     emit=emitter,
                 )
             except Exception as e:
                 emitter("error", human=f"エラー: {e}", message=str(e))
                 code = -1
-            root.after(0, lambda: self._on_capture_done(code, title,
-                                                        save_folder, emitter))
+            root.after(0, lambda: self._on_capture_done(code, title, save_folder, emitter))
 
         run_in_thread(thread)
 
@@ -457,5 +496,6 @@ class CaptureStep(WizardStep):
         self.wizard.title = title
         self.wizard.save_folder = save_folder
         self.wizard.image_folder = emitter.result_fields.get(
-            "save_dir", os.path.join(save_folder, title))
+            "save_dir", os.path.join(save_folder, title)
+        )
         self.goto(STEP_TRIM)

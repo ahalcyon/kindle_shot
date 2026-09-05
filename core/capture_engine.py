@@ -25,8 +25,10 @@ def _changed_ratio(gray_a, gray_b, pixel_thresh=20):
     弧の移動分だけ非ゼロになる。本物のページ遷移では大きく変わる。
     全画面平均や最大差より、細い動きと本物の変化を分離しやすい (実測で確認)。
     """
-    return float((np.abs(gray_a.astype(np.float32) - gray_b.astype(np.float32))
-                  > pixel_thresh).mean()) * 100.0
+    return (
+        float((np.abs(gray_a.astype(np.float32) - gray_b.astype(np.float32)) > pixel_thresh).mean())
+        * 100.0
+    )
 
 
 def _imwrite_unicode(filepath, image):
@@ -60,8 +62,9 @@ def _imwrite_unicode(filepath, image):
 class CaptureEngine:
     """ページ自動キャプチャエンジン"""
 
-    def __init__(self, profile, on_page_captured=None, on_status=None, on_complete=None,
-                 exclude_pid=None):
+    def __init__(
+        self, profile, on_page_captured=None, on_status=None, on_complete=None, exclude_pid=None
+    ):
         """
         Args:
             profile: CaptureProfile インスタンス
@@ -188,11 +191,21 @@ class CaptureEngine:
                 # 待つ専用ロジック、それ以外は従来の「変化したら即」ロジックを使う。
                 if self.profile.settle_enabled:
                     ss, page_changed, terminated = self._wait_stable_page(
-                        old, lft, rht, page, start, save_dir,
+                        old,
+                        lft,
+                        rht,
+                        page,
+                        start,
+                        save_dir,
                     )
                 else:
                     ss, page_changed, terminated = self._wait_changed_page(
-                        old, lft, rht, page, start, save_dir,
+                        old,
+                        lft,
+                        rht,
+                        page,
+                        start,
+                        save_dir,
                     )
                 if terminated:
                     return
@@ -337,10 +350,7 @@ class CaptureEngine:
                 self._last_settle_grabs = grabs
 
                 # 前ページから変化したか (スピナー画面も本物次ページも変化扱い)
-                changed = (
-                    _changed_ratio(old_gray, gray)
-                    > self.profile.settle_change_threshold
-                )
+                changed = _changed_ratio(old_gray, gray) > self.profile.settle_change_threshold
 
                 if changed:
                     # ページは変わった。あとはロード完了 (静止) を待つ。
@@ -348,8 +358,7 @@ class CaptureEngine:
                     if change_start is None:
                         change_start = time.perf_counter()
                     if last_gray is not None and (
-                        _changed_ratio(gray, last_gray)
-                        < self.profile.settle_threshold
+                        _changed_ratio(gray, last_gray) < self.profile.settle_threshold
                     ):
                         stable += 1
                     else:

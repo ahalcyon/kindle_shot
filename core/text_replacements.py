@@ -54,7 +54,7 @@ class Replacer:
         self._literal = items
 
         compiled = []
-        for entry in (regex or []):
+        for entry in regex or []:
             try:
                 pat = re.compile(entry["pattern"])
             except (KeyError, re.error):

@@ -20,12 +20,14 @@ from core.pipeline import (
 def _collect_emit(events):
     def emit(event, human=None, **fields):
         events.append({"event": event, "human": human, **fields})
+
     return emit
 
 
 # ------------------------------------------------------------
 # relax_margins（トリム緩め方の唯一の式）
 # ------------------------------------------------------------
+
 
 def test_relax_margins_subtracts_safety():
     assert relax_margins((50, 50, 60, 60), safety=8) == (42, 42, 52, 52)
@@ -37,8 +39,7 @@ def test_relax_margins_clamps_to_zero():
 
 def test_relax_margins_applies_min_margins():
     # 検出値-8 と min_margins の大きい方
-    assert relax_margins((50, 50, 60, 60), safety=8,
-                         min_margins=(0, 0, 80, 80)) == (42, 42, 80, 80)
+    assert relax_margins((50, 50, 60, 60), safety=8, min_margins=(0, 0, 80, 80)) == (42, 42, 80, 80)
 
 
 def test_relax_margins_none_min_margins():
@@ -48,6 +49,7 @@ def test_relax_margins_none_min_margins():
 # ------------------------------------------------------------
 # check_input_folder / clear_output_images
 # ------------------------------------------------------------
+
 
 def test_check_input_folder_ok(pages_folder):
     events = []
@@ -101,20 +103,23 @@ def test_clear_output_images_no_folder_is_ok(tmp_path):
 # run_trim を GUI 相当の呼び方 (emit 省略・タプル引数) で実行
 # ------------------------------------------------------------
 
+
 def test_run_trim_with_explicit_margins_no_emit(pages_folder, tmp_path):
     out = tmp_path / "out"
-    code = run_trim(str(pages_folder), str(out),
-                    margins=(10, 10, 10, 10), no_check=True)
+    code = run_trim(str(pages_folder), str(out), margins=(10, 10, 10, 10), no_check=True)
     assert code == EXIT_OK
     assert sorted(p.name for p in out.glob("*.png")) == [
-        "page_001.png", "page_002.png", "page_003.png",
+        "page_001.png",
+        "page_002.png",
+        "page_003.png",
     ]
 
 
 def test_run_trim_auto_detect_events(pages_folder, tmp_path):
     events = []
-    code = run_trim(str(pages_folder), str(tmp_path / "out"),
-                    margins=None, safety=8, emit=_collect_emit(events))
+    code = run_trim(
+        str(pages_folder), str(tmp_path / "out"), margins=None, safety=8, emit=_collect_emit(events)
+    )
     assert code == EXIT_OK
     detected = [e for e in events if e["event"] == "margins_detected"][0]
     assert detected["margins"] == [42, 42, 52, 52]
@@ -122,14 +127,12 @@ def test_run_trim_auto_detect_events(pages_folder, tmp_path):
     assert detected["report"]["outliers"] == []
     assert detected["variation_applied"] == [False, False, False, False]
     assert detected["report"]["variation"]["reason"] == "too_few_pages"
-    assert "ページ数が 8 枚未満のため、ビューアのUI帯の自動検出は行いません" \
-        in detected["human"]
+    assert "ページ数が 8 枚未満のため、ビューアのUI帯の自動検出は行いません" in detected["human"]
     # 切れるページがなければ passthrough イベントは出ない
     assert not [e for e in events if e["event"] == "passthrough_pages"]
 
 
-def test_run_trim_reports_applied_and_rejected_variation_sides(
-        tmp_path, monkeypatch):
+def test_run_trim_reports_applied_and_rejected_variation_sides(tmp_path, monkeypatch):
     from core import boundary_detector
 
     folder = tmp_path / "pages"
@@ -157,7 +160,10 @@ def test_run_trim_reports_applied_and_rejected_variation_sides(
 
     events = []
     code = run_trim(
-        str(folder), margins=None, safety=0, dry_run=True,
+        str(folder),
+        margins=None,
+        safety=0,
+        dry_run=True,
         emit=_collect_emit(events),
     )
 
@@ -176,8 +182,7 @@ def test_run_trim_auto_passes_through_full_bleed_cover(cover_folder, tmp_path):
 
     out = tmp_path / "out"
     events = []
-    code = run_trim(str(cover_folder), str(out), margins=None, safety=8,
-                    emit=_collect_emit(events))
+    code = run_trim(str(cover_folder), str(out), margins=None, safety=8, emit=_collect_emit(events))
     assert code == EXIT_OK
 
     detected = [e for e in events if e["event"] == "margins_detected"][0]

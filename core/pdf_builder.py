@@ -30,8 +30,8 @@ from core.image_files import PDF_IMAGE_EXTENSIONS, list_images
 # 埋め込み用の日本語 TrueType 候補 (path, subfontIndex)。上から順に試す。
 JAPANESE_FONT_CANDIDATES = [
     (r"C:\Windows\Fonts\msgothic.ttc", 0),  # MS ゴシック
-    (r"C:\Windows\Fonts\YuGothM.ttc", 0),   # 游ゴシック Medium
-    (r"C:\Windows\Fonts\meiryo.ttc", 0),    # メイリオ
+    (r"C:\Windows\Fonts\YuGothM.ttc", 0),  # 游ゴシック Medium
+    (r"C:\Windows\Fonts\meiryo.ttc", 0),  # メイリオ
 ]
 
 # 埋め込みに成功したときの reportlab 上のフォント名
@@ -127,8 +127,8 @@ def images_to_pdf(folder_path, output_folder, output_filename, on_progress=None,
     if not image_files:
         return False, "指定されたフォルダに画像ファイルが見つかりません。"
 
-    if not output_filename.lower().endswith('.pdf'):
-        output_filename += '.pdf'
+    if not output_filename.lower().endswith(".pdf"):
+        output_filename += ".pdf"
 
     os.makedirs(output_folder, exist_ok=True)
     output_pdf = os.path.join(output_folder, output_filename)
@@ -180,8 +180,8 @@ def images_to_searchable_pdf(image_folder, results, output_path, on_progress=Non
     if not results:
         return False, "変換するデータがありません。"
 
-    if not output_path.lower().endswith('.pdf'):
-        output_path += '.pdf'
+    if not output_path.lower().endswith(".pdf"):
+        output_path += ".pdf"
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -253,8 +253,8 @@ def text_to_pdf(results, output_path, on_progress=None, chapters=None):
     if not results:
         return False, "変換するデータがありません。"
 
-    if not output_path.lower().endswith('.pdf'):
-        output_path += '.pdf'
+    if not output_path.lower().endswith(".pdf"):
+        output_path += ".pdf"
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -264,7 +264,7 @@ def text_to_pdf(results, output_path, on_progress=None, chapters=None):
 
         # スタイル定義
         heading_style = ParagraphStyle(
-            'JaHeading',
+            "JaHeading",
             fontName=font_name,
             fontSize=14,
             leading=20,
@@ -272,7 +272,7 @@ def text_to_pdf(results, output_path, on_progress=None, chapters=None):
             spaceBefore=15,
         )
         body_style = ParagraphStyle(
-            'JaBody',
+            "JaBody",
             fontName=font_name,
             fontSize=10,
             leading=16,

@@ -58,9 +58,7 @@ def test_load_config_returns_defaults_when_missing(isolated_config):
 
 
 def test_load_config_merges_partial_user_config(isolated_config):
-    isolated_config.write_text(
-        json.dumps({"ocr": {"workers": 4}}), encoding="utf-8"
-    )
+    isolated_config.write_text(json.dumps({"ocr": {"workers": 4}}), encoding="utf-8")
     cfg = load_config()
     # ユーザー設定が優先される
     assert cfg["ocr"]["workers"] == 4
