@@ -44,6 +44,26 @@ EXIT_BAD_ARGS = 2
 # ------------------------------------------------------------
 
 
+def load_dotenv(path=None):
+    """リポジトリ直下の .env を環境変数へ読み込む（既存の値は上書きしない）。
+
+    .env は .gitignore 済み。ひな形は .env.example。
+    """
+    path = path or os.path.join(REPO_ROOT, ".env")
+    if not os.path.exists(path):
+        return False
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            value = value.strip()
+            if value:
+                os.environ.setdefault(key.strip(), value)
+    return True
+
+
 def capture_dir(out, title=TITLE):
     """キャプチャ画像と manifest.json が置かれるフォルダ。"""
     return os.path.join(out, title)
@@ -212,6 +232,8 @@ def main(argv=None):
         prog="smoke_capture",
         description="Kindle Cloud Reader で数ページだけ取って PDF まで通す実機スモーク",
     )
+    # .env の値も使えるようにする（.env.example がひな形）
+    load_dotenv()
     parser.add_argument(
         "--asin",
         default=os.environ.get("KINDLE_SHOT_SMOKE_ASIN", ""),

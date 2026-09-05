@@ -292,6 +292,12 @@ kindle_env\Scripts\python.exe -m playwright install chromium
 `KINDLE_SHOT_AMAZON_PASSWORD` を使って自動でサインインします
 （`.env` は `.gitignore` 済み。値はログに出ません）。
 
+`.env` は `.env.example` をコピーして作ります。
+
+```
+copy .env.example .env
+```
+
 ### `trim`
 
 | オプション | 意味 |

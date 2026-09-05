@@ -43,7 +43,10 @@ def load_dotenv(path=None):
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip())
+            value = value.strip()
+            # .env.example は値が空なので、空は未設定として扱う
+            if value:
+                os.environ.setdefault(key.strip(), value)
     return True
 
 
