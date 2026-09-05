@@ -254,6 +254,31 @@ def cmd_capture(args, rep):
 # ============================================================
 
 
+def cmd_headless(args, rep):
+    from core.capture_profiles import get_profile
+    from core.config import load_config
+    from core.headless_capture import run_headless_capture
+
+    profile = get_profile(args.profile, load_config())
+    if profile is None:
+        rep.error(f"プロファイルが見つかりません: {args.profile}")
+        return EXIT_BAD_ARGS
+    return run_headless_capture(
+        profile,
+        args.title,
+        args.output,
+        asin=args.asin,
+        url=args.url,
+        profile_key=args.profile,
+        max_pages=args.max_pages,
+        page_wait=args.page_wait,
+        page_turn=args.page_turn,
+        overwrite=args.overwrite,
+        headless=not args.headed,
+        emit=rep.event,
+    )
+
+
 def cmd_pdf(args, rep):
     """外部PDF（自炊スキャン・購入済PDF）を1ページずつ画像に展開する。
 
@@ -896,6 +921,52 @@ def build_parser():
         "--overwrite", action="store_true", help="出力フォルダの既存画像を削除してから実行する"
     )
     p_pdf.set_defaults(func=cmd_pdf)
+
+    p_head = sub.add_parser(
+        "headless",
+        parents=[common],
+        help="headless ブラウザで本を開いてキャプチャする（画面もセッションも不要）",
+    )
+    p_head.add_argument("--asin", help="対象の ASIN")
+    p_head.add_argument("--url", help="開く URL の直接指定（--asin より優先）")
+    p_head.add_argument("--title", required=True, help="タイトル（保存先のサブフォルダ名になる）")
+    p_head.add_argument(
+        "--out",
+        dest="output",
+        required=True,
+        metavar="FOLDER",
+        help="保存先フォルダ（この下に <title>/ が作られる）",
+    )
+    p_head.add_argument(
+        "--profile",
+        default="kindle_cloud",
+        help="manifest に記録するプロファイル（既定: kindle_cloud）",
+    )
+    p_head.add_argument(
+        "--max-pages",
+        type=int,
+        metavar="N",
+        help="このページ数に達したら停止する（暴走防止の上限）",
+    )
+    p_head.add_argument(
+        "--page-wait",
+        type=float,
+        default=2.5,
+        metavar="SEC",
+        help="ページ送り後の待機秒（既定: 2.5）",
+    )
+    p_head.add_argument(
+        "--page-turn",
+        choices=PAGE_TURN_KEYS,
+        help="ページ送りキー（既定: left）。縦書きの本は left、横書きは right",
+    )
+    p_head.add_argument(
+        "--overwrite", action="store_true", help="保存先の既存画像を削除してから実行する"
+    )
+    p_head.add_argument(
+        "--headed", action="store_true", help="ブラウザを表示する（初回サインインの確認用）"
+    )
+    p_head.set_defaults(func=cmd_headless)
 
     p_trim = sub.add_parser(
         "trim",

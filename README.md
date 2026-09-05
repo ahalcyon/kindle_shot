@@ -259,6 +259,39 @@ Kindle Cloud Reader で「URL で本を開く → 読み込み完了を待つ �
 `--dpi`（既定 200。OCR 目的なら 200〜300、印刷向けなら 300〜400）,
 `--format`（`png` / `jpg`、既定 `png`）, `--overwrite`
 
+### `headless` — 画面を使わずにキャプチャする
+
+headless ブラウザで本を開いてページを取得します。**画面もデスクトップセッションも不要**なので、
+ディスプレイを切った状態・画面ロック中・リモート接続を切った後でも動きます
+（`capture` は画面を撮るため、いずれの状況でも失敗します）。
+OS やブラウザの通知が写り込むこともありません。
+
+```
+python cli.py headless --asin B0XXXXXXXX --title 本のタイトル --out <保存先> --max-pages 100
+```
+
+出力は `capture` と同じ形（`<out>/<title>/` に `001.png...` と `manifest.json`）なので、
+後段の `trim` / `convert` はそのまま使えます。
+
+**ページ送りキーに注意**してください。既定は `left` です。
+縦書き（右→左）の本では `right` は**前のページ**に戻るため、表紙で押しても何も起きず、
+1 ページだけ撮って「最終ページ」と誤判定します。横書きの本は `--page-turn right` を使います。
+
+撮影前にビューアの UI（ツールバー・進捗バー・左右の矢印）を CSS で隠し、
+「前回読んでいたページ」の位置同期モーダルは自動で閉じます。
+
+使うには Playwright が必要です（既定の依存には含めていません）。
+
+```
+kindle_env\Scripts\python.exe -m pip install playwright
+kindle_env\Scripts\python.exe -m playwright install chromium
+```
+
+セッションは `.playwright-profile/` に保持されるので、通常はログインが発生しません。
+セッションが切れている場合は `.env` の `KINDLE_SHOT_AMAZON_EMAIL` /
+`KINDLE_SHOT_AMAZON_PASSWORD` を使って自動でサインインします
+（`.env` は `.gitignore` 済み。値はログに出ません）。
+
 ### `trim`
 
 | オプション | 意味 |
