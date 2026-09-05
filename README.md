@@ -779,6 +779,27 @@ kindle_shot 本体は MIT ライセンスです（同梱の `LICENSE` を参照�
 | E2E テスト | `kindle_env\Scripts\python.exe -m pytest -m e2e` |
 | 全部 | `kindle_env\Scripts\python.exe -m pytest` |
 
+### 実機スモーク（キャプチャ経路）
+
+Win32 のウィンドウ検出・画面キャプチャ・キーストローク送出はユニットテストでも
+CI でもカバーできないため、実機で確認する。
+
+```
+kindle_env\Scripts\python.exe scripts/smoke_capture.py --asin B0XXXXXXXX
+```
+
+Cloud Reader で本を開くところから全自動で 3 ページ取得し、PDF まで通して
+`manifest.json` のページ数・停止理由・画像が別ページかどうかを検証する。
+実行中は前面ウィンドウとマウスを占有し、先頭ページへの巻き戻しで Kindle の
+読書位置 (Whispersync) が動く点に注意。
+
+キャプチャ経路のファイルを変更した push を pre-push フックでブロックできる:
+
+```
+git config core.hooksPath .githooks
+git config kindleshot.smokeAsin B0XXXXXXXX
+```
+
 ### テストの種類
 
 - `tests/` … 純ロジックと、`cli.main()` をインプロセスで呼ぶ JSON 契約テスト。

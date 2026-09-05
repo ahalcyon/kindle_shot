@@ -12,9 +12,10 @@
    issue に紐づかない作業は `(#番号)` と `Refs` を省く。
 3. **キャプチャ経路に触ったら実機スモーク** — `core/capture_*` / `core/win32_utils.py` /
    `core/dpi.py` / `core/reader_navigator.py` / `cli.py` の capture・open・run・batch を
-   変更したら、`cli.py run --asin <ASIN> --max-pages 3` を実機で流す。CI はこの層を
+   変更したら、`python scripts/smoke_capture.py --asin <ASIN>` を実機で流す。CI はこの層を
    一切カバーしない。Playwright は使えない（DOM ではなく画面を撮っているため）。
    対象は Cloud Reader（PC アプリはプログラムから本を開けない）。
+   `git config core.hooksPath .githooks` を設定しておくと pre-push で強制される。
 4. **push 前に検証とレビュー** — lint / format / type check / test を通し
    （テストは Windows が必要）、サブエージェントに `origin/master...HEAD` を
    レビューさせ、指摘を反映してから push する。レビュー依頼には差分の内容と

@@ -1,0 +1,87 @@
+#!/bin/sh
+# kindle_shot: キャプチャ経路に触る push の前に実機スモークを走らせる
+#
+# キャプチャ層（Win32 のウィンドウ検出・画面キャプチャ・キーストローク送出）は
+# ユニットテストでも CI でもカバーできない。PR を出す前にここだけは実機で
+# 確認するためのフック。詳細は AGENTS.md「実機スモーク」を参照。
+#
+# 有効化（クローンごとに 1 回）:
+#   git config core.hooksPath .githooks
+#   git config kindleshot.smokeAsin B0XXXXXXXX
+#   git config kindleshot.python kindle_env/Scripts/python.exe   # 任意
+#
+# 迂回（実機が使えないときなど。PR に未検証である旨を必ず書くこと）:
+#   git push --no-verify
+
+set -e
+
+# 実機確認が要るファイル。AGENTS.md の一覧と合わせること。
+WATCH_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/capture_profiles\.py|core/win32_utils\.py|core/dpi\.py|core/reader_navigator\.py|core/boundary_detector\.py|cli\.py|scripts/smoke_capture\.py)$'
+
+ZERO='0000000000000000000000000000000000000000'
+changed=''
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    # ブランチ削除の push は対象外
+    [ "$local_sha" = "$ZERO" ] && continue
+
+    if [ "$remote_sha" = "$ZERO" ]; then
+        # 新規ブランチ: 既定ブランチとの分岐点から見る
+        base=$(git merge-base origin/master "$local_sha" 2>/dev/null || true)
+    else
+        base="$remote_sha"
+    fi
+
+    if [ -n "$base" ]; then
+        changed="$changed$(git diff --name-only "$base" "$local_sha")
+"
+    else
+        changed="$changed$(git ls-tree -r --name-only "$local_sha")
+"
+    fi
+done
+
+hits=$(printf '%s' "$changed" | grep -E "$WATCH_RE" | sort -u || true)
+
+if [ -z "$hits" ]; then
+    exit 0
+fi
+
+echo "pre-push: キャプチャ経路の変更を検出しました:"
+printf '  %s\n' $hits
+echo ""
+
+ASIN=$(git config kindleshot.smokeAsin || true)
+if [ -z "$ASIN" ]; then
+    echo "pre-push: 実機スモークに使う ASIN が未設定のため push を中止します。" >&2
+    echo "" >&2
+    echo "  git config kindleshot.smokeAsin B0XXXXXXXX" >&2
+    echo "" >&2
+    echo "実機が使えない場合は git push --no-verify で迂回できます。" >&2
+    echo "その場合は PR に未検証である旨と範囲を必ず書いてください。" >&2
+    exit 1
+fi
+
+PY=$(git config kindleshot.python || true)
+if [ -z "$PY" ]; then
+    if [ -x kindle_env/Scripts/python.exe ]; then
+        PY=kindle_env/Scripts/python.exe
+    else
+        PY=python
+    fi
+fi
+
+echo "pre-push: 実機スモークを実行します（デスクトップを占有します）"
+echo "          ASIN=$ASIN python=$PY"
+echo ""
+
+if "$PY" scripts/smoke_capture.py --asin "$ASIN"; then
+    echo ""
+    echo "pre-push: 実機スモーク OK。push を続行します。"
+    exit 0
+fi
+
+echo "" >&2
+echo "pre-push: 実機スモークに失敗したため push を中止しました。" >&2
+echo "迂回するには git push --no-verify を使い、PR に理由を書いてください。" >&2
+exit 1

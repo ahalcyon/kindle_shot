@@ -78,6 +78,23 @@ PC アプリの `kindle` プロファイルには**プログラムから本を�
 人が本を開いておく必要があり、無人運用にも一括処理にも使えない。
 PC アプリ固有の不具合を追うとき以外は選ばないこと。
 
+#### pre-push フックで強制する
+
+クローンごとに 1 回、次を実行しておく。以後、キャプチャ経路のファイルを含む
+push は実機スモークが通らない限りブロックされる。
+
+```
+git config core.hooksPath .githooks
+git config kindleshot.smokeAsin B0XXXXXXXX
+```
+
+実機が使えないときは `git push --no-verify` で迂回できるが、
+**PR に未検証である旨と範囲を必ず書く**こと。
+
+フックは `scripts/smoke_capture.py` を呼ぶだけなので、同じスクリプトを
+self-hosted runner のワークフローから呼べば CI 化もできる
+（GitHub ホストのランナーは対話的なデスクトップが無いため不可）。
+
 #### 手順
 
 1. **検出のみの確認**（無害。フォーカスを奪わない）
@@ -89,13 +106,19 @@ PC アプリ固有の不具合を追うとき以外は選ばないこと。
 2. **1 冊を 3 ページだけ通す**（ここからデスクトップを占有する）
 
    ```
+   python scripts/smoke_capture.py --asin <ASIN>
+   ```
+
+   `cli.py run` を叩いて結果を機械的に検証する（後述）。本を開くところから
+   全自動なので、人が Kindle を操作する必要はない。素の CLI で見たいときは:
+
+   ```
    python cli.py run --asin <ASIN> --title smoke --out <folder> \
        --format image_pdf --max-pages 3
    ```
 
    `--max-pages` を必ず付ける。付けないと最終ページまで走り続ける。
    `--format image_pdf` なら OCR エンジン不要で変換まで通せる。
-   本を開くところから全自動なので、人が Kindle を操作する必要はない。
 
 3. **一括経路まで見るとき**は 2 冊程度の `books.json` を作って `batch` を回す。
 
@@ -105,11 +128,13 @@ PC アプリ固有の不具合を追うとき以外は選ばないこと。
 
 #### 確認すること
 
+`scripts/smoke_capture.py` が以下を自動で判定する（手で見る必要はない）。
+
+- 終了コードが 0
 - `manifest.json` の `total_pages` が指定どおり、`stopped_reason` が `max_pages`
   （`timeout` なら本が開けていないか、ページが送れていない）
-- 取得画像が実際に別ページになっている（同じ絵が並んでいないか目視）
-- 生成された PDF が開けてページ数が合っている
-- `run` の場合は `run_summary` イベントの各ステップ所要時間
+- 取得画像が全て別物（同一内容が並んでいたらページ送りが効いていない）
+- 出力 PDF が存在し、ページ数が合っている
 
 #### 注意
 
