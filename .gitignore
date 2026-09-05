@@ -13,5 +13,19 @@ ndlocr-lite/
 # ユーザーのローカル設定 (config.example.json がテンプレート)
 core/config.json
 
+# 別名で切った仮想環境
+.venv/
+venv/
+
+# カバレッジ / エディタ
+.coverage
+htmlcov/
+.vscode/
+.idea/
+
+# ビルド生成物
+build/
+dist/
+
 # 実行時の生成物
 *.log

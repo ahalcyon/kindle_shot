@@ -10,3 +10,11 @@
 *.gif binary
 *.ico binary
 *.pdf binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.whl binary

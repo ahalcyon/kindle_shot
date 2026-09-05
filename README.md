@@ -781,7 +781,8 @@ kindle_shot 本体は MIT ライセンスです（同梱の `LICENSE` を参照�
   Windows 前提として解析する）
 - ユニットテスト / E2E … windows-latest。`ctypes.windll` と Windows の日本語フォントに
   依存するテストがあるため、Linux では代替できない。
-- Python は開発環境と同じ 3.12 に固定。
+- Python は開発環境と同じ 3.12 に固定。setup.bat は 3.11〜3.13 を受け付けるが、
+  **CI が動作を保証するのは 3.12 のみ**。3.11 / 3.13 でしか出ない不具合は検出されない。
 
 ### その他
 

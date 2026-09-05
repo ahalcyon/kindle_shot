@@ -15,6 +15,12 @@ OCR エンジン (NDLOCR-Lite) とキャプチャ (Win32) は CI に存在しな
 それらを必要としない経路 (image_pdf) を本流とし、OCR 経路は「利用不可を正しく
 報告すること」だけを確認する。
 
+前提: サブプロセス起動なので tests/conftest.py の isolated_config は効かず、
+convert / profiles は開発マシンの実設定 (core/config.json、無ければ既定値) を
+読む。そのためここでは設定内容に依存しない検証だけを行う
+（例: プロファイル一覧はビルトインの kindle が含まれることだけを見る）。
+load_config は書き込みを行わないので、実設定が汚れることはない。
+
 実行:
     pytest -m e2e          # E2E だけ
     pytest -m "not e2e"    # ユニットテストだけ
@@ -34,14 +40,19 @@ pytestmark = pytest.mark.e2e
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CLI = os.path.join(REPO_ROOT, "cli.py")
 
+# 日本語のパス・標準出力が cp932 で壊れないよう、子プロセスの環境を固定する
+CHILD_ENV = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
 # 日本語ファイル名でも壊れないことを含めて確認するためのタイトル
 BOOK_TITLE = "テスト本"
 
 
 def run_cli(*argv, timeout=300):
-    """cli.py をサブプロセスで実行し、(exit code, events, stdout) を返す。
+    """cli.py をサブプロセスで実行し、(exit code, events, CompletedProcess) を返す。
 
     常に --json を付けるので stdout は JSON Lines になる。
+    サブプロセスが traceback で死ぬと stdout は空になるため、失敗時の
+    調査材料として stderr を events の代わりに握り潰さず例外文へ回す。
     """
     proc = subprocess.run(
         [sys.executable, CLI, *argv, "--json"],
@@ -52,10 +63,40 @@ def run_cli(*argv, timeout=300):
         encoding="utf-8",
         errors="replace",
         # 親の環境変数の PYTHONIOENCODING 等に結果が左右されないようにする
-        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        env=CHILD_ENV,
     )
-    events = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
-    return proc.returncode, events, proc.stdout
+    events = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError as e:
+            raise AssertionError(
+                f"JSON Lines として読めない行があった: {line!r}\n{_diag(proc)}"
+            ) from e
+    return proc.returncode, events, proc
+
+
+def run_raw(*argv, timeout=60):
+    """--json を付けずに cli.py を起動する（--help / 引数エラーの確認用）。"""
+    return subprocess.run(
+        [sys.executable, *argv],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env=CHILD_ENV,
+    )
+
+
+def _diag(proc):
+    """失敗時に CI ログへ出す調査材料。"""
+    return (
+        f"argv={proc.args}\nreturncode={proc.returncode}\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
 
 
 def by_name(events, name):
@@ -106,16 +147,18 @@ def test_pdf_to_trim_to_pdf_roundtrip(source_pdf, tmp_path):
     out_dir = tmp_path / "out"
 
     # 1) PDF → ページ画像
-    code, events, _ = run_cli(
+    code, events, proc = run_cli(
         "pdf", "--in", str(source_pdf), "--out", str(pages_dir), "--dpi", "100"
     )
-    assert code == 0, events
+    assert code == 0, _diag(proc)
     assert result_of(events)["pages"] == 3
     assert sorted(p.name for p in pages_dir.iterdir()) == ["001.png", "002.png", "003.png"]
 
     # 2) 余白の自動トリミング。前段の出力フォルダをそのまま入力に渡す。
-    code, events, _ = run_cli("trim", "--in", str(pages_dir), "--out", str(trimmed_dir), "--auto")
-    assert code == 0, events
+    code, events, proc = run_cli(
+        "trim", "--in", str(pages_dir), "--out", str(trimmed_dir), "--auto"
+    )
+    assert code == 0, _diag(proc)
     detected = by_name(events, "margins_detected")[0]
     # dpi=100 で 600x800px の元PDF (72dpi 基準) は約 833x1111px にレンダリングされる。
     # 実寸に依存しないよう、四辺すべてで余白が削られたことだけを確認する。
@@ -128,7 +171,7 @@ def test_pdf_to_trim_to_pdf_roundtrip(source_pdf, tmp_path):
         assert after.size[1] < before.size[1]
 
     # 3) トリミング済み画像 → PDF (OCR 不要の image_pdf)
-    code, events, _ = run_cli(
+    code, events, proc = run_cli(
         "convert",
         "--in",
         str(trimmed_dir),
@@ -139,7 +182,7 @@ def test_pdf_to_trim_to_pdf_roundtrip(source_pdf, tmp_path):
         "--name",
         BOOK_TITLE,
     )
-    assert code == 0, events
+    assert code == 0, _diag(proc)
     res = result_of(events)
     assert res["ok"] is True
     assert res["format"] == "image_pdf"
@@ -155,11 +198,13 @@ def test_pdf_to_trim_to_pdf_roundtrip(source_pdf, tmp_path):
 def test_validate_accepts_the_pipeline_output(source_pdf, tmp_path):
     """パイプラインが吐いた画像フォルダが validate をそのまま通る。"""
     pages_dir = tmp_path / "pages"
-    code, _, _ = run_cli("pdf", "--in", str(source_pdf), "--out", str(pages_dir), "--dpi", "100")
-    assert code == 0
+    code, _, proc = run_cli("pdf", "--in", str(source_pdf), "--out", str(pages_dir), "--dpi", "100")
+    assert code == 0, _diag(proc)
 
-    code, events, _ = run_cli("validate", "--in", str(pages_dir), "--expect-pages", "3", "--strict")
-    assert code == 0, events
+    code, events, proc = run_cli(
+        "validate", "--in", str(pages_dir), "--expect-pages", "3", "--strict"
+    )
+    assert code == 0, _diag(proc)
     res = result_of(events)
     assert res["ok"] is True
     assert res["pages"] == 3
@@ -171,49 +216,52 @@ def test_validate_accepts_the_pipeline_output(source_pdf, tmp_path):
 # ------------------------------------------------------------
 
 
-def test_validate_reports_page_shortfall_as_exit_code(source_pdf, tmp_path):
-    """期待ページ数に足りなければ EXIT_VALIDATION(7) で終わる。"""
-    pages_dir = tmp_path / "pages"
-    assert run_cli("pdf", "--in", str(source_pdf), "--out", str(pages_dir), "--dpi", "100")[0] == 0
+# 異常系そのものの判定ロジックは tests/test_cli_contract.py が押さえている。
+# ここで見たいのは「その終了コードがプロセスの exit status として返ること」だけ
+# なので、代表的な 3 つを 1 本にまとめる。
+# 報告の仕方はコマンドによって違う: trim 系は error イベント、
+# validate は result.ok=False（検証結果そのものが成果物なので error を出さない）。
+@pytest.mark.parametrize(
+    ("case", "expected", "evidence"),
+    [
+        ("bad_margins", 2, "error_event"),  # EXIT_BAD_ARGS
+        ("no_images", 5, "error_event"),  # EXIT_NO_IMAGES
+        ("page_shortfall", 7, "result_not_ok"),  # EXIT_VALIDATION
+    ],
+)
+def test_error_exit_codes_reach_the_process_status(case, expected, evidence, source_pdf, tmp_path):
+    """エラー時の終了コードが exit status として返り、内容も JSON で報告される。"""
+    out = str(tmp_path / "o")
+    argv: tuple[str, ...]
+    if case == "bad_margins":
+        folder = tmp_path / "pages"
+        folder.mkdir()
+        Image.new("RGB", (200, 300), "white").save(str(folder / "001.png"))
+        argv = ("trim", "--in", str(folder), "--out", out, "--margins", "1,2,3")
+    elif case == "no_images":
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        argv = ("trim", "--in", str(empty), "--out", out, "--auto")
+    else:
+        pages_dir = tmp_path / "pages"
+        code, _, proc = run_cli(
+            "pdf", "--in", str(source_pdf), "--out", str(pages_dir), "--dpi", "100"
+        )
+        assert code == 0, _diag(proc)
+        argv = ("validate", "--in", str(pages_dir), "--expect-pages", "10")
 
-    code, events, _ = run_cli("validate", "--in", str(pages_dir), "--expect-pages", "10")
-    assert code == 7
-    assert result_of(events)["ok"] is False
-
-
-def test_empty_input_folder_exits_no_images(tmp_path):
-    """画像が1枚も無いフォルダは EXIT_NO_IMAGES(5) で終わる。"""
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    code, events, _ = run_cli("trim", "--in", str(empty), "--out", str(tmp_path / "o"), "--auto")
-    assert code == 5
-    assert by_name(events, "error")
-
-
-def test_bad_margins_argument_exits_bad_args(tmp_path):
-    """--margins の書式が不正なら EXIT_BAD_ARGS(2) で終わる。"""
-    folder = tmp_path / "pages"
-    folder.mkdir()
-    Image.new("RGB", (200, 300), "white").save(str(folder / "001.png"))
-
-    code, events, _ = run_cli(
-        "trim", "--in", str(folder), "--out", str(tmp_path / "o"), "--margins", "1,2,3"
-    )
-    assert code == 2
-    assert by_name(events, "error")
+    code, events, proc = run_cli(*argv)
+    assert code == expected, _diag(proc)
+    if evidence == "error_event":
+        assert by_name(events, "error"), _diag(proc)
+    else:
+        assert result_of(events)["ok"] is False, _diag(proc)
 
 
 def test_unknown_command_exits_argparse_usage_error():
     """未知のサブコマンドは argparse の使用法エラー(2)になる。"""
-    proc = subprocess.run(
-        [sys.executable, CLI, "no-such-command"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-    )
-    assert proc.returncode == 2
+    proc = run_raw(CLI, "no-such-command")
+    assert proc.returncode == 2, _diag(proc)
     assert "usage" in proc.stderr.lower()
 
 
@@ -223,15 +271,19 @@ def test_unknown_command_exits_argparse_usage_error():
 
 
 def ocr_available():
-    proc = subprocess.run(
-        [sys.executable, "-c", "from core import ocr_engine; print(ocr_engine.is_available()[0])"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
+    """OCR エンジンの有無を子プロセスで確認する。
+
+    判定不能（子プロセスが異常終了）を「利用不可」と混同しないよう、
+    True/False 以外が返ったらテストを失敗させる。
+    """
+    proc = run_raw(
+        "-c",
+        "from core import ocr_engine; print(ocr_engine.is_available()[0])",
         timeout=120,
     )
-    return proc.stdout.strip() == "True"
+    answer = proc.stdout.strip()
+    assert answer in ("True", "False"), _diag(proc)
+    return answer == "True"
 
 
 def test_markdown_conversion_reports_missing_ocr_engine(source_pdf, tmp_path):
@@ -240,9 +292,10 @@ def test_markdown_conversion_reports_missing_ocr_engine(source_pdf, tmp_path):
         pytest.skip("OCR エンジンが利用可能な環境では成立しない")
 
     pages_dir = tmp_path / "pages"
-    assert run_cli("pdf", "--in", str(source_pdf), "--out", str(pages_dir), "--dpi", "100")[0] == 0
+    code, _, proc = run_cli("pdf", "--in", str(source_pdf), "--out", str(pages_dir), "--dpi", "100")
+    assert code == 0, _diag(proc)
 
-    code, events, _ = run_cli(
+    code, events, proc = run_cli(
         "convert",
         "--in",
         str(pages_dir),
@@ -251,8 +304,8 @@ def test_markdown_conversion_reports_missing_ocr_engine(source_pdf, tmp_path):
         "--format",
         "markdown",
     )
-    assert code == 4
-    assert by_name(events, "error"), events
+    assert code == 4, _diag(proc)
+    assert by_name(events, "error"), _diag(proc)
 
 
 # ------------------------------------------------------------
@@ -262,23 +315,18 @@ def test_markdown_conversion_reports_missing_ocr_engine(source_pdf, tmp_path):
 
 def test_profiles_lists_builtin_profiles():
     """profiles がプロファイルを列挙し、日本語が壊れずに出力される。"""
-    code, events, stdout = run_cli("profiles")
-    assert code == 0
+    code, events, proc = run_cli("profiles")
+    assert code == 0, _diag(proc)
     keys = [e["key"] for e in by_name(events, "profile")]
+    # カスタムプロファイルが設定に足されていても、ビルトインは必ず出る
     assert "kindle" in keys
     # UTF-8 で読めている＝置換文字 (U+FFFD) が混ざっていない
-    assert "�" not in stdout
+    # (run_cli は errors="replace" なのでデコード失敗はここで顕在化する)
+    assert "�" not in proc.stdout
 
 
 def test_help_exits_zero():
     """--help がエントリポイントの import を通って正常終了する。"""
-    proc = subprocess.run(
-        [sys.executable, CLI, "--help"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-    )
-    assert proc.returncode == 0
+    proc = run_raw(CLI, "--help")
+    assert proc.returncode == 0, _diag(proc)
     assert "trim" in proc.stdout
