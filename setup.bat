@@ -24,17 +24,21 @@ REM ============================================================
 REM 1. Detect a usable system Python
 REM
 REM Requirements:
-REM   * Version 3.11 - 3.13.  Pinned deps (numpy==2.2.2, Pillow==12.1.1,
-REM     opencv 4.13 ...) ship wheels only for those versions; on too-new
-REM     (3.14+) or too-old (<=3.10) Python pip falls back to a source build
+REM   * Version 3.11 - 3.13 (3.13 preferred).  numpy==2.2.2 and lxml==5.4.0
+REM     ship no cp314 wheel, so on 3.14+ pip falls back to a source build
 REM     and fails.
+REM     The pin cannot simply be raised: NDLOCR-Lite's requirements.txt
+REM     strict-pins numpy==2.2.2 / lxml==5.4.0 / PyYAML==6.0.1 and is
+REM     installed into the same venv, so it would just downgrade numpy
+REM     back to a version with no 3.14 wheel.  3.14 needs NDLOCR-Lite to
+REM     move first.  On <=3.10 the pinned deps have no wheels either.
 REM   * tkinter / tcl / tk must be importable.  customtkinter is built on
 REM     tkinter, so without it the GUI cannot start at all.  The Windows
 REM     "embeddable" build of Python does NOT bundle tkinter, which is why
 REM     we require a normal python.org installation instead of downloading
 REM     the embeddable package as a fallback.
 REM
-REM When no usable Python is found we try to install 3.12 with winget
+REM When no usable Python is found we try to install 3.13 with winget
 REM (see :auto_install) before giving up.
 REM
 REM PY holds the interpreter used to create the virtualenv: "python" when a
@@ -68,7 +72,7 @@ set "PY=python"
 goto :py_ready
 
 REM ============================================================
-REM Automatic Python 3.12 install (winget).
+REM Automatic Python 3.13 install (winget).
 REM Reached only when no usable Python was found.  If winget is missing or
 REM the install fails we fall back to the manual python.org guidance.
 REM ============================================================
@@ -108,13 +112,13 @@ winget --version >nul 2>&1
 if errorlevel 1 goto :winget_missing
 
 echo このアプリには Python 3.11 - 3.13 が必要です。
-echo winget を使って Python 3.12 を自動でインストールします。
-if defined KEEP_EXISTING echo 現在の Python は残したまま、3.12 を追加でインストールします。
+echo winget を使って Python 3.13 を自動でインストールします。
+if defined KEEP_EXISTING echo 現在の Python は残したまま、3.13 を追加でインストールします。
 echo.
-echo 実行中: winget install --id Python.Python.3.12 -e --source winget --silent
+echo 実行中: winget install --id Python.Python.3.13 -e --source winget --silent
 echo 数分かかることがあります。しばらくお待ちください。
 echo.
-winget install --id Python.Python.3.12 -e --source winget --silent --accept-package-agreements --accept-source-agreements
+winget install --id Python.Python.3.13 -e --source winget --silent --accept-package-agreements --accept-source-agreements
 REM winget's failure codes are negative HRESULTs (e.g. -1978335215), which
 REM "if errorlevel 1" does not catch. Treat anything but 0 as failure.
 if not "!errorlevel!"=="0" (
@@ -128,7 +132,7 @@ if not "!errorlevel!"=="0" (
     REM makes the bundled launcher MSI demand elevation and fail with 1625,
     REM rolling back the whole install. Retry without the launcher; python.exe
     REM is then resolved through the registry (old launcher) or the default folder.
-    winget install --id Python.Python.3.12 -e --source winget --silent --accept-package-agreements --accept-source-agreements --override "/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=0"
+    winget install --id Python.Python.3.13 -e --source winget --silent --accept-package-agreements --accept-source-agreements --override "/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=0"
     if not "!errorlevel!"=="0" goto :winget_failed
 )
 
@@ -139,12 +143,12 @@ REM "python" is not visible here.  Resolve the interpreter directly: first
 REM through the py launcher (handles non-default install folders), then at
 REM the python.org default locations for user- and machine-scope installs.
 set "PY="
-for /f "delims=" %%i in ('py -3.12 -c "import sys; print(sys.executable)" 2^>nul') do set "PY=%%i"
+for /f "delims=" %%i in ('py -3.13 -c "import sys; print(sys.executable)" 2^>nul') do set "PY=%%i"
 if not defined PY (
     for %%q in (
-        "%LocalAppData%\Programs\Python\Python312\python.exe"
-        "%ProgramFiles%\Python312\python.exe"
-        "%SystemDrive%\Python312\python.exe"
+        "%LocalAppData%\Programs\Python\Python313\python.exe"
+        "%ProgramFiles%\Python313\python.exe"
+        "%SystemDrive%\Python313\python.exe"
     ) do (
         if not defined PY if exist %%q set "PY=%%~fq"
     )
@@ -162,12 +166,12 @@ goto :py_ready
 
 :relaunch_needed
 echo.
-echo [INFO] winget は完了しましたが、このウィンドウからは Python 3.12 が見つかりません。
+echo [INFO] winget は完了しましたが、このウィンドウからは Python 3.13 が見つかりません。
 echo        インストール直後は PATH が新しく開いたウィンドウでしか更新されないためです。
 echo.
 echo このウィンドウを閉じ、新しいウィンドウで setup.bat をもう一度実行してください。
 echo それでも同じ表示になる場合は、上の winget の出力にエラーが出ていないか確認し、
-echo   https://www.python.org/downloads/ から Python 3.12.x を手動でインストールしてください。
+echo   https://www.python.org/downloads/ から Python 3.13.x を手動でインストールしてください。
 pause
 exit /b 1
 
@@ -178,7 +182,7 @@ goto :manual_python
 
 :winget_failed
 echo.
-echo [WARN] winget で Python 3.12 をインストールできませんでした（終了コード !errorlevel!）。
+echo [WARN] winget で Python 3.13 をインストールできませんでした（終了コード !errorlevel!）。
 goto :manual_python
 
 REM ============================================================
@@ -188,7 +192,7 @@ REM ============================================================
 echo.
 echo [ERROR] 対応する Python（3.11 - 3.13）が必要です。
 echo.
-echo 次のサイトから Python 3.12.x をインストールしてください:
+echo 次のサイトから Python 3.13.x をインストールしてください:
 echo   https://www.python.org/downloads/
 echo インストール時に "Add python.exe to PATH" にチェックを入れてください。
 echo その後、setup.bat をもう一度実行してください。
@@ -282,15 +286,30 @@ if not exist ndlocr-lite\src\ocr.py (
     goto :ndlocr_fail
 )
 
+REM ============================================================
+REM NDLOCR-Lite dependencies
+REM
+REM NDLOCR-Lite declares requires-python = ">=3.10" but strict-pins
+REM PyYAML==6.0.1, which ships no cp313 wheel.  On Python 3.13 pip then
+REM tries to build it from source and fails with "Microsoft Visual C++
+REM 14.0 or greater is required" on a normal PC, taking the whole
+REM requirements install down with it (so OCR would be silently lost).
+REM PyYAML 6.0.3 is a patch release with cp313/cp314 wheels, so we install
+REM from a patched copy.  The clone itself is left untouched, and the
+REM replace is a no-op once upstream moves the pin.
+REM ============================================================
 :install_ndlocr_deps
 if exist ndlocr-lite\requirements.txt (
     echo NDLOCR-Lite の依存パッケージをインストールしています。
-    python -m pip install -r ndlocr-lite\requirements.txt
+    set "NDLOCR_REQ=ndlocr-lite\requirements.txt"
+    powershell -NoProfile -Command "(Get-Content 'ndlocr-lite\requirements.txt') -replace '^PyYAML==6\.0\.1$', 'PyYAML==6.0.3' | Set-Content -Encoding ascii 'ndlocr-lite\requirements.kindle_shot.txt'" >nul 2>&1
+    if exist ndlocr-lite\requirements.kindle_shot.txt set "NDLOCR_REQ=ndlocr-lite\requirements.kindle_shot.txt"
+    python -m pip install -r "!NDLOCR_REQ!"
     if errorlevel 1 (
         echo [WARN] NDLOCR-Lite の依存パッケージをインストールできませんでした。
         echo OCR は使えませんが、画像 PDF への変換などは利用できます。
         echo 後で次のコマンドを実行して再試行できます:
-        echo   python -m pip install -r ndlocr-lite\requirements.txt
+        echo   python -m pip install -r !NDLOCR_REQ!
     )
 )
 

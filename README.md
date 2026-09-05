@@ -30,9 +30,18 @@ PDF（自炊スキャン・購入済PDF）を読み込んで、トリミング�
 ### 動作環境
 
 - Windows 10 / 11
-- Python 3.11〜3.13
-  - 依存パッケージ（numpy・Pillow・opencv など）が 3.11〜3.13 向けのビルド済み wheel しか配布して
-    いないため、3.14 以降・3.10 以前ではインストールに失敗します
+- Python 3.11〜3.13（**3.13 を推奨**。`setup.bat` が自動導入するのも 3.13 です）
+  - 3.14 以降は使えません。`numpy==2.2.2` と `lxml==5.4.0` に 3.14 向けのビルド済み wheel が
+    無く、pip がソースビルドに落ちて失敗します。これらの pin は OCR エンジン NDLOCR-Lite の
+    `requirements.txt` が厳密固定しているものに揃えたものです。NDLOCR-Lite の依存は同じ
+    仮想環境に入るため、本ツール側だけ版を上げても NDLOCR-Lite のインストール時に戻され、
+    同じ理由で失敗します。**3.14 対応には NDLOCR-Lite 側の追従が先に必要です**
+    （[#4](https://github.com/ahalcyon/kindle_shot/issues/4)）
+  - 3.10 以前も、固定している依存に wheel が無いためインストールに失敗します
+  - 3.13 では NDLOCR-Lite の `PyYAML==6.0.1` に wheel が無く、そのままだと OCR の依存
+    インストールが丸ごと失敗します（Windows では C コンパイラが必要になるため）。
+    `setup.bat` は `PyYAML==6.0.3`（パッチ更新・wheel あり）に差し替えた一時コピーから
+    インストールしてこれを回避します。clone したファイル自体は変更しません
   - **「embeddable」版は使えません**。tkinter を含まないため GUI が起動しません。python.org の
     通常インストーラー版を使ってください
 
@@ -47,9 +56,9 @@ PDF（自炊スキャン・購入済PDF）を読み込んで、トリミング�
 1. **システム Python の検出**（3.11〜3.13 か・tkinter を含むか）
 2. **`python` が無い／対象外バージョン（3.14 など）なら、py ランチャーで既にインストール済みの
    3.13 → 3.12 → 3.11 を探し、あればそれを使う**（winget は使いません）
-3. **それも無ければ、winget で Python 3.12 を自動インストール**
-   （`winget install --id Python.Python.3.12 -e --silent`）。
-   既存の Python は残したまま 3.12 を併用導入します
+3. **それも無ければ、winget で Python 3.13 を自動インストール**
+   （`winget install --id Python.Python.3.13 -e --silent`）。
+   既存の Python は残したまま 3.13 を併用導入します
 4. 仮想環境 `kindle_env` の作成と `requirements.txt` の `pip install`
 5. NDLOCR-Lite の取得（git があれば clone、無ければ PowerShell で zip 取得）と依存インストール
 
@@ -58,12 +67,12 @@ PDF（自炊スキャン・購入済PDF）を読み込んで、トリミング�
 自動インストールに関する注意:
 
 - インストール直後は**同じウィンドウの PATH が更新されない**ため、setup.bat は py ランチャーと
-  python.org 版の既定インストール先（`%LocalAppData%\Programs\Python\Python312`、
-  `%ProgramFiles%\Python312`、`%SystemDrive%\Python312`）を直接探して続行します。
+  python.org 版の既定インストール先（`%LocalAppData%\Programs\Python\Python313`、
+  `%ProgramFiles%\Python313`、`%SystemDrive%\Python313`）を直接探して続行します。
   それでも見つからない場合は「新しいウィンドウで setup.bat を再実行してください」と案内して止まります
 - 別の Python の py ランチャーが「全ユーザー向け」に入っている PC では、管理者権限なしの winget が
   ランチャーの更新で失敗（終了コード 1625）して全体が巻き戻されるため、setup.bat は自動的に
-  **py ランチャーを含めない設定で再試行**します（既存のランチャーから `py -3.12` で使えます）
+  **py ランチャーを含めない設定で再試行**します（既存のランチャーから `py -3.13` で使えます）
 - winget が無い環境（古い Windows 10 など）や再試行も失敗した場合は、python.org からの手動導入を
   案内して停止します
 - 既に 3.11〜3.13 の Python がある場合（`python` が別バージョンでも py ランチャーから見つかれば）は自動インストールに入りません
@@ -84,8 +93,8 @@ pip install -r ndlocr-lite\requirements.txt
 
 | 症状 | 対処 |
 |------|------|
-| `[ERROR] 対応する Python（3.11 - 3.13）が必要です。` | winget が使えない環境。python.org の通常インストーラーで 3.12 を入れ、「Add python.exe to PATH」にチェックして setup.bat を再実行 |
-| `[INFO] winget は完了しましたが、このウィンドウからは Python 3.12 が見つかりません。` | ウィンドウを閉じて**新しいウィンドウ**で setup.bat を再実行。それでも同じなら winget の出力にエラーが無いか確認し、python.org から手動導入 |
+| `[ERROR] 対応する Python（3.11 - 3.13）が必要です。` | winget が使えない環境。python.org の通常インストーラーで 3.13 を入れ、「Add python.exe to PATH」にチェックして setup.bat を再実行 |
+| `[INFO] winget は完了しましたが、このウィンドウからは Python 3.13 が見つかりません。` | ウィンドウを閉じて**新しいウィンドウ**で setup.bat を再実行。それでも同じなら winget の出力にエラーが無いか確認し、python.org から手動導入 |
 | `[ERROR] この Python には tkinter / tcl / tk がありません。` | embeddable 版・最小構成の Python。python.org の通常インストーラー版を入れ直す |
 | `[ERROR] 依存パッケージのインストールに失敗しました。` | Python のバージョンか、ネットワーク／プロキシ／アンチウイルスの遮断。pip の出力を確認する |
 | `[WARN] NDLOCR-Lite の取得に失敗しました。` | OCR なしでも動く（キャプチャ・トリミング・画像PDF は可）。後述の手動導入で追加できる |
@@ -783,8 +792,9 @@ kindle_shot 本体は MIT ライセンスです（同梱の `LICENSE` を参照�
   Windows 前提として解析する）
 - ユニットテスト / E2E … windows-latest。`ctypes.windll` と Windows の日本語フォントに
   依存するテストがあるため、Linux では代替できない。
-- Python は開発環境と同じ 3.12 に固定。setup.bat は 3.11〜3.13 を受け付けるが、
-  **CI が動作を保証するのは 3.12 のみ**。3.11 / 3.13 でしか出ない不具合は検出されない。
+- Python は `setup.bat` が既定で導入する 3.13 に固定。setup.bat は 3.11〜3.13 を
+  受け付けるが、**CI が動作を保証するのは 3.13 のみ**。3.11 / 3.12 でしか出ない不具合は
+  検出されない。
 
 ### その他
 

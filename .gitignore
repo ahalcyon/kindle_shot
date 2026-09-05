@@ -10,6 +10,9 @@ __pycache__/
 kindle_env/
 ndlocr-lite/
 
+# 開発者ごとのローカルな Python ピン (uv / pyenv が読む)
+.python-version
+
 # ユーザーのローカル設定 (config.example.json がテンプレート)
 core/config.json
 
