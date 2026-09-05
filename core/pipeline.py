@@ -608,7 +608,7 @@ def run_book(
     expect_pages=None,
     max_pages=None,
     max_rewind=1000,
-    load_wait=45,
+    load_wait=None,
     no_rewind=False,
     headless=False,
     safety=8,
@@ -699,7 +699,9 @@ def run_book(
     # open / capture 個別の抑止に加えて、1冊の処理全体で画面消灯を抑止する。
     # trim / OCR 中に画面が消えると復帰時のサインインでセッションがロックされ、
     # 以降の open / capture が全滅するため (2026-08-01 の B群バッチで実測)
-    prevent_sleep()
+    # headless は画面を使わないので、消灯まで抑えるとディスプレイを切って
+    # 無人実行するという目的と逆行する
+    prevent_sleep(keep_display=not headless)
     try:
         if headless:
             # 画面を使わない経路。本を開くところからキャプチャまでブラウザ内で
@@ -718,6 +720,8 @@ def run_book(
                 page_wait=page_wait,
                 max_pages=max_pages,
                 load_wait=load_wait,
+                no_rewind=no_rewind,
+                max_rewind=max_rewind,
                 overwrite=overwrite,
                 emit=emit,
             )
@@ -734,7 +738,7 @@ def run_book(
                     no_fullscreen=False,
                     no_rewind=no_rewind,
                     max_rewind=max_rewind,
-                    load_wait=load_wait,
+                    load_wait=45 if load_wait is None else load_wait,
                     emit=emit,
                 )
                 if code != EXIT_OK:

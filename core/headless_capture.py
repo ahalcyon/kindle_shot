@@ -67,6 +67,9 @@ DEFAULT_TURN_KEY = "left"
 AUTO_TURN_KEY = "auto"
 DEFAULT_PAGE_WAIT = 2.5
 DEFAULT_LOAD_WAIT = 12
+# 巻き戻しは描画を待つ必要が無いので短くする
+DEFAULT_REWIND_WAIT = 0.6
+DEFAULT_MAX_REWIND = 1000
 
 # 読書位置の表示。実測で 2 形式ある:
 #     "6/339ページ ● 1%"   (ページ表示)
@@ -96,7 +99,9 @@ def detect_turn_key(page, *, page_wait=DEFAULT_PAGE_WAIT, emit=null_emit):
     横書きが混ざるため、決め打ちだと「正常終了したのに中身が逆順」の本が
     紛れ込む。読書位置の数値が増える方を前進とみなす。
 
-    判定のために動かした分は元に戻す（Whispersync の読書位置を動かすため）。
+    判定のために動かした分は元に戻す。戻さないと表紙を落とすため。
+    （キャプチャ自体が本を読み進めるので、読書位置は結局末尾まで動く。
+    ここで戻すのは読書位置の保全のためではない。）
     """
     before = read_position(page)
     if before is None:
@@ -160,6 +165,7 @@ def build_manifest(
     started,
     finished,
     page_turn=None,
+    page_turn_source=None,
     page_wait=None,
 ):
     """run_capture が書くものと同じ形の manifest を組み立てる。"""
@@ -171,6 +177,7 @@ def build_manifest(
         "backend": "headless",
         # 実行に使った値。profile の既定と違うことがあるので別に残す
         "page_turn": page_turn,
+        "page_turn_source": page_turn_source,
         "page_wait": page_wait,
         "total_pages": total,
         "save_dir": save_dir,
@@ -280,6 +287,58 @@ def capture_pages(
         page.wait_for_timeout(int(page_wait * 1000))
 
 
+def rewind_to_start(
+    page, forward, *, page_wait=DEFAULT_REWIND_WAIT, max_rewind=DEFAULT_MAX_REWIND, emit=null_emit
+):
+    """先頭ページまで戻す。(ok, 押した回数) を返す。
+
+    read.amazon.co.jp/?asin=... は**前回の読書位置で開く**（実測: 位置 27 で
+    開いた）。位置同期モーダルを「いいえ」で閉じても現在位置に留まるため、
+    巻き戻さないと読みかけの本が途中から末尾までだけ撮れ、しかも
+    end_of_book で正常終了してしまう。batch は出力があるとスキップするので、
+    半分だけの本がそのまま確定する。
+
+    画面キャプチャ経路では open_book が画素比較で巻き戻しているが、
+    ここでは読書位置の数値が使えるので確実に判定できる。
+    """
+    back = turn_key(reverse_of(forward))
+    before = read_position(page)
+    if before is None:
+        emit("status", human="読書位置を読めないため巻き戻せません")
+        return False, 0
+
+    pressed = 0
+    stuck = 0
+    while pressed < max_rewind:
+        if before <= 1:
+            break
+        page.keyboard.press(back)
+        page.wait_for_timeout(int(page_wait * 1000))
+        pressed += 1
+        current = read_position(page)
+        if current is None or current >= before:
+            stuck += 1
+        else:
+            stuck = 0
+            before = current
+        if stuck >= 3:
+            break
+        if pressed % 25 == 0:
+            emit("status", human=f"先頭へ巻き戻し中... (位置 {before})")
+
+    ok = before is not None and before <= 1
+    emit(
+        "rewound",
+        human=f"先頭へ巻き戻しました（{pressed} 回、位置 {before}）"
+        if ok
+        else f"先頭まで戻り切れませんでした（{pressed} 回、位置 {before}）",
+        ok=ok,
+        presses=pressed,
+        position=before,
+    )
+    return ok, pressed
+
+
 def run_headless_capture(
     profile,
     title,
@@ -293,6 +352,8 @@ def run_headless_capture(
     page_turn=None,
     overwrite=False,
     load_wait=None,
+    no_rewind=False,
+    max_rewind=DEFAULT_MAX_REWIND,
     profile_dir=None,
     headless=True,
     emit=null_emit,
@@ -329,7 +390,11 @@ def run_headless_capture(
     started = datetime.datetime.now()
     target = url or book_url(asin)
     requested = page_turn or AUTO_TURN_KEY
-    key = turn_key(page_turn if page_turn != AUTO_TURN_KEY else None)
+    # with ブロック内で確定するが、そこへ到達する前に中断された場合の
+    # manifest 用に初期化しておく
+    forward = DEFAULT_TURN_KEY
+    turn_source = "default"
+    key = turn_key(forward)
     total = 0
     stopped_reason = "error"
 
@@ -345,6 +410,7 @@ def run_headless_capture(
             started=started,
             finished=datetime.datetime.now(),
             page_turn=key,
+            page_turn_source=turn_source,
             page_wait=page_wait,
         )
         path = os.path.join(save_dir, "manifest.json")
@@ -363,10 +429,35 @@ def run_headless_capture(
 
             if requested == AUTO_TURN_KEY:
                 detected = detect_turn_key(page, page_wait=page_wait, emit=emit)
-                key = turn_key(detected or getattr(profile, "page_turn_key", None))
+                if detected is None:
+                    # 判定できないまま決め打ちで進めると、向きが逆でも
+                    # 正常終了して逆順の本が完成扱いになる（無人では致命的）
+                    emit_error(
+                        emit,
+                        "ページ送りの向きを判定できませんでした。"
+                        "--page-turn left / right で明示してください",
+                    )
+                    stopped_reason = "turn_key_undetected"
+                    return EXIT_ERROR
+                forward = detected
+                turn_source = "detected"
             else:
-                key = turn_key(requested)
+                forward = requested
+                turn_source = "explicit"
+            key = turn_key(forward)
             emit("status", human=f"ページ送りキー: {key}", message=f"ページ送りキー: {key}")
+
+            if not no_rewind:
+                rewound, _ = rewind_to_start(page, forward, max_rewind=max_rewind, emit=emit)
+                if not rewound:
+                    emit_error(
+                        emit,
+                        "先頭ページまで戻せませんでした。途中から撮ると本の一部だけが"
+                        "完成扱いになるため中止します（--no-rewind で無視できます）",
+                    )
+                    stopped_reason = "rewind_failed"
+                    return EXIT_ERROR
+                dismiss_dialogs(page)
             total, stopped_reason = capture_pages(
                 page, save_dir, key=key, max_pages=max_pages, page_wait=page_wait, emit=emit
             )

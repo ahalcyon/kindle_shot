@@ -679,9 +679,8 @@ def build_parser():
     p_run.add_argument(
         "--load-wait",
         type=int,
-        default=45,
         metavar="SEC",
-        help="open の読み込み待ち最大秒数（既定: 45）",
+        help="読み込み待ちの秒数（省略時: 画面キャプチャ 45 / headless 12）",
     )
     p_run.add_argument(
         "--headless",
@@ -806,9 +805,8 @@ def build_parser():
     p_batch.add_argument(
         "--load-wait",
         type=int,
-        default=45,
         metavar="SEC",
-        help="open の読み込み待ち最大秒数（全本の既定。既定: 45）",
+        help="読み込み待ちの秒数（全本の既定。省略時: 画面キャプチャ 45 / headless 12）",
     )
     p_batch.add_argument(
         "--no-rewind", action="store_true", help="先頭ページへの巻き戻しをスキップ（全本の既定）"

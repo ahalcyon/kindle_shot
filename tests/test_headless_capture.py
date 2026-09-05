@@ -23,6 +23,7 @@ from core.headless_capture import (
     is_signed_in,
     read_position,
     reverse_of,
+    rewind_to_start,
     turn_key,
 )
 
@@ -329,3 +330,50 @@ def test_detection_restores_reading_position():
 def test_detection_gives_up_without_position():
     """位置が読めなければ判定しない（決め打ちで進めない）。"""
     assert detect_turn_key(FakeReader(text=""), page_wait=0) is None
+
+
+# ------------------------------------------------------------
+# 先頭ページへの巻き戻し
+# ------------------------------------------------------------
+
+
+def test_rewind_reaches_the_first_page():
+    """読みかけの位置から先頭まで戻す。
+
+    read.amazon.co.jp/?asin=... は前回の読書位置で開く（実測: 位置 27）。
+    巻き戻さないと本の途中から末尾までだけ撮れ、しかも end_of_book で
+    正常終了してしまう。batch は出力があるとスキップするので、
+    半分だけの本がそのまま確定する。
+    """
+    page = FakeReader(forward="ArrowLeft", position=27)
+    ok, presses = rewind_to_start(page, "left", page_wait=0)
+    assert ok is True
+    assert page.position == 1
+    assert presses == 26
+
+
+def test_rewind_is_noop_at_the_first_page():
+    page = FakeReader(forward="ArrowLeft", position=1)
+    ok, presses = rewind_to_start(page, "left", page_wait=0)
+    assert (ok, presses) == (True, 0)
+
+
+def test_rewind_respects_max_rewind():
+    """暴走しないよう上限で打ち切り、届かなかったことを返す。"""
+    page = FakeReader(forward="ArrowLeft", position=500)
+    ok, presses = rewind_to_start(page, "left", page_wait=0, max_rewind=10)
+    assert ok is False
+    assert presses == 10
+
+
+def test_rewind_gives_up_without_position():
+    page = FakeReader(text="")
+    ok, presses = rewind_to_start(page, "left", page_wait=0)
+    assert (ok, presses) == (False, 0)
+
+
+def test_rewind_uses_the_reverse_key():
+    """前進が left なら right で戻す。"""
+    page = FakeReader(forward="ArrowLeft", position=3)
+    rewind_to_start(page, "left", page_wait=0)
+    assert set(page.presses) == {"ArrowRight"}
