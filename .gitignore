@@ -10,7 +10,7 @@ __pycache__/
 kindle_env/
 ndlocr-lite/
 
-# 資格情報・ローカル環境変数 (誤コミット防止。なお本アプリは認証情報を一切使わない)
+# 資格情報・ローカル環境変数 (headless のサインインで使う。ひな形は .env.example)
 .env
 .env.*
 !.env.example
@@ -37,3 +37,7 @@ dist/
 
 # 実行時の生成物
 *.log
+
+# Playwright スパイク (#9) の作業用
+.playwright-profile/
+.spike-out/

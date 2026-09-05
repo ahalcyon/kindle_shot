@@ -125,9 +125,30 @@ def test_paths_follow_run_book_layout():
 
 
 def test_main_requires_asin(monkeypatch, capsys):
-    monkeypatch.delenv("KINDLE_SHOT_SMOKE_ASIN", raising=False)
+    """ASIN が無ければ何も実行せず終わる。
+
+    git config を読みに行くので、開発者の設定に左右されないよう差し替える
+    （差し替えないと本物のキャプチャが起動してしまう）。
+    """
+    monkeypatch.setattr(smoke_capture, "smoke_asin_from_git_config", lambda: "")
     assert smoke_capture.main([]) == smoke_capture.EXIT_BAD_ARGS
-    assert "ASIN" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "ASIN" in err
+    assert "kindleshot.smokeAsin" in err
+
+
+def test_asin_comes_from_git_config(monkeypatch):
+    """--asin を省いたら git config kindleshot.smokeAsin を使う。"""
+    monkeypatch.setattr(smoke_capture, "smoke_asin_from_git_config", lambda: "B0FROMGIT")
+    captured = {}
+
+    def fake_run_smoke(asin, out, pages, python=None):
+        captured["asin"] = asin
+        return []
+
+    monkeypatch.setattr(smoke_capture, "run_smoke", fake_run_smoke)
+    assert smoke_capture.main([]) == smoke_capture.EXIT_OK
+    assert captured["asin"] == "B0FROMGIT"
 
 
 def test_main_rejects_single_page(capsys):

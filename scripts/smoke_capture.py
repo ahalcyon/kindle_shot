@@ -44,6 +44,27 @@ EXIT_BAD_ARGS = 2
 # ------------------------------------------------------------
 
 
+def smoke_asin_from_git_config():
+    """git config kindleshot.smokeAsin を読む。
+
+    ASIN は秘密ではないので .env には置かない。一方でどの本を使うかは
+    開発者ごとに違う（自分が所有する本である必要がある）ので、
+    リポジトリにも入れずクローンごとの git config に持つ。
+    pre-push フックが読むのと同じ場所。
+    """
+    try:
+        result = subprocess.run(
+            ["git", "config", "kindleshot.smokeAsin"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=10,
+        )
+    except Exception:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def capture_dir(out, title=TITLE):
     """キャプチャ画像と manifest.json が置かれるフォルダ。"""
     return os.path.join(out, title)
@@ -214,8 +235,8 @@ def main(argv=None):
     )
     parser.add_argument(
         "--asin",
-        default=os.environ.get("KINDLE_SHOT_SMOKE_ASIN", ""),
-        help="対象の ASIN（省略時は環境変数 KINDLE_SHOT_SMOKE_ASIN）",
+        default=smoke_asin_from_git_config(),
+        help="対象の ASIN（省略時は git config kindleshot.smokeAsin）",
     )
     parser.add_argument("--pages", type=int, default=3, help="取得ページ数（既定: 3）")
     parser.add_argument("--out", help="出力先（省略時は一時フォルダを作って最後に消す）")
@@ -226,9 +247,8 @@ def main(argv=None):
     if not args.asin:
         print(
             "エラー: ASIN が指定されていません。\n"
-            "  --asin B0XXXXXXXX を渡すか、次のいずれかを設定してください:\n"
-            "    git config kindleshot.smokeAsin B0XXXXXXXX\n"
-            "    set KINDLE_SHOT_SMOKE_ASIN=B0XXXXXXXX",
+            "  --asin B0XXXXXXXX を渡すか、次を設定してください:\n"
+            "    git config kindleshot.smokeAsin B0XXXXXXXX",
             file=sys.stderr,
         )
         return EXIT_BAD_ARGS
