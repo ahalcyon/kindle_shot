@@ -55,25 +55,6 @@ class Line:
         """1 文字の一辺。縦書きは行の幅、横書きは行の高さ。"""
         return self.width if self.vertical else self.height
 
-    def char_positions(self):
-        """文字ごとの (文字, left, top) を、行の先頭から順に返す。
-
-        NDLOCR-Lite は行単位の bbox しか返さないので、行の長辺を文字数で
-        等分して割り当てる。実測では 1 文字あたりの送りが 19.8〜20.1px と
-        ほぼ一定なので、この近似で選択位置は実用上ずれない。
-        """
-        n = len(self.text)
-        if n == 0:
-            return
-        if self.vertical:
-            step = self.height / n
-            for i, ch in enumerate(self.text):
-                yield ch, self.left, self.top + step * i
-        else:
-            step = self.width / n
-            for i, ch in enumerate(self.text):
-                yield ch, self.left + step * i, self.top
-
 
 @dataclass(frozen=True)
 class PageLayout:

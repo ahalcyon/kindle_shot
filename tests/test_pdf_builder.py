@@ -366,10 +366,11 @@ def test_vertical_column_uses_a_rotated_text_matrix():
     assert len({x for _m, x, _y in obj.placements}) == 1
 
 
-def test_horizontal_line_is_not_rotated():
-    """横書きは回さない。
+def test_horizontal_line_is_drawn_as_one_unrotated_string():
+    """横書きは回さず、1 行まるごと 1 回で置く。
 
-    文字送りが書字方向と一致するので、回さなくても抽出器は 1 行にまとめる。
+    文字送りが書字方向と一致するので抽出器は並べ替えない。1 文字ずつ置いて
+    bbox を等分すると和欧混植の行が壊れるため (#40)、字幅の比に任せる。
     """
     from core.ocr_layout import Line, PageLayout
 
@@ -381,8 +382,8 @@ def test_horizontal_line_is_not_rotated():
     )
 
     (obj,) = _draw(layout)
-    assert obj.strings == ["よ", "こ", "が", "き"]
-    assert [m for m, _x, _y in obj.placements] == [None] * 4
+    assert obj.strings == ["よこがき"]
+    assert [m for m, _x, _y in obj.placements] == [None]
 
 
 def test_empty_lines_are_not_drawn():
@@ -520,6 +521,156 @@ def test_vertical_columns_survive_poppler(
     extracted = re.sub(r"\s", "", result.stdout)
     for text in columns:
         assert text in extracted, f"{text!r} が列としてまとまっていない: {extracted!r}"
+
+
+def _horizontal_page(texts, left=100, top=100, size=24, width_ratio=0.75):
+    """上から下へ texts を並べた横書き 1 ページ分の PageLayout。
+
+    幅は実フォントで組んだ幅を基準にする。OCR が返す bbox は実際に組まれた行を
+    囲うので、字数 × 字送りの決め打ちでは和欧混植の行を再現できない。
+
+    既定で自然な幅より狭くするのは、実データではそうなるため。横書きの
+    ``font_size`` は行の高さで、行の高さは字面より大きい（ascender と descender
+    と行間の一部を含む）ので、その高さで測った字幅の総和は bbox の幅を必ず
+    上回る。**幅を自然な幅ちょうどにすると伸縮率が 1 になり、Tz 回りの
+    取り違えがどれも検出できなくなる。**
+    """
+    from reportlab.pdfbase import pdfmetrics
+
+    from core.ocr_layout import Line, PageLayout
+
+    font_name = pdf_builder.register_japanese_font()
+    lines = []
+    for i, text in enumerate(texts):
+        width = pdfmetrics.stringWidth(text, font_name, size) * width_ratio
+        lines.append(
+            Line(
+                text=text,
+                left=left,
+                top=top + i * size * 2,
+                right=int(left + width),
+                bottom=top + i * size * 2 + size,
+            )
+        )
+    return PageLayout(filename="001.png", width=1000, height=1000, lines=lines)
+
+
+# 数字・欧字と和文が混ざる行。料理本の分量、技術書のコードや型名に必ず出る
+MIXED_SCRIPT_LINES = (
+    "薄力粉 200g",
+    "Wi-Fiの設定はiPhoneとWindowsで違う",
+    "AWS Lambdaで100msかかる",
+)
+
+
+def test_horizontal_mixed_script_lines_survive_copying(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """#40: 和文に数字・欧字が混ざった横書きの行が、そのままコピーできる。
+
+    行の幅を文字数で等分すると、字幅の狭い数字・欧字のまわりに隙間が空く。
+    抽出器はそれを語の切れ目とみなすので ``200g`` が ``2 0 0 g``、``Wi-Fi``
+    が ``W i - F i`` になる。字幅の比で配分すれば隙間が空かない。
+    """
+    out = tmp_path / "mixed.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(wide_image_folder), [_horizontal_page(list(MIXED_SCRIPT_LINES))], str(out)
+    )
+    assert ok, msg
+
+    extracted = extract_region(out, 0, 0.0, 0.0, 1.0, 1.0)
+    for text in MIXED_SCRIPT_LINES:
+        assert text in extracted, f"{text!r} が分断されている: {extracted!r}"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("pdftotext") is None,
+    reason="poppler の pdftotext が無い（windows-latest には空文字列を返す別物が入っている）",
+)
+def test_horizontal_mixed_script_lines_survive_poppler(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """#40 を poppler でも見る。隙間の扱いは抽出器ごとに違う。
+
+    実測では現行の等分方式で PDFium が 2/3、poppler が 1/3 しか行を保てず、
+    poppler のほうが隙間に厳しかった。
+    """
+    out = tmp_path / "mixed_poppler.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(wide_image_folder), [_horizontal_page(list(MIXED_SCRIPT_LINES))], str(out)
+    )
+    assert ok, msg
+
+    result = subprocess.run(
+        ["pdftotext", str(out), "-"], capture_output=True, text=True, encoding="utf-8"
+    )
+    for text in MIXED_SCRIPT_LINES:
+        assert text in result.stdout, f"{text!r} が分断されている: {result.stdout!r}"
+
+
+@pytest.mark.parametrize("width_ratio", (0.75, 1.0, 1.5))
+def test_horizontal_line_lands_inside_its_bounding_box(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path, width_ratio
+):
+    """字幅の比で配分しても、行は bbox の左端から右端に収まる。
+
+    Tz が掛かるのはグリフの送りだけで、テキスト行列の平行移動には掛からない。
+    掛かると思って原点を伸縮率で割ると、**行が丸ごと横へずれる**。実測では
+    伸縮率 0.75 の行が bbox (600, 906) に対して (800, 1102) に落ちた。
+    ページの外へ押し出された行は抽出からも消える。
+
+    伸縮率 1 では割っても割らなくても同じ結果になるので、1 を挟んで
+    両側の比を回す。
+    """
+    out = tmp_path / f"bbox_{width_ratio}.pdf"
+    layout = _horizontal_page(
+        ["Wi-Fiの設定はiPhoneとWindowsで違う"], left=300, width_ratio=width_ratio
+    )
+    (line,) = layout.lines
+    ok, msg = pdf_builder.images_to_searchable_pdf(str(wide_image_folder), [layout], str(out))
+    assert ok, msg
+
+    import pypdfium2 as pdfium
+
+    page = pdfium.PdfDocument(str(out))[0]
+    text_page = page.get_textpage()
+    assert text_page.count_chars() == len(line.text)
+    boxes = [text_page.get_charbox(i) for i in range(text_page.count_chars())]
+    # 許容は伸縮後の 1 文字ぶん。字面は送りより狭いので、行末では最後の 1 字の
+    # 字面と送りの差だけ内側に寄る（実測、伸縮率 1.5 で 7.7px）。原点の
+    # 取り違えは左端に比例したずれ（同条件で 200px）なので、これで捕まる
+    tolerance = line.width / len(line.text)
+    assert abs(min(b[0] for b in boxes) - line.left) < tolerance
+    assert abs(max(b[2] for b in boxes) - line.right) < tolerance
+
+
+def test_horizontal_line_with_a_broken_bounding_box_is_still_placed(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """``right < left`` の行でも、テキストレイヤーから消えない。
+
+    幅が負のまま伸縮率を求めると Tz が負になり、文字が鏡像になったうえで
+    ページの外（実測 x = -891）へ飛ぶ。例外は出ず、その行だけが黙って
+    抽出されなくなる。
+    """
+    from core.ocr_layout import Line, PageLayout
+
+    text = "薄力粉 200g"
+    layout = PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[Line(text=text, left=600, top=200, right=500, bottom=224)],
+    )
+    out = tmp_path / "broken_bbox.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(str(wide_image_folder), [layout], str(out))
+    assert ok, msg
+
+    import pypdfium2 as pdfium
+
+    text_page = pdfium.PdfDocument(str(out))[0].get_textpage()
+    assert text_page.count_chars() == len(text)
+    assert min(text_page.get_charbox(i)[0] for i in range(text_page.count_chars())) > 0
 
 
 def test_searchable_pdf_scales_text_to_the_image(

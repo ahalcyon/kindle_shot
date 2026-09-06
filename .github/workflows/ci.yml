@@ -72,11 +72,12 @@ jobs:
         shell: bash
         run: mypy
 
-      # 縦書き PDF の読み順は poppler でしか壊れない（PDFium は描画順で読むため
-      # 再現しない）。ユニットテストは windows-latest で走り poppler が無いので、
-      # このジョブでだけ入れて #37 の退行を見張る。
+      # 不可視テキストの壊れ方は抽出器ごとに違う。縦書きの読み順 (#37) は
+      # poppler でしか壊れず（PDFium は描画順で読むため再現しない）、和欧混植の
+      # 分断 (#40) は poppler のほうが厳しく出る。ユニットテストは
+      # windows-latest で走り poppler が無いので、このジョブでだけ見張る。
       # 日本語 TrueType が要る（Noto CJK は CFF なので reportlab で使えない）。
-      - name: 縦書きの読み順を poppler で検査する (#37)
+      - name: PDF のテキスト層を poppler で検査する (#37 / #40)
         shell: bash
         run: |
           sudo apt-get update -qq
