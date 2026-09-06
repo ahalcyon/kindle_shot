@@ -128,6 +128,35 @@ def check_input_folder(input_folder, emit=null_emit):
     return None
 
 
+SIDE_NAMES = ("左", "右", "上", "下")
+
+
+def clipped_sides(content_margins, applied_margins):
+    """適用マージンが内容の位置を超えた辺を [(辺, 超過px), ...] で返す。
+
+    内容ベースの余白（その辺で内容が始まる位置）より深く削れば、その分だけ
+    本文が消える。純関数なので、実際に削る前に判定できる。
+    """
+    if not content_margins or not applied_margins:
+        return []
+    return [
+        (name, int(applied) - int(content))
+        for name, content, applied in zip(SIDE_NAMES, content_margins, applied_margins, strict=True)
+        if content is not None and applied is not None and applied > content
+    ]
+
+
+def _ocr_validation_summary(report):
+    """読み取り検証レポートを 1 行にする。"""
+    if report["problems"]:
+        return "読み取り結果に問題があります: " + " / ".join(report["problems"])
+    if report["warnings"]:
+        return "読み取り結果の注意: " + " / ".join(report["warnings"])
+    return (
+        f"読み取り結果を検証しました（{report['pages']} ページ / {report['chars']} 字 / 問題なし）"
+    )
+
+
 def read_shot_mode(save_dir):
     """キャプチャが記録した撮影方式を manifest から読む。読めなければ None。
 
@@ -410,6 +439,24 @@ def run_trim(
             report=report,
         )
 
+        # 適用マージンが内容の位置を超えたら本文を削っている。#28 はこれで、
+        # content_margins=[189,18,20,90] に対し適用が [200,181,80,82] と
+        # 上辺で 60px 食い込んでいたのに、両方ログに出ていながら誰も見ていなかった
+        clipped = clipped_sides(content_raw, margins)
+        if clipped:
+            emit(
+                "margins_clip_content",
+                human=(
+                    "トリミングが内容に食い込みます: "
+                    + " / ".join(f"{name} {over}px" for name, over in clipped)
+                    + "（本文が欠ける可能性があります）"
+                ),
+                sides=[name for name, _ in clipped],
+                overshoot={name: over for name, over in clipped},
+                content_margins=list(content_raw),
+                applied=list(margins),
+            )
+
     # --- パススルー対象の決定 ---
     # 「全面表示（本文と余白構成が大きく異なる）ページ」= 余白集計の外れ値。
     # マージン値そのものとは独立に決めるため、min_margins や手動で上げた
@@ -435,8 +482,13 @@ def run_trim(
             )
 
     # --- 内容が切れないかの検証 ---
-    # 自動検出の結果は構成上安全（外れ値を除く全ページの最小値以下）なので、
-    # 直接指定時のみ検証する。パススルー対象は無加工で出るので対象外
+    # 直接指定時はページごとに切れを検証する。パススルー対象は無加工で出るので対象外。
+    #
+    # 自動検出時にここを通さないのは、共通マージンが「外れ値を除く全ページの
+    # 最小値」だから構成上安全、という理由だった。**この仮定は誤りで #28 の
+    # 原因になった**。min_margins による下限と、combine_margins が辺ごとに
+    # max(内容ベース, 変化ベース) を採ることで、適用値が内容の位置を追い越す。
+    # 自動検出側は margins_detected の直後に clipped_sides で突き合わせている。
     if manual and not no_check:
         if pages is None:
             pages = folder_page_margins(
@@ -561,7 +613,7 @@ def run_convert(
     output_folder = os.path.abspath(output_folder)
     filename = name or os.path.basename(input_folder.rstrip("\\/"))
     cfg = config if config is not None else load_config()
-    extra_fields = {}  # result イベントへの追加フィールド（分割出力時のみ）
+    extra_fields: dict = {}  # result イベントへの追加フィールド（検証結果・分割出力）
 
     if fmt == "image_pdf":
         filename = _ensure_ext(filename, ".pdf")
@@ -596,12 +648,21 @@ def run_convert(
         # 章検出・クリーニング・Markdown は (filename, text) を前提にしている
         pages = results
         if want_layout:
+            from core.ocr_validator import analyze as analyze_ocr
+
             positioned = sum(1 for p in results if p.positioned)
             emit(
                 "ocr_layout",
                 human=f"文字の位置つきで読めたページ: {positioned}/{len(results)}",
                 positioned=positioned,
                 pages=len(results),
+            )
+            report = analyze_ocr(results)
+            extra_fields["ocr_validation"] = report
+            emit(
+                "ocr_validation",
+                human=_ocr_validation_summary(report),
+                **report,
             )
             results = [p.as_pair() for p in results]
 
@@ -670,7 +731,7 @@ def run_convert(
                 if success and written:
                     output_path = written[0]
                 if success and len(written) > 1:
-                    extra_fields = {"outputs": written, "parts": len(written)}
+                    extra_fields.update(outputs=written, parts=len(written))
 
     emit(
         "result",
