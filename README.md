@@ -544,6 +544,10 @@ python scripts\convert_2nd.py --books books_c.json --out C:\books --format markd
   `tool` / `title` / `profile_key` / `profile`（解決済みプロファイル全体）/ `total_pages` /
   `save_dir` / `stopped_reason` / `started_at` / `finished_at` / `duration_seconds`。
   headless ではさらに `backend` / `page_turn` / `page_turn_source` / `page_wait` / `shot_mode`
+- **`ocr_layout` イベント（`searchable_pdf` のみ）**: 文字の位置つきで読めたページ数
+  （`positioned` / `pages`）。位置つきのページは不可視テキストが文字の位置に重なるため、
+  範囲選択でコピーした内容が見えているものと一致します。位置が取れなかったページは
+  従来どおりページ左上から流し込むので、検索はできてもコピーは場所と対応しません
 - **`shot_mode`（headless のみ）**: `element` ならページ画像の要素だけを撮っており、
   ビューアの UI も余白も入っていません。`run` / `batch` はこのときトリミングを行いません
   （ページ画像には削れる余白が無く、削ると本文を失うため）。要素が見つからない本では

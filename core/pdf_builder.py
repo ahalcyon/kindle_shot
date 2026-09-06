@@ -26,6 +26,7 @@ from reportlab.platypus import Flowable, PageBreak, Paragraph, SimpleDocTemplate
 
 from core.chapter_detector import chapters_by_filename as _chapters_by_filename
 from core.image_files import PDF_IMAGE_EXTENSIONS, list_images
+from core.ocr_layout import PageLayout
 
 # 埋め込み用の日本語 TrueType 候補 (path, subfontIndex)。上から順に試す。
 JAPANESE_FONT_CANDIDATES = [
@@ -161,15 +162,60 @@ def images_to_pdf(folder_path, output_folder, output_filename, on_progress=None,
     return True, f"PDFファイルを作成しました: {output_pdf}"
 
 
+def _draw_positioned_text(c, layout, page_height, font_name, scale=1.0):
+    """OCR が返した座標に不可視テキストを置く。置いた行数を返す。
+
+    行の bbox を文字数で等分して 1 文字ずつ配置する。縦書きは列を上から下へ、
+    横書きは行を左から右へ。連結テキストをページ左上から流し込む従来の方法と
+    違い、範囲選択でコピーした内容が見えている場所と一致する。
+
+    PDF の原点は左下、OCR の座標は左上なので y を反転する。
+    """
+    drawn = 0
+    for line in layout.lines:
+        size = max(1.0, line.font_size * scale)
+        text_obj = c.beginText()
+        text_obj.setTextRenderMode(3)  # invisible
+        text_obj.setFont(font_name, size)
+        for ch, left, top in line.char_positions():
+            # 文字の左下に置く。top は文字の上端なので 1 文字分下げる
+            text_obj.setTextOrigin(left * scale, page_height - (top + line.font_size) * scale)
+            text_obj.textOut(ch)
+        c.drawText(text_obj)
+        drawn += 1
+    return drawn
+
+
+def _draw_flowed_text(c, text, page_height, font_name):
+    """座標が無いページ用。ページ左上から横書きで流し込む（検索のみ対応）。"""
+    font_size = 12
+    leading = font_size * 1.4
+    c.setFont(font_name, font_size)
+    text_obj = c.beginText(0, page_height - font_size)
+    text_obj.setTextRenderMode(3)  # invisible
+    for line in text.split("\n"):
+        line = line.strip()
+        if line:
+            text_obj.textLine(line)
+        else:
+            text_obj.moveCursor(0, leading)
+    c.drawText(text_obj)
+
+
 def images_to_searchable_pdf(image_folder, results, output_path, on_progress=None, chapters=None):
     """画像+不可視OCRテキストの検索可能PDFを生成する。
 
     見た目は画像PDFと同一だが、OCRテキストが不可視レイヤーとして
-    重ねられており、テキスト検索（Ctrl+F）が可能。
+    重ねられており、テキスト検索（Ctrl+F）と範囲選択コピーができる。
+
+    results に PageLayout（行ごとの座標つき）を渡すと、不可視テキストを
+    **文字の位置に重ねる**。(filename, text) のタプルを渡した場合は座標が
+    無いので、従来どおりページ左上から流し込む（検索はできるが、範囲選択で
+    コピーした内容は見えている場所と対応しない。縦書きでは特に破綻する）。
 
     Args:
         image_folder: 画像フォルダパス
-        results: [(filename, text), ...] のリスト（OCR結果）
+        results: [PageLayout, ...] または [(filename, text), ...] のリスト
         output_path: 出力PDFファイルパス
         on_progress: 進捗コールバック (current, total, filename)
         chapters: しおり用の章リスト (chapter_detector.Chapter のリスト)
@@ -192,7 +238,9 @@ def images_to_searchable_pdf(image_folder, results, output_path, on_progress=Non
         c = canvas.Canvas(output_path)
         total = len(results)
 
-        for i, (filename, text) in enumerate(results, 1):
+        for i, page in enumerate(results, 1):
+            layout = page if isinstance(page, PageLayout) else None
+            filename, text = page.as_pair() if layout else page
             image_path = os.path.join(image_folder, filename)
             if not os.path.exists(image_path):
                 continue
@@ -205,20 +253,14 @@ def images_to_searchable_pdf(image_folder, results, output_path, on_progress=Non
             c.drawImage(image_path, 0, 0, width, height)
             img.close()
 
-            # 不可視テキストをオーバーレイ（検索用）
-            if text.strip():
-                font_size = 12
-                leading = font_size * 1.4
-                c.setFont(font_name, font_size)
-                text_obj = c.beginText(0, height - font_size)
-                text_obj.setTextRenderMode(3)  # invisible
-                for line in text.split("\n"):
-                    line = line.strip()
-                    if line:
-                        text_obj.textLine(line)
-                    else:
-                        text_obj.moveCursor(0, leading)
-                c.drawText(text_obj)
+            # 不可視テキストをオーバーレイ
+            if layout is not None and layout.positioned:
+                # OCR にかけた画像が前処理で拡大されていると座標系がずれる。
+                # 記録された画像サイズと実物の比で合わせる
+                scale = width / layout.width if layout.width else 1.0
+                _draw_positioned_text(c, layout, height, font_name, scale=scale)
+            elif text.strip():
+                _draw_flowed_text(c, text, height, font_name)
 
             ch = chapter_map.get(filename)
             if ch is not None:

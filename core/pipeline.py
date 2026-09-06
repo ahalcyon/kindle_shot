@@ -578,16 +578,32 @@ def run_convert(
             emit_error(emit, msg)
             return EXIT_OCR_UNAVAILABLE
 
+        # searchable_pdf は不可視テキストを文字の位置に重ねるので行ごとの
+        # 座標が要る。他の形式は連結テキストしか使わない
+        want_layout = fmt == "searchable_pdf"
         success, results = ocr_engine.process_folder_collect(
             input_folder,
             on_progress=phase_progress(emit, "ocr"),
             preprocess_opts=preprocess_opts,
             replacements_opts=replacements_opts,
             workers=ocr_workers,
+            layout=want_layout,
         )
         if not success:
             emit_error(emit, results)
             return EXIT_ERROR
+
+        # 章検出・クリーニング・Markdown は (filename, text) を前提にしている
+        pages = results
+        if want_layout:
+            positioned = sum(1 for p in results if p.positioned)
+            emit(
+                "ocr_layout",
+                human=f"文字の位置つきで読めたページ: {positioned}/{len(results)}",
+                positioned=positioned,
+                pages=len(results),
+            )
+            results = [p.as_pair() for p in results]
 
         bookmarks_enabled = (
             bool(cfg.get("ocr", {}).get("chapter_bookmarks", {}).get("enabled", True))
@@ -617,7 +633,7 @@ def run_convert(
             output_path = os.path.join(output_folder, filename)
             success, message = images_to_searchable_pdf(
                 input_folder,
-                results,
+                pages,
                 output_path,
                 on_progress=phase_progress(emit, "pdf"),
                 chapters=chapters,

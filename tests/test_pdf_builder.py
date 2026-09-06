@@ -212,3 +212,112 @@ def test_text_pdf_fallback_still_builds(font_cache_reset, monkeypatch, tmp_path)
     ok, msg = pdf_builder.text_to_pdf([("001.png", SAMPLE_TEXT)], str(out))
     assert ok, msg
     assert out.exists()
+
+
+# ------------------------------------------------------------
+# 不可視テキストの位置（範囲選択でコピーした内容が見えている場所と一致するか）
+# ------------------------------------------------------------
+
+
+def extract_region(pdf_path, page_index, left, bottom, right, top):
+    """ページの一部の矩形からテキストを抜く。座標は 0..1 の割合。"""
+    import pypdfium2
+
+    doc = pypdfium2.PdfDocument(str(pdf_path))
+    try:
+        page = doc[page_index]
+        w, h = page.get_width(), page.get_height()
+        return page.get_textpage().get_text_bounded(
+            left=w * left, bottom=h * bottom, right=w * right, top=h * top
+        )
+    finally:
+        doc.close()
+
+
+@pytest.fixture
+def wide_image_folder(tmp_path):
+    folder = tmp_path / "images"
+    folder.mkdir()
+    Image.new("RGB", (1000, 1000), "white").save(str(folder / "001.png"))
+    return folder
+
+
+def test_searchable_pdf_puts_text_where_it_is_shown(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """縦書きの右上の列は PDF でも右上から取れる。
+
+    従来はページ左上から横書きで流し込んでいたため、範囲選択でコピーした
+    内容が見えている場所と対応しなかった（縦書きでは特に破綻した）。
+    """
+    from core.ocr_layout import Line, PageLayout
+
+    layout = PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[
+            # 右端の列＝縦書きの 1 列目
+            Line(text="みぎのはしら", left=940, top=0, right=980, bottom=240, vertical=True),
+            # 左端の列＝最後の列
+            Line(text="ひだりのはしら", left=20, top=700, right=60, bottom=980, vertical=True),
+        ],
+    )
+    out = tmp_path / "positioned.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(str(wide_image_folder), [layout], str(out))
+    assert ok, msg
+
+    top_right = extract_region(out, 0, 0.85, 0.65, 1.0, 1.0)
+    bottom_left = extract_region(out, 0, 0.0, 0.0, 0.15, 0.35)
+
+    assert "みぎのはしら" in top_right
+    assert "ひだりのはしら" not in top_right
+    assert "ひだりのはしら" in bottom_left
+    assert "みぎのはしら" not in bottom_left
+
+
+def test_searchable_pdf_scales_text_to_the_image(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """OCR にかけた画像が前処理で拡大されていても、座標を実画像に合わせる。"""
+    from core.ocr_layout import Line, PageLayout
+
+    # OCR は 2 倍に拡大した画像を見ている（width=2000）が、PDF に載せるのは 1000px
+    layout = PageLayout(
+        filename="001.png",
+        width=2000,
+        height=2000,
+        lines=[Line(text="みぎのはしら", left=1880, top=0, right=1960, bottom=480, vertical=True)],
+    )
+    out = tmp_path / "scaled.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(str(wide_image_folder), [layout], str(out))
+    assert ok, msg
+
+    assert "みぎのはしら" in extract_region(out, 0, 0.85, 0.65, 1.0, 1.0)
+
+
+def test_searchable_pdf_still_accepts_plain_pairs(
+    font_cache_reset, japanese_font, image_folder, tmp_path
+):
+    """座標が取れない経路（ページ毎起動のフォールバック）でも従来どおり作れる。"""
+    out = tmp_path / "pairs.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(image_folder), [("001.png", SAMPLE_TEXT)], str(out)
+    )
+    assert ok, msg
+    assert SAMPLE_TEXT.split("\n")[0] in extract_text(out)
+
+
+def test_searchable_pdf_page_without_coordinates_keeps_its_text(
+    font_cache_reset, japanese_font, image_folder, tmp_path
+):
+    from core.ocr_layout import PageLayout
+
+    out = tmp_path / "fallback.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(image_folder),
+        [PageLayout(filename="001.png", fallback_text=SAMPLE_TEXT)],
+        str(out),
+    )
+    assert ok, msg
+    assert SAMPLE_TEXT.split("\n")[0] in extract_text(out)
