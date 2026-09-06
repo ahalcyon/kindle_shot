@@ -151,6 +151,8 @@ def build_run_argv(python, asin, out, pages, fmt="image_pdf"):
     ]
     # 読み込み待ちの既定 45 秒は画面キャプチャ経路向けの値
     argv += ["--headless", "--load-wait", "12", "--json"]
+    # 検証で manifest.json とキャプチャ画像を読むので消させない
+    argv += ["--keep-images"]
     return argv
 
 

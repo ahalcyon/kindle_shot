@@ -10,9 +10,11 @@ from core.pipeline import (
     EXIT_BAD_ARGS,
     EXIT_NO_IMAGES,
     EXIT_OK,
+    MANIFEST_NAME,
     check_input_folder,
     clear_output_images,
     relax_margins,
+    remove_intermediates,
     run_trim,
 )
 
@@ -199,3 +201,64 @@ def test_run_trim_auto_passes_through_full_bleed_cover(cover_folder, tmp_path):
         assert im.size == (200 - 84, 300 - 104)  # 本文はトリミングされる
     with Image.open(out / "cover.png") as im:
         assert im.size == (200, 300)  # 表紙は元サイズのまま
+
+
+# ------------------------------------------------------------
+# 中間ファイルの削除
+# ------------------------------------------------------------
+
+
+def make_book_output(tmp_path, title="本", pages=3):
+    """run_book が作る構成を再現する。"""
+    from PIL import Image
+
+    save_dir = tmp_path / title
+    trimmed_dir = tmp_path / f"{title}_trimmed"
+    save_dir.mkdir()
+    trimmed_dir.mkdir()
+    for i in range(1, pages + 1):
+        Image.new("RGB", (40, 60), "white").save(str(save_dir / f"{i:03d}.png"))
+        Image.new("RGB", (30, 50), "white").save(str(trimmed_dir / f"{i:03d}.png"))
+    (save_dir / MANIFEST_NAME).write_text('{"total_pages": 3}', encoding="utf-8")
+    return save_dir, trimmed_dir
+
+
+def test_removes_images_and_manifest(tmp_path):
+    """画像と manifest.json を消し、空になったフォルダを畳む。
+
+    PDF が手元にある利用者にとって manifest.json は読む価値が無く、
+    残すと本フォルダが 1KB の JSON 1 個のために生き残ってしまう。
+    """
+    save_dir, trimmed_dir = make_book_output(tmp_path)
+    freed = remove_intermediates(str(save_dir), str(trimmed_dir))
+
+    assert freed > 0
+    assert not save_dir.exists()
+    assert not trimmed_dir.exists()
+
+
+def test_keeps_folder_that_still_has_files(tmp_path):
+    """利用者が置いたファイルがあるフォルダは畳まない。"""
+    save_dir, trimmed_dir = make_book_output(tmp_path)
+    (save_dir / "メモ.txt").write_text("あとで読む", encoding="utf-8")
+
+    remove_intermediates(str(save_dir), str(trimmed_dir))
+
+    assert sorted(p.name for p in save_dir.iterdir()) == ["メモ.txt"]
+
+
+def test_remove_intermediates_reports_freed_bytes(tmp_path):
+    save_dir, trimmed_dir = make_book_output(tmp_path)
+    events = []
+    remove_intermediates(
+        str(save_dir), str(trimmed_dir), lambda e, human=None, **f: events.append({"event": e, **f})
+    )
+    removed = [e for e in events if e["event"] == "intermediates_removed"]
+    assert len(removed) == 1
+    # manifest.json の分も含めて報告する
+    assert removed[0]["bytes"] > 0
+
+
+def test_remove_intermediates_is_safe_when_missing(tmp_path):
+    """フォルダが無くても落ちない。"""
+    assert remove_intermediates(str(tmp_path / "no"), str(tmp_path / "none")) == 0

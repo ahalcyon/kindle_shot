@@ -194,8 +194,9 @@ kindle_shot.bat check --profile kindle_cloud
 ```
 
 - ASIN は Amazon の商品ページ URL（`.../dp/B0XXXXXXXX/...`）または「登録情報」欄で確認できます
-- A の出来上がりは `C:\books\本のタイトル.pdf`。途中生成物として `C:\books\本のタイトル\`（キャプチャ
-  画像）と `C:\books\本のタイトル_trimmed\`（トリミング済み画像）が残ります
+- A の出来上がりは `C:\books\本のタイトル.pdf`。途中生成物（`C:\books\本のタイトル\` のキャプチャ画像・
+  `manifest.json` と `C:\books\本のタイトル_trimmed\` のトリミング済み画像）は、PDF ができた時点で
+  自動的に消えます。残したいときは `--keep-images` を付けます
 - 初めて使うときは `--max-pages 20` を付けて短く試すのが安全です
 - **キャプチャ中は PC を占有します**（マウス・キーボードに触れない）
 - 先頭ページへの巻き戻しは Kindle の読書位置（Whispersync）を動かします。読みかけの本は注意
@@ -507,6 +508,8 @@ python scripts\convert_2nd.py --books books_c.json --out C:\books --format markd
 ```
 
 - `--books` は batch に渡したのと同じリスト（`asin` は `--source` としてフロントマターに記録される）
+- **入力に使う `<書名>_trimmed` は、`batch` に `--keep-images` を付けて走らせた本にしか残りません**
+  （既定では PDF ができた時点で消えます）。2形式ほしいと分かっているなら 1 形式目に付けておきます
 - **出力済みの本と `<書名>_trimmed` が無い本はスキップ**するので、途中で止めても同じコマンドで再開できる
 - `--log` で `convert` の JSON Lines をファイルに追記。`--dry-run` で対象一覧だけ確認できる
 - この工程は**画面を使わない**ので PC を占有しない
@@ -532,6 +535,11 @@ python scripts\convert_2nd.py --books books_c.json --out C:\books --format markd
 - **`manifest.json`**: `capture` 完了時に保存先へ書き出す実行記録。キー は
   `tool` / `title` / `profile_key` / `profile`（解決済みプロファイル全体）/ `total_pages` /
   `save_dir` / `stopped_reason` / `started_at` / `finished_at` / `duration_seconds`
+- **中間ファイルの自動削除**: `run` / `batch` は PDF 化に成功した本の中間ファイル
+  （キャプチャ画像・トリミング済み画像・`manifest.json`）を消し、空になったフォルダを畳みます。
+  1 冊 200MB のうち 130MB を占めるためで、数百冊を無人処理すると効きます。
+  失敗した本は原因を追えるようそのまま残します。`--keep-images` で削除を止められます
+  （`intermediates_removed` イベントに解放したバイト数が出ます）
 - **分量イベント**: `--format markdown` の完了時に `markdown_stats` イベント
   （`chars` / `words_est` / `bytes`）を出力
 - **誤爆防止**: プロファイルにプロセス名がある場合、タイトルは一致してもプロセスが異なるウィンドウ
