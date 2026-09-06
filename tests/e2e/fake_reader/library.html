@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Kindle</title>
+<style>
+  body { margin: 0; }
+  main#library { height: 600px; overflow-y: auto; }
+  .item { height: 180px; border-bottom: 1px solid #ddd; padding: 8px; }
+</style>
+<main id="library"></main>
+<script>
+  const params = new URLSearchParams(location.search);
+  const total = parseInt(params.get("total") || "120", 10);
+  const batch = parseInt(params.get("batch") || "50", 10);
+  let shown = 0;
+  const main = document.getElementById("library");
+
+  function load() {
+    const next = Math.min(shown + batch, total);
+    for (let i = shown; i < next; i++) {
+      const div = document.createElement("div");
+      div.className = "item";
+      div.id = "coverContainer-B0TEST" + String(i).padStart(5, "0");
+      div.textContent = "テスト本 " + i + " (Japanese Edition)";
+      main.appendChild(div);
+    }
+    shown = next;
+  }
+
+  // 末尾までスクロールされたら追加読み込み（ウィンドウのスクロールでは増えない）
+  main.addEventListener("scroll", () => {
+    if (main.scrollTop + main.clientHeight >= main.scrollHeight - 20) load();
+  });
+  load();
+</script>
