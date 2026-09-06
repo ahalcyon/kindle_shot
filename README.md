@@ -259,6 +259,32 @@ Kindle Cloud Reader で「URL で本を開く → 読み込み完了を待つ �
 `--dpi`（既定 200。OCR 目的なら 200〜300、印刷向けなら 300〜400）,
 `--format`（`png` / `jpg`、既定 `png`）, `--overwrite`
 
+### `library` — 蔵書一覧から books.json を作る
+
+Cloud Reader のライブラリを全件走査し、`batch` にそのまま渡せる `books.json` を
+書き出します。**画面もデスクトップセッションも不要**です。
+
+```
+python cli.py library --out books.json
+```
+
+出力はこの形で、`batch --books` にそのまま渡せます。
+
+```json
+[
+  { "title": "みんなのフィードバック大全", "asin": "B0BVLM8RR2" },
+  { "title": "物価とは何か (講談社選書メチエ)", "asin": "B09NVKTTM5" }
+]
+```
+
+タイトル末尾の `(Japanese Edition)` は保存フォルダ名になるため既定で落とします
+（`--keep-edition` で残せます）。ASIN で一意化するので重複はありません。
+
+ライブラリは初期表示 50 件で、スクロールに応じて追加読み込みされます。
+件数が増えなくなるまで自動で送ります（実測: 405 冊を取得）。
+
+絞り込みや巻数順の並べ替えが要る場合は `scripts/make_books.py` を併用してください。
+
 ### `headless` — 画面を使わずにキャプチャする
 
 headless ブラウザで本を開いてページを取得します。**画面もデスクトップセッションも不要**なので、
@@ -277,8 +303,14 @@ python cli.py headless --asin B0XXXXXXXX --title 本のタイトル --out <保�
 切ったまま回せます**。
 
 ```
-python cli.py run   --asin B0XXXXXXXX --title 本 --out <保存先> --headless
-python cli.py batch --books books.json --out <保存先> --headless --load-wait 12
+python cli.py library --out books.json                       # 蔵書一覧を作る
+python cli.py batch --books books.json --out <保存先> --headless   # 一括処理
+```
+
+1 冊だけなら `run` を使います。
+
+```
+python cli.py run --asin B0XXXXXXXX --title 本 --out <保存先> --headless
 ```
 
 headless では本を開く処理がキャプチャに含まれるため `open` のステップがありません。
