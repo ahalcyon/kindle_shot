@@ -7,6 +7,10 @@
 
 import glob
 import os
+import re
+import shutil
+import subprocess
+import sys
 
 import pytest
 from PIL import Image
@@ -274,6 +278,248 @@ def test_searchable_pdf_puts_text_where_it_is_shown(
     assert "ひだりのはしら" not in top_right
     assert "ひだりのはしら" in bottom_left
     assert "みぎのはしら" not in bottom_left
+
+
+class _RecordingText:
+    """beginText() が返すオブジェクトの記録用スタブ。"""
+
+    def __init__(self):
+        self.strings = []
+        self.placements = []
+
+    def setTextRenderMode(self, mode):
+        pass
+
+    def setFont(self, name, size):
+        pass
+
+    def setCharSpace(self, value):
+        pass
+
+    def setHorizScale(self, value):
+        pass
+
+    def setTextOrigin(self, x, y):
+        self.placements.append((None, x, y))
+
+    def setTextTransform(self, a, b, cc, d, x, y):
+        self.placements.append(((a, b, cc, d), x, y))
+
+    def textOut(self, text):
+        self.strings.append(text)
+
+
+class _RecordingCanvas:
+    def __init__(self):
+        self.text_objects = []
+
+    def beginText(self):
+        obj = _RecordingText()
+        self.text_objects.append(obj)
+        return obj
+
+    def drawText(self, text_object):
+        pass
+
+
+def _draw(layout):
+    c = _RecordingCanvas()
+    pdf_builder._draw_positioned_text(c, layout, 1000.0, "Helvetica")
+    return c.text_objects
+
+
+def _drawn_strings(layout):
+    return [s for obj in _draw(layout) for s in obj.strings]
+
+
+ROTATED = (0, -1, 1, 0)
+
+
+def test_vertical_column_uses_a_rotated_text_matrix():
+    """#37: 縦書きの列はテキスト行列を -90 度回して置く。
+
+    抽出器は読み順をテキスト行列から決める。横組みのままだと「右へ進む文字が
+    格子状に並んでいる」と解釈され、列をまたいで横に読まれる。実データでは
+    「は ら こ 「 表 に ず じ と」のような並びになり、OCR の行がそのまま
+    取れたのは poppler で 133 行中 76 行だけだった。
+
+    列を 1 回の文字列描画にまとめる手もあるが、そうすると PDFium が列を
+    x の昇順に並べ替えて読み順が左→右に逆転するので、1 文字ずつ置く。
+    """
+    from core.ocr_layout import Line, PageLayout
+
+    layout = PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[Line(text="たてがき", left=900, top=100, right=940, bottom=300, vertical=True)],
+    )
+
+    (obj,) = _draw(layout)
+    assert obj.strings == ["た", "て", "が", "き"]
+    matrices = [m for m, _x, _y in obj.placements]
+    assert matrices == [ROTATED] * 4
+    # 列は上から下へ。回転後の送りは y が単調減少になる
+    ys = [y for _m, _x, y in obj.placements]
+    assert ys == sorted(ys, reverse=True)
+    # x は列の位置に揃っている（1 列なので全部同じ）
+    assert len({x for _m, x, _y in obj.placements}) == 1
+
+
+def test_horizontal_line_is_not_rotated():
+    """横書きは回さない。
+
+    文字送りが書字方向と一致するので、回さなくても抽出器は 1 行にまとめる。
+    """
+    from core.ocr_layout import Line, PageLayout
+
+    layout = PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[Line(text="よこがき", left=100, top=100, right=260, bottom=140)],
+    )
+
+    (obj,) = _draw(layout)
+    assert obj.strings == ["よ", "こ", "が", "き"]
+    assert [m for m, _x, _y in obj.placements] == [None] * 4
+
+
+def test_empty_lines_are_not_drawn():
+    """テキストが空の行は描かない（座標だけあっても意味が無い）。"""
+    from core.ocr_layout import Line, PageLayout
+
+    layout = PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[Line(text="", left=900, top=100, right=940, bottom=380, vertical=True)],
+    )
+
+    assert _drawn_strings(layout) == []
+
+
+def test_vertical_column_keeps_its_last_character(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """ページ全体を使う列でも末尾の 1 文字が落ちない。
+
+    字送りに行の幅を使うと、送りとの差の分だけ列が bbox からはみ出す。
+    ページ下端を越えた最後の 1 文字は抽出されなくなる（実データでは
+    53 文字の列 15 本すべてで末尾が落ちた）。
+    """
+    from core.ocr_layout import Line, PageLayout
+
+    text = "あいうえおかきくけこさしすせそたちつてと"
+    layout = PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[
+            # 上端から下端まで使い切る列。1 文字あたりの送り(50)より列の幅(80)が広い
+            Line(text=text, left=900, top=0, right=980, bottom=1000, vertical=True)
+        ],
+    )
+    out = tmp_path / "full_height.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(str(wide_image_folder), [layout], str(out))
+    assert ok, msg
+
+    assert text in extract_region(out, 0, 0.0, 0.0, 1.0, 1.0)
+
+
+def _vertical_page(texts):
+    """右から左へ texts を並べた縦書き 1 ページ分の PageLayout。"""
+    from core.ocr_layout import Line, PageLayout
+
+    return PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[
+            Line(
+                text=text,
+                left=900 - i * 60,
+                top=60,
+                right=940 - i * 60,
+                bottom=60 + 40 * len(text),
+                vertical=True,
+            )
+            for i, text in enumerate(texts)
+        ],
+    )
+
+
+def test_vertical_text_keeps_plain_punctuation(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """縦書きでもコピーした句読点・括弧が原文のままである。
+
+    縦組み CMap の CID フォント（UniJIS-UCS2-V）で描くと列はまとまるが、
+    句読点と括弧が縦書き用の異体字に対応付けられ、コピーすると
+    。「 が ︒ ﹁ (U+FE12 / U+FE41) になってしまう。
+    """
+    text = "「これは、本文です。」"
+    out = tmp_path / "punctuation.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(wide_image_folder), [_vertical_page([text] * 4)], str(out)
+    )
+    assert ok, msg
+
+    extracted = extract_region(out, 0, 0.0, 0.0, 1.0, 1.0)
+    assert text in extracted
+    for vertical_form in ("\ufe12", "\ufe41", "\ufe10"):
+        assert vertical_form not in extracted
+
+
+def test_vertical_columns_are_extracted_right_to_left(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """縦書きの列は右から左の順に取れる。
+
+    列を 1 回の文字列描画にまとめると PDFium が回転したテキストランを
+    x の昇順に並べ替えるため、読み順が左→右に逆転する（描画順を変えても
+    直らない）。1 文字ずつ置けば元の順序が保たれる。
+    """
+    columns = ["いちれつめです", "にれつめです", "さんれつめです", "よんれつめです"]
+    out = tmp_path / "order.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(wide_image_folder), [_vertical_page(columns)], str(out)
+    )
+    assert ok, msg
+
+    extracted = extract_region(out, 0, 0.0, 0.0, 1.0, 1.0)
+    positions = [extracted.find(text) for text in columns]
+    assert all(p >= 0 for p in positions), f"欠けている列がある: {extracted!r}"
+    assert positions == sorted(positions), f"読み順が右→左になっていない: {extracted!r}"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("pdftotext") is None,
+    reason="poppler の pdftotext が無い（windows-latest には空文字列を返す別物が入っている）",
+)
+def test_vertical_columns_survive_poppler(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """#37 の本題: poppler でも列がまとまって取れる。
+
+    poppler は描画順を使わず幾何から読み順を決めるので、テキスト行列が
+    横組みのままだと列をまたいで横に読む。これは PDFium では再現しないため
+    （PDFium は描画順で読む）、pypdfium2 を使う他のテストでは守れない。
+    実データでは OCR の行がそのまま取れる割合が 76/133 → 129/133 になった。
+    """
+    columns = ["いちれつめです", "にれつめです", "さんれつめです", "よんれつめです"]
+    out = tmp_path / "poppler.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(wide_image_folder), [_vertical_page(columns)], str(out)
+    )
+    assert ok, msg
+
+    result = subprocess.run(
+        ["pdftotext", str(out), "-"], capture_output=True, text=True, encoding="utf-8"
+    )
+    extracted = re.sub(r"\s", "", result.stdout)
+    for text in columns:
+        assert text in extracted, f"{text!r} が列としてまとまっていない: {extracted!r}"
 
 
 def test_searchable_pdf_scales_text_to_the_image(

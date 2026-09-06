@@ -162,26 +162,96 @@ def images_to_pdf(folder_path, output_folder, output_filename, on_progress=None,
     return True, f"PDFファイルを作成しました: {output_pdf}"
 
 
+def _descent_offset(font_name, size):
+    """回転して置いた文字の字面を、列の左端に合わせるための x のずらし幅。
+
+    -90 度回転すると、フォントのベースラインから上 (ascent) が x の正方向に
+    写る。原点をそのまま列の左端に置くと字面が descent の分だけ左へはみ出し、
+    列の右端に何も無い帯ができる。descent はフォントの単位 (1/1000 em) で
+    負の値なので、その分だけ右へずらす。
+    """
+    try:
+        descent = pdfmetrics.getFont(font_name).face.descent
+    except Exception:  # noqa: BLE001 - 取れないフォントではずらさない
+        return 0.0
+    return -float(descent) / 1000.0 * size
+
+
+def _draw_vertical_line(c, line, page_height, font_name, scale):
+    """縦書きの 1 列を、テキスト行列を -90 度回転させて置く。
+
+    **なぜ回転させるか** — 抽出器は読み順をテキスト行列から決める。横組みの
+    ままだと「右へ進む文字が格子状に並んでいる」と解釈され、列をまたいで
+    横に読まれる (#37)。実測では poppler が 4 列中 0 列しか復元できなかった。
+    行列を回して送りを下向きにすれば、poppler も PDFium も列として読む。
+
+    **なぜ 1 文字ずつ置くか** — 列を 1 回の文字列描画にまとめると poppler は
+    正しく読むが、**PDFium が列を x の昇順に並べ替えるため読み順が左→右に
+    逆転する** (実測。描画順を変えても直らない)。1 文字ずつ置けば両方とも
+    右→左のまま読む。1 文字ずつなら OCR の座標をそのまま使えるので、
+    列の途中の文字位置もずれない。
+
+    縦組み CMap の CID フォント (UniJIS-UCS2-V) を使う手もあるが、そちらは
+    句読点や括弧が縦書き用の異体字に対応付けられ、**コピーすると 。「 が
+    ︒ ﹁ (U+FE12 / U+FE41) になってしまう**。回転方式なら埋め込み済みの
+    TrueType をそのまま使えるので、コピーした文字は原文どおりになる。
+    """
+    size = max(1.0, line.font_size * scale)
+    step = line.height / len(line.text) * scale
+    x = line.left * scale + _descent_offset(font_name, size)
+    top = page_height - line.top * scale
+    text_obj = c.beginText()
+    text_obj.setTextRenderMode(3)  # invisible
+    text_obj.setFont(font_name, size)
+    for i, ch in enumerate(line.text):
+        # 回転後は字幅が列の縦方向の送りになる。半角文字でも 1 マス分になるよう伸ばす
+        width = pdfmetrics.stringWidth(ch, font_name, size) or size
+        text_obj.setHorizScale(100.0 * step / width)
+        # (0, -1, 1, 0) = -90 度回転
+        text_obj.setTextTransform(0, -1, 1, 0, x, top - step * i)
+        text_obj.textOut(ch)
+    # Tz はグラフィクス状態なので ET では戻らない。後続の行に漏らさない
+    text_obj.setHorizScale(100.0)
+    c.drawText(text_obj)
+
+
+def _draw_line_per_char(c, line, page_height, font_name, scale):
+    """1 行を 1 文字ずつ、bbox を等分した位置に置く。
+
+    横書きはこちら。文字送りが書字方向 (横) と一致するので、1 文字ずつでも
+    抽出器は正しく 1 行としてまとめる。フォントの字幅に依らず OCR の座標を
+    そのまま使えるため、欧文混じりの行でも位置がずれない。
+    """
+    size = max(1.0, line.font_size * scale)
+    text_obj = c.beginText()
+    text_obj.setTextRenderMode(3)  # invisible
+    text_obj.setFont(font_name, size)
+    for ch, left, top in line.char_positions():
+        # 文字の左下に置く。top は文字の上端なので 1 文字分下げる
+        text_obj.setTextOrigin(left * scale, page_height - (top + line.font_size) * scale)
+        text_obj.textOut(ch)
+    c.drawText(text_obj)
+
+
 def _draw_positioned_text(c, layout, page_height, font_name, scale=1.0):
     """OCR が返した座標に不可視テキストを置く。置いた行数を返す。
 
-    行の bbox を文字数で等分して 1 文字ずつ配置する。縦書きは列を上から下へ、
-    横書きは行を左から右へ。連結テキストをページ左上から流し込む従来の方法と
-    違い、範囲選択でコピーした内容が見えている場所と一致する。
+    連結テキストをページ左上から流し込む従来の方法と違い、範囲選択で
+    コピーした内容が見えている場所と一致する。
+
+    縦書きの行は 1 列まるごと、横書きの行は 1 文字ずつ置く
+    (理由は各ヘルパーの docstring を参照)。
 
     PDF の原点は左下、OCR の座標は左上なので y を反転する。
     """
     drawn = 0
     for line in layout.lines:
-        size = max(1.0, line.font_size * scale)
-        text_obj = c.beginText()
-        text_obj.setTextRenderMode(3)  # invisible
-        text_obj.setFont(font_name, size)
-        for ch, left, top in line.char_positions():
-            # 文字の左下に置く。top は文字の上端なので 1 文字分下げる
-            text_obj.setTextOrigin(left * scale, page_height - (top + line.font_size) * scale)
-            text_obj.textOut(ch)
-        c.drawText(text_obj)
+        if not line.text:
+            continue
+        if line.vertical:
+            _draw_vertical_line(c, line, page_height, font_name, scale)
+        else:
+            _draw_line_per_char(c, line, page_height, font_name, scale)
         drawn += 1
     return drawn
 
