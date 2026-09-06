@@ -26,6 +26,7 @@ from core.pipeline import (
     EXIT_ERROR,
     EXIT_NO_IMAGES,
     EXIT_OK,
+    MANIFEST_NAME,
     clear_output_images,
     emit_error,
     null_emit,
@@ -446,7 +447,7 @@ def run_headless_capture(
             page_turn_source=turn_source,
             page_wait=page_wait,
         )
-        path = os.path.join(save_dir, "manifest.json")
+        path = os.path.join(save_dir, MANIFEST_NAME)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2, ensure_ascii=False)
         return path

@@ -409,6 +409,7 @@ def cmd_run(args, rep):
         load_wait=args.load_wait,
         no_rewind=args.no_rewind,
         headless=args.headless,
+        keep_images=args.keep_images,
         safety=args.safety,
         min_margins=min_margins,
         ui_bands=args.ui_bands,
@@ -453,6 +454,7 @@ def cmd_batch(args, rep):
         "load_wait": args.load_wait,
         "no_rewind": args.no_rewind,
         "headless": args.headless,
+        "keep_images": args.keep_images,
         "safety": args.safety,
         "min_margins": min_margins,
         "ui_bands": args.ui_bands,
@@ -710,6 +712,12 @@ def build_parser():
         help="画面キャプチャで実行する。他ビューアのプロファイルや、"
         "画面を撮る経路を確認したいときに使う",
     )
+    p_run.add_argument(
+        "--keep-images",
+        action="store_true",
+        help="PDF 化に成功しても中間ファイル（キャプチャ画像・トリミング後の画像・"
+        "manifest.json）を残す。既定では消す（1 冊 200MB のうち 130MB を占めるため）",
+    )
     p_run.add_argument("--no-rewind", action="store_true", help="先頭ページへの巻き戻しをスキップ")
     p_run.add_argument(
         "--safety",
@@ -829,6 +837,12 @@ def build_parser():
         type=int,
         metavar="SEC",
         help="読み込み待ちの秒数（全本の既定。省略時: 画面キャプチャ 45 / headless 12）",
+    )
+    p_batch.add_argument(
+        "--keep-images",
+        action="store_true",
+        help="PDF 化に成功しても中間ファイル（キャプチャ画像・トリミング後の画像・"
+        "manifest.json）を残す。既定では消す（全本の既定）",
     )
     p_batch.add_argument(
         "--no-rewind", action="store_true", help="先頭ページへの巻き戻しをスキップ（全本の既定）"

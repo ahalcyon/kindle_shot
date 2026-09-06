@@ -19,6 +19,7 @@ from core.pipeline import (
     EXIT_NO_IMAGES,
     EXIT_OK,
     EXIT_WINDOW_NOT_FOUND,
+    MANIFEST_NAME,
     clear_output_images,
     emit_error,
     null_emit,
@@ -257,7 +258,7 @@ def run_capture(
             "finished_at": finished.isoformat(timespec="seconds"),
             "duration_seconds": round((finished - started).total_seconds(), 1),
         }
-        manifest_path = os.path.join(save_dir, "manifest.json")
+        manifest_path = os.path.join(save_dir, MANIFEST_NAME)
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2, ensure_ascii=False)
         emit(

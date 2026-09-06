@@ -113,6 +113,9 @@ def test_build_run_argv():
     assert "--headless" in argv
     assert "--screen" not in argv
     assert "--json" in argv
+    # run は既定で中間ファイルを消すが、スモークは manifest.json と
+    # キャプチャ画像を読んで検証するので残させる
+    assert "--keep-images" in argv
 
 
 def test_paths_follow_run_book_layout():

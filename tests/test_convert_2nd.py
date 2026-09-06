@@ -44,7 +44,11 @@ def test_plan_skips_missing_trimmed_and_existing_output(tmp_path):
     out = make_out(tmp_path, trimmed=["本A", "本B"], outputs=["本B.md"])
     books = [{"title": "本A"}, {"title": "本B"}, {"title": "本C"}]
     rows = convert_2nd.plan(books, str(out), "markdown")
-    assert [r[3] for r in rows] == [None, "出力済み", "トリミング画像がありません"]
+    assert [r[3] for r in rows] == [
+        None,
+        "出力済み",
+        "トリミング画像がありません（--keep-images なしで実行した本は PDF 化時に削除済み）",
+    ]
 
 
 def test_plan_uses_extension_of_target_format(tmp_path):

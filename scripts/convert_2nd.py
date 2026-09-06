@@ -1,8 +1,12 @@
 """同じ本から2つ目の形式を作る（キャプチャをやり直さない）
 
-`batch` で1冊を処理すると、出力先にトリミング済み画像が ``<書名>_trimmed`` として
-残る。これを入力に ``cli.py convert`` を回せば、キャプチャ・トリミングを飛ばして
-別形式（検索可能PDF ⇄ Markdown 等）をもう1つ作れる。
+`batch` に ``--keep-images`` を付けて1冊を処理すると、出力先にトリミング済み画像が
+``<書名>_trimmed`` として残る。これを入力に ``cli.py convert`` を回せば、キャプチャ・
+トリミングを飛ばして別形式（検索可能PDF ⇄ Markdown 等）をもう1つ作れる。
+
+``--keep-images`` を付けずに走らせた本は、PDF ができた時点で ``<書名>_trimmed`` が
+消えているのでこのスクリプトでは処理できない（キャプチャからやり直しになる）。
+2形式ほしいと分かっているなら、1形式目の実行時に ``--keep-images`` を付けておく。
 
 `batch` のリスト（books.json）は同じタイトルを2回書けない（出力ファイル名が衝突
 するため load_batch_file が弾く）ので、2形式目はこのスクリプトで回す。
@@ -64,7 +68,9 @@ def plan(books, out, fmt):
         trimmed = os.path.join(out, f"{title}_trimmed")
         output = _batch_output_path(out, title, fmt)
         if not os.path.isdir(trimmed):
-            reason = "トリミング画像がありません"
+            reason = (
+                "トリミング画像がありません（--keep-images なしで実行した本は PDF 化時に削除済み）"
+            )
         elif os.path.exists(output):
             reason = "出力済み"
         else:

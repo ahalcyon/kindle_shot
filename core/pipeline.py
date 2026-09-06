@@ -19,6 +19,7 @@ run_* は int の終了コードを返す。CLI はそのままプロセス終�
 GUI は 0 / 非 0 で成否を判定する。
 """
 
+import contextlib
 import json
 import os
 
@@ -34,6 +35,10 @@ EXIT_OCR_UNAVAILABLE = 4
 EXIT_NO_IMAGES = 5
 EXIT_WOULD_CLIP = 6
 EXIT_VALIDATION = 7
+
+# キャプチャ実行記録のファイル名（書き出す capture_runner / headless_capture と、
+# PDF 化後に消す remove_intermediates で共有する）
+MANIFEST_NAME = "manifest.json"
 
 # 出力形式の候補（CLI の choices・batch ファイルの format 検証で共有）
 # headless キャプチャが対応するプロファイル（read.amazon.co.jp 専用実装）
@@ -115,6 +120,71 @@ def check_input_folder(input_folder, emit=null_emit):
         emit_error(emit, f"入力フォルダに画像がありません: {input_folder}")
         return EXIT_NO_IMAGES
     return None
+
+
+def remove_intermediates(save_dir, trimmed_dir, emit=null_emit):
+    """PDF 化に成功した本の中間生成物を消す。削除したバイト数を返す。
+
+    キャプチャ画像とトリミング後の画像は PDF ができれば不要な副産物で、
+    1 冊 200MB のうち 130MB を占める（197 ページの書籍で実測）。数百冊を
+    無人処理する用途では放置するとディスクが尽きる。
+
+    manifest.json も消す。中身は撮影時のプロファイル設定と所要時間で、
+    PDF が手元にある利用者には読む価値が無い。これを残すと画像を消した
+    あとの本フォルダが 1KB の JSON 1 個のために残り続ける。実行記録が
+    要る場面（実機スモーク）は ``--keep-images`` を付けて走らせる。
+
+    どちらのフォルダも空になったら畳む。中身が残っていれば消さない
+    （利用者が置いたファイルを巻き込まないため）。
+
+    後片付けなので best-effort に徹する。1 枚でも消せないと例外が外へ抜け、
+    PDF ができている本が失敗として記録されてしまう（batch は run_book の
+    例外を EXIT_ERROR にする）。Windows では PNG が一時的にロックされる原因
+    （サムネイル生成・ウイルス対策・同期クライアント）が日常的にあるため、
+    消せなかったファイルは黙って残し、実際に消えた分だけを freed に数える。
+    """
+    freed = 0
+    removed = 0
+    for folder in (save_dir, trimmed_dir):
+        if not os.path.isdir(folder):
+            continue
+        try:
+            names = list_images(folder)
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            try:
+                size = os.path.getsize(path)
+                os.remove(path)
+            except OSError:
+                continue
+            freed += size
+            removed += 1
+
+    try:
+        manifest = os.path.join(save_dir, MANIFEST_NAME)
+        size = os.path.getsize(manifest)
+        os.remove(manifest)
+    except OSError:
+        pass
+    else:
+        freed += size
+        removed += 1
+
+    for folder in (save_dir, trimmed_dir):
+        if os.path.isdir(folder) and not os.listdir(folder):
+            with contextlib.suppress(OSError):
+                os.rmdir(folder)
+
+    if removed:
+        emit(
+            "intermediates_removed",
+            human=f"中間ファイルを削除しました（{removed} 個 / {freed / 1024 / 1024:.1f} MB）",
+            bytes=freed,
+            files=removed,
+        )
+    return freed
 
 
 def clear_output_images(folder, overwrite, emit=null_emit, *, label="出力フォルダ", reason=""):
@@ -614,6 +684,7 @@ def run_book(
     load_wait=None,
     no_rewind=False,
     headless=None,
+    keep_images=False,
     safety=8,
     min_margins=None,
     ui_bands=True,
@@ -794,21 +865,29 @@ def run_book(
             return finish(code)
 
         step(f"convert: {fmt} に変換")
-        return finish(
-            run_convert(
-                trimmed_dir,
-                out,
-                fmt,
-                name=title,
-                config=cfg,
-                ocr_workers=ocr_workers,
-                faithful=faithful,
-                no_cleanup=no_cleanup,
-                split_words=split_words,
-                source=(asin or None),
-                emit=emit,
-            )
+        code = run_convert(
+            trimmed_dir,
+            out,
+            fmt,
+            name=title,
+            config=cfg,
+            ocr_workers=ocr_workers,
+            faithful=faithful,
+            no_cleanup=no_cleanup,
+            split_words=split_words,
+            source=(asin or None),
+            emit=emit,
         )
+        # 成功した本だけ消す。失敗した本の中間ファイルを消すと原因を追えなくなり、
+        # 再取得にも 1 冊あたり 10 分かかる。所要時間サマリを最後にするため
+        # finish() より前に消す
+        if code == EXIT_OK and not keep_images:
+            try:
+                remove_intermediates(save_dir, trimmed_dir, emit)
+            except OSError as e:
+                # 後片付けの失敗で「PDF はできた」を覆さない
+                emit("status", human=f"中間ファイルを削除できませんでした: {e}")
+        return finish(code)
     finally:
         allow_sleep()
 

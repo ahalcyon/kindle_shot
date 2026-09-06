@@ -4,15 +4,21 @@ CLI 経由の統合的な検証は test_cli_contract.py が担う。ここでは
 GUI からも直接呼ばれる共有ヘルパーの単体挙動を検証する。
 """
 
+import os
+
+import pytest
 from conftest import make_page
 
 from core.pipeline import (
     EXIT_BAD_ARGS,
+    EXIT_ERROR,
     EXIT_NO_IMAGES,
     EXIT_OK,
+    MANIFEST_NAME,
     check_input_folder,
     clear_output_images,
     relax_margins,
+    remove_intermediates,
     run_trim,
 )
 
@@ -199,3 +205,163 @@ def test_run_trim_auto_passes_through_full_bleed_cover(cover_folder, tmp_path):
         assert im.size == (200 - 84, 300 - 104)  # 本文はトリミングされる
     with Image.open(out / "cover.png") as im:
         assert im.size == (200, 300)  # 表紙は元サイズのまま
+
+
+# ------------------------------------------------------------
+# 中間ファイルの削除
+# ------------------------------------------------------------
+
+
+def make_book_output(tmp_path, title="本", pages=3):
+    """run_book が作る構成を再現する。"""
+    from PIL import Image
+
+    save_dir = tmp_path / title
+    trimmed_dir = tmp_path / f"{title}_trimmed"
+    save_dir.mkdir()
+    trimmed_dir.mkdir()
+    for i in range(1, pages + 1):
+        Image.new("RGB", (40, 60), "white").save(str(save_dir / f"{i:03d}.png"))
+        Image.new("RGB", (30, 50), "white").save(str(trimmed_dir / f"{i:03d}.png"))
+    (save_dir / MANIFEST_NAME).write_text('{"total_pages": 3}', encoding="utf-8")
+    return save_dir, trimmed_dir
+
+
+def test_leaves_output_files_alone(tmp_path):
+    """出力 PDF は out 直下にあるので巻き込まない。"""
+    save_dir, trimmed_dir = make_book_output(tmp_path)
+    pdf = tmp_path / "本.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+
+    remove_intermediates(str(save_dir), str(trimmed_dir))
+
+    assert pdf.exists()
+
+
+def test_reports_only_what_was_actually_deleted(tmp_path, monkeypatch):
+    """消せなかったファイルは freed に数えず、例外も外へ出さない。
+
+    Windows では PNG が一時的にロックされることがある（サムネイル生成・
+    ウイルス対策・同期クライアント）。そこで例外が抜けると、PDF ができて
+    いる本が batch では失敗として記録されてしまう。
+    """
+    save_dir, trimmed_dir = make_book_output(tmp_path)
+    locked = str(save_dir / "001.png")
+    real_remove = os.remove
+
+    def flaky_remove(path):
+        if str(path) == locked:
+            raise PermissionError(13, "使用中")
+        real_remove(path)
+
+    total_size = sum(
+        os.path.getsize(p) for d in (save_dir, trimmed_dir) for p in d.iterdir() if p.is_file()
+    )
+    monkeypatch.setattr(os, "remove", flaky_remove)
+    events = []
+    freed = remove_intermediates(
+        str(save_dir), str(trimmed_dir), lambda e, human=None, **f: events.append({"event": e, **f})
+    )
+
+    assert os.path.exists(locked)  # 消せなかったものは残る
+    assert freed == events[0]["bytes"]
+    # 消せた 5 個（save_dir 2 枚 + trimmed 3 枚）+ manifest。
+    # 消せなかった 1 枚は件数にもバイト数にも入れない
+    assert events[0]["files"] == 6
+    assert freed < total_size  # ロックされた 1 枚のぶんだけ少ない
+    assert save_dir.exists()  # 中身が残っているので畳まない
+
+
+def test_removes_images_and_manifest(tmp_path):
+    """画像と manifest.json を消し、空になったフォルダを畳む。
+
+    PDF が手元にある利用者にとって manifest.json は読む価値が無く、
+    残すと本フォルダが 1KB の JSON 1 個のために生き残ってしまう。
+    """
+    save_dir, trimmed_dir = make_book_output(tmp_path)
+    freed = remove_intermediates(str(save_dir), str(trimmed_dir))
+
+    assert freed > 0
+    assert not save_dir.exists()
+    assert not trimmed_dir.exists()
+
+
+def test_keeps_folder_that_still_has_files(tmp_path):
+    """利用者が置いたファイルがあるフォルダは畳まない。"""
+    save_dir, trimmed_dir = make_book_output(tmp_path)
+    (save_dir / "メモ.txt").write_text("あとで読む", encoding="utf-8")
+
+    remove_intermediates(str(save_dir), str(trimmed_dir))
+
+    assert sorted(p.name for p in save_dir.iterdir()) == ["メモ.txt"]
+
+
+def test_remove_intermediates_reports_freed_bytes(tmp_path):
+    save_dir, trimmed_dir = make_book_output(tmp_path)
+    events = []
+    remove_intermediates(
+        str(save_dir), str(trimmed_dir), lambda e, human=None, **f: events.append({"event": e, **f})
+    )
+    removed = [e for e in events if e["event"] == "intermediates_removed"]
+    assert len(removed) == 1
+    # manifest.json の分も含めて報告する
+    assert removed[0]["bytes"] > 0
+
+
+def test_remove_intermediates_is_safe_when_missing(tmp_path):
+    """フォルダが無くても落ちない。何も消していないならイベントも出さない。"""
+    events = []
+    freed = remove_intermediates(
+        str(tmp_path / "no"),
+        str(tmp_path / "none"),
+        lambda e, human=None, **f: events.append({"event": e, **f}),
+    )
+    assert freed == 0
+    assert events == []
+
+
+# ------------------------------------------------------------
+# run_book が削除を呼ぶ条件
+# ------------------------------------------------------------
+
+
+@pytest.fixture
+def spy_run_book(monkeypatch):
+    """run_book の重い工程を潰し、remove_intermediates の呼ばれ方だけ見る。
+
+    run_book はキャプチャ本体とスリープ抑止を関数内 import で取るので、
+    pipeline ではなく取り込み元のモジュールに当てる。
+    """
+    from core import headless_capture, pipeline, win32_utils
+
+    calls = []
+    monkeypatch.setattr(pipeline, "remove_intermediates", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(win32_utils, "prevent_sleep", lambda **k: None)
+    monkeypatch.setattr(win32_utils, "allow_sleep", lambda: None)
+    monkeypatch.setattr(headless_capture, "run_headless_capture", lambda *a, **k: EXIT_OK)
+    monkeypatch.setattr(pipeline, "run_validate", lambda *a, **k: EXIT_OK)
+    monkeypatch.setattr(pipeline, "run_trim", lambda *a, **k: EXIT_OK)
+    return calls
+
+
+def call_run_book(tmp_path, convert_code, monkeypatch, **kwargs):
+    from core import pipeline
+
+    monkeypatch.setattr(pipeline, "run_convert", lambda *a, **k: convert_code)
+    return pipeline.run_book(
+        asin="B0TEST", title="本", output=str(tmp_path), fmt="image_pdf", **kwargs
+    )
+
+
+def test_run_book_cleans_up_only_on_success(tmp_path, monkeypatch, spy_run_book):
+    """PDF ができなかった本の中間ファイルは残す（原因を追えなくなるため）。"""
+    assert call_run_book(tmp_path, EXIT_ERROR, monkeypatch) == EXIT_ERROR
+    assert spy_run_book == []
+
+    assert call_run_book(tmp_path, EXIT_OK, monkeypatch) == EXIT_OK
+    assert len(spy_run_book) == 1
+
+
+def test_run_book_keep_images_skips_cleanup(tmp_path, monkeypatch, spy_run_book):
+    assert call_run_book(tmp_path, EXIT_OK, monkeypatch, keep_images=True) == EXIT_OK
+    assert spy_run_book == []
