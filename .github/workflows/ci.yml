@@ -151,17 +151,15 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # self-hosted の Windows では shell: bash が WSL の
+      # C:\WINDOWS\system32\bash.EXE に解決され、Windows パスの一時スクリプトを
+      # 実行できない（GitHub ホストは Git Bash なので起きない）。cmd を使う。
       - name: Install dependencies
-        shell: bash
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install --group dev
-          pip install playwright
-          playwright install chromium
+        shell: cmd
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt && pip install --group dev && pip install playwright && playwright install chromium
 
       - name: E2E against Amazon
-        shell: bash
+        shell: cmd
         env:
           KINDLE_SHOT_AMAZON_EMAIL: ${{ secrets.KINDLE_SHOT_AMAZON_EMAIL }}
           KINDLE_SHOT_AMAZON_PASSWORD: ${{ secrets.KINDLE_SHOT_AMAZON_PASSWORD }}
