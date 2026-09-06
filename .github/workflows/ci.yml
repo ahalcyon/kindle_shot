@@ -125,3 +125,45 @@ jobs:
       - name: E2E tests
         shell: bash
         run: pytest -m e2e -q
+
+  # 実 Amazon に対する E2E。self-hosted runner で回す。
+  #
+  # headless 経路は Kindle Cloud Reader の DOM に依存するため、偽のページで
+  # 代替すると Amazon 側の構造変化を検知できない。ここだけは本物に当てる。
+  #
+  # self-hosted にするのは、GitHub ホストのランナーだと新しい IP からの初回
+  # ログインで追加認証が入りうるため（サインインページへの到達自体は
+  # 実測で確認済み: status 200 / CAPTCHA 無し）。
+  #
+  # 毎回セッションを消してサインインから通す。ランナーが変わればセッションは
+  # 無く、期限切れも起きるため、自動ログインこそ守るべき経路になる。
+  amazon-e2e:
+    name: e2e tests (real Amazon, self-hosted)
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 45
+    # ランナーが登録されていないリポジトリでも CI 全体が止まらないようにする
+    continue-on-error: true
+    needs: test
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install --group dev
+          pip install playwright
+          playwright install chromium
+
+      - name: E2E against Amazon
+        shell: bash
+        env:
+          KINDLE_SHOT_AMAZON_EMAIL: ${{ secrets.KINDLE_SHOT_AMAZON_EMAIL }}
+          KINDLE_SHOT_AMAZON_PASSWORD: ${{ secrets.KINDLE_SHOT_AMAZON_PASSWORD }}
+          KINDLE_SHOT_E2E_ASIN: ${{ vars.KINDLE_SHOT_E2E_ASIN }}
+        run: pytest tests/e2e/test_amazon_e2e.py -m e2e -q

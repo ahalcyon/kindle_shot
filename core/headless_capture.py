@@ -86,10 +86,27 @@ def read_position(page):
         locator = page.locator(POSITION_SELECTOR)
         if not locator.count():
             return None
-        matched = _POSITION_RE.search(locator.first.inner_text())
+        # text_content を使う。撮影前に UI を CSS で隠すため、
+        # inner_text だと描画されていない要素から空文字が返ることがある
+        matched = _POSITION_RE.search(locator.first.text_content() or "")
     except Exception:
         return None
     return int(matched.group(1)) if matched else None
+
+
+def _settled_position(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=4):
+    """読書位置が読めるまで数回待って返す。読めなければ None。
+
+    読み込み直後はラベルの描画が間に合わず None になることがある。
+    1 回で諦めると「動いていない」と誤判定して向きの判定に失敗する。
+    """
+    for i in range(attempts):
+        position = read_position(page)
+        if position is not None:
+            return position
+        if i < attempts - 1:
+            page.wait_for_timeout(int(page_wait * 1000))
+    return None
 
 
 def detect_turn_key(page, *, page_wait=DEFAULT_PAGE_WAIT, emit=null_emit):
@@ -103,19 +120,23 @@ def detect_turn_key(page, *, page_wait=DEFAULT_PAGE_WAIT, emit=null_emit):
     （キャプチャ自体が本を読み進めるので、読書位置は結局末尾まで動く。
     ここで戻すのは読書位置の保全のためではない。）
     """
-    before = read_position(page)
+    before = _settled_position(page, page_wait=page_wait)
     if before is None:
         emit("status", human="読書位置を読めないため送りキーを判定できません")
         return None
 
     for candidate in ("left", "right"):
+        # サインイン直後などに遅れて出るモーダルがキーを吸うため、
+        # 押す前に毎回閉じる（閉じずに判定すると両方向とも動かず失敗する）
+        dismiss_dialogs(page)
         page.keyboard.press(turn_key(candidate))
         page.wait_for_timeout(int(page_wait * 1000))
-        after = read_position(page)
+        after = _settled_position(page, page_wait=page_wait)
         if after is None or after == before:
             continue
         forward = candidate if after > before else reverse_of(candidate)
         # 判定で動かした分を戻す
+        dismiss_dialogs(page)
         page.keyboard.press(turn_key(reverse_of(candidate)))
         page.wait_for_timeout(int(page_wait * 1000))
         emit(
