@@ -136,33 +136,54 @@ def remove_intermediates(save_dir, trimmed_dir, emit=null_emit):
 
     どちらのフォルダも空になったら畳む。中身が残っていれば消さない
     （利用者が置いたファイルを巻き込まないため）。
+
+    後片付けなので best-effort に徹する。1 枚でも消せないと例外が外へ抜け、
+    PDF ができている本が失敗として記録されてしまう（batch は run_book の
+    例外を EXIT_ERROR にする）。Windows では PNG が一時的にロックされる原因
+    （サムネイル生成・ウイルス対策・同期クライアント）が日常的にあるため、
+    消せなかったファイルは黙って残し、実際に消えた分だけを freed に数える。
     """
     freed = 0
+    removed = 0
     for folder in (save_dir, trimmed_dir):
         if not os.path.isdir(folder):
             continue
-        for name in list_images(folder):
-            with contextlib.suppress(OSError):
-                freed += os.path.getsize(os.path.join(folder, name))
-        clear_images(folder)
+        try:
+            names = list_images(folder)
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            try:
+                size = os.path.getsize(path)
+                os.remove(path)
+            except OSError:
+                continue
+            freed += size
+            removed += 1
 
-    manifest = os.path.join(save_dir, MANIFEST_NAME)
-    if os.path.isfile(manifest):
-        with contextlib.suppress(OSError):
-            freed += os.path.getsize(manifest)
-        with contextlib.suppress(OSError):
-            os.remove(manifest)
+    try:
+        manifest = os.path.join(save_dir, MANIFEST_NAME)
+        size = os.path.getsize(manifest)
+        os.remove(manifest)
+    except OSError:
+        pass
+    else:
+        freed += size
+        removed += 1
 
     for folder in (save_dir, trimmed_dir):
         if os.path.isdir(folder) and not os.listdir(folder):
             with contextlib.suppress(OSError):
                 os.rmdir(folder)
 
-    emit(
-        "intermediates_removed",
-        human=f"中間ファイルを削除しました（{freed / 1024 / 1024:.0f} MB）",
-        bytes=freed,
-    )
+    if removed:
+        emit(
+            "intermediates_removed",
+            human=f"中間ファイルを削除しました（{removed} 個 / {freed / 1024 / 1024:.1f} MB）",
+            bytes=freed,
+            files=removed,
+        )
     return freed
 
 
@@ -861,7 +882,11 @@ def run_book(
         # 再取得にも 1 冊あたり 10 分かかる。所要時間サマリを最後にするため
         # finish() より前に消す
         if code == EXIT_OK and not keep_images:
-            remove_intermediates(save_dir, trimmed_dir, emit)
+            try:
+                remove_intermediates(save_dir, trimmed_dir, emit)
+            except OSError as e:
+                # 後片付けの失敗で「PDF はできた」を覆さない
+                emit("status", human=f"中間ファイルを削除できませんでした: {e}")
         return finish(code)
     finally:
         allow_sleep()

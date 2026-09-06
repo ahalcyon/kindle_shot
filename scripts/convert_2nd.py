@@ -68,7 +68,9 @@ def plan(books, out, fmt):
         trimmed = os.path.join(out, f"{title}_trimmed")
         output = _batch_output_path(out, title, fmt)
         if not os.path.isdir(trimmed):
-            reason = "トリミング画像がありません"
+            reason = (
+                "トリミング画像がありません（--keep-images なしで実行した本は PDF 化時に削除済み）"
+            )
         elif os.path.exists(output):
             reason = "出力済み"
         else:

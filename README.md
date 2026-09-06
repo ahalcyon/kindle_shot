@@ -217,6 +217,7 @@ kindle_shot.bat check --profile kindle_cloud
 | `--safety` | `8` | トリミング自動検出の安全マージン（px） |
 | `--min-margins L,R,T,B` | kindle_cloud のみ `0,0,80,80` | トリミングで最低限削る余白（ビューアの常時表示UI除去用） |
 | `--no-ui-bands` | オフ（検出は有効） | ページ間の変化からビューアの固定UI帯（書名ヘッダー・ページ番号フッター）を検出して削る処理を無効にする |
+| `--keep-images` | オフ（＝消す） | PDF 化に成功しても中間ファイル（キャプチャ画像・トリミング済み画像・`manifest.json`）を残す |
 | `--overwrite` | オフ | 保存先・トリミング先の既存画像を削除してから実行 |
 | `--no-rewind` / `--max-rewind` / `--load-wait` | - / `1000` / `45` | open の巻き戻し・読み込み待ちの調整 |
 | `--ocr-workers` | config の `ocr.workers` | ndlocr-lite の並列プロセス数 |
@@ -229,6 +230,7 @@ kindle_shot.bat check --profile kindle_cloud
 | `--books` | （必須） | 本リストの JSON ファイル（[batch ファイル形式](#batch-ファイル形式)） |
 | `--out` | （必須） | 全本共通の保存先フォルダ（直下に `<title>.pdf` / `.md` が並ぶ） |
 | `--profile` / `--format` / `--page-turn` / `--page-wait` / `--expect-pages` / `--max-pages` / `--max-rewind` / `--load-wait` / `--no-rewind` / `--safety` / `--min-margins` / `--no-ui-bands` / `--ocr-workers` / `--faithful` / `--no-cleanup` / `--split-words` | `run` と同じ | **全本の既定**。JSON 側の本ごとの指定がこれを上書きする |
+| `--keep-images` | オフ（＝消す） | `run` と同じ。**全本共通で、JSON 側の本ごとの指定はできない** |
 | `--overwrite` | オフ | 完成済み（出力ファイルがある）本も再処理する。既定は完成済みをスキップして途中から再開 |
 | `--stop-on-error` | オフ | 1冊でも失敗したらバッチを中断（既定は続行して末尾に成功/失敗の一覧を出す） |
 
