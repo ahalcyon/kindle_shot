@@ -91,6 +91,7 @@ def to_books(items, *, keep_edition=False):
 def run_library_dump(
     output,
     *,
+    url=None,
     keep_edition=False,
     profile_dir=None,
     headless=True,
@@ -104,7 +105,8 @@ def run_library_dump(
     """
     from core.headless_browser import open_reader
 
-    with open_reader(LIBRARY_URL, profile_dir=profile_dir, headless=headless, emit=emit) as page:
+    target = url or LIBRARY_URL
+    with open_reader(target, profile_dir=profile_dir, headless=headless, emit=emit) as page:
         if page is None:
             return EXIT_ERROR
         page.wait_for_timeout(int(load_wait * 1000))

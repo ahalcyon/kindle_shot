@@ -259,6 +259,7 @@ def cmd_library(args, rep):
 
     return run_library_dump(
         args.output,
+        url=args.url,
         keep_edition=args.keep_edition,
         headless=not args.headed,
         emit=rep.event,
@@ -979,6 +980,7 @@ def build_parser():
         metavar="FILE",
         help="出力する books.json のパス",
     )
+    p_lib.add_argument("--url", help="ライブラリの URL（省略時は read.amazon.co.jp）")
     p_lib.add_argument(
         "--keep-edition",
         action="store_true",
