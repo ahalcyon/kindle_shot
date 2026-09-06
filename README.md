@@ -299,19 +299,24 @@ python cli.py headless --asin B0XXXXXXXX --title 本のタイトル --out <保�
 出力は `capture` と同じ形（`<out>/<title>/` に `001.png...` と `manifest.json`）なので、
 後段の `trim` / `convert` はそのまま使えます。
 
-`run` と `batch` にも `--headless` を付けられます。**数百冊の一括処理をディスプレイを
+`run` と `batch` は `kindle_cloud` なら headless で動きます。**数百冊の一括処理をディスプレイを
 切ったまま回せます**。
 
 ```
-python cli.py library --out books.json                       # 蔵書一覧を作る
-python cli.py batch --books books.json --out <保存先> --headless   # 一括処理
+python cli.py library --out books.json                # 蔵書一覧を作る
+python cli.py batch --books books.json --out <保存先>   # 一括処理
 ```
 
 1 冊だけなら `run` を使います。
 
 ```
-python cli.py run --asin B0XXXXXXXX --title 本 --out <保存先> --headless
+python cli.py run --asin B0XXXXXXXX --title 本 --out <保存先>
 ```
+
+**`kindle_cloud`（`run` / `batch` の既定プロファイル）では headless が既定**なので、
+`--headless` を付ける必要はありません。headless は `read.amazon.co.jp` 専用の実装なので、
+他ビューアのプロファイル（`kobo_web` など）や PC アプリは画面キャプチャのままです。
+画面キャプチャ経路を明示したいときは `--no-headless` を使います。
 
 headless では本を開く処理がキャプチャに含まれるため `open` のステップがありません。
 `--load-wait` は経路ごとに既定が変わります（画面キャプチャ 45 秒 / headless 12 秒）。

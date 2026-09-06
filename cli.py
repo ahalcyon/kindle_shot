@@ -693,11 +693,21 @@ def build_parser():
         metavar="SEC",
         help="読み込み待ちの秒数（省略時: 画面キャプチャ 45 / headless 12）",
     )
-    p_run.add_argument(
+    p_run_headless = p_run.add_mutually_exclusive_group()
+    p_run_headless.add_argument(
         "--headless",
+        dest="headless",
         action="store_true",
-        help="headless ブラウザでキャプチャする。画面もデスクトップセッションも不要なので、"
-        "ディスプレイを切った状態や画面ロック中でも動く（Playwright が必要）",
+        default=None,
+        help="headless ブラウザでキャプチャする。画面もデスクトップセッションも不要"
+        "（kindle_cloud プロファイルでは既定。Playwright が必要）",
+    )
+    p_run_headless.add_argument(
+        "--no-headless",
+        dest="headless",
+        action="store_false",
+        help="画面キャプチャで実行する。他ビューアのプロファイルや、"
+        "画面を撮る経路を確認したいときに使う",
     )
     p_run.add_argument("--no-rewind", action="store_true", help="先頭ページへの巻き戻しをスキップ")
     p_run.add_argument(
@@ -822,11 +832,21 @@ def build_parser():
     p_batch.add_argument(
         "--no-rewind", action="store_true", help="先頭ページへの巻き戻しをスキップ（全本の既定）"
     )
-    p_batch.add_argument(
+    p_batch_headless = p_batch.add_mutually_exclusive_group()
+    p_batch_headless.add_argument(
         "--headless",
+        dest="headless",
         action="store_true",
-        help="headless ブラウザでキャプチャする。画面もデスクトップセッションも不要なので、"
-        "ディスプレイを切った状態や画面ロック中でも動く（Playwright が必要）。全本に適用",
+        default=None,
+        help="headless ブラウザでキャプチャする。画面もデスクトップセッションも不要"
+        "（kindle_cloud プロファイルでは既定（全本の既定）。Playwright が必要）",
+    )
+    p_batch_headless.add_argument(
+        "--no-headless",
+        dest="headless",
+        action="store_false",
+        help="画面キャプチャで実行する。他ビューアのプロファイルや、"
+        "画面を撮る経路を確認したいときに使う",
     )
 
     p_batch.add_argument(
