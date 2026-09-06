@@ -215,21 +215,39 @@ def _draw_vertical_line(c, line, page_height, font_name, scale):
     c.drawText(text_obj)
 
 
-def _draw_line_per_char(c, line, page_height, font_name, scale):
-    """1 行を 1 文字ずつ、bbox を等分した位置に置く。
+def _draw_horizontal_line(c, line, page_height, font_name, scale):
+    """横書きの 1 行を、字幅の比で bbox に配分して 1 回で置く。
 
-    横書きはこちら。文字送りが書字方向 (横) と一致するので、1 文字ずつでも
-    抽出器は正しく 1 行としてまとめる。フォントの字幅に依らず OCR の座標を
-    そのまま使えるため、欧文混じりの行でも位置がずれない。
+    **なぜ等分ではないか** — NDLOCR-Lite は行単位の bbox しか返さないので、
+    以前は行の幅を文字数で等分していた。和文だけなら字幅が一定なので合うが、
+    数字や欧字が混ざると字幅が 2 倍以上違い、狭い字のまわりに隙間が空く。
+    抽出器はその隙間を語の切れ目とみなすため、``200g`` が ``2 0 0 g``、
+    ``Wi-Fi`` が ``W i - F i`` としてコピーされる (#40 の実測。PDFium と
+    poppler の両方で再現)。料理本の分量、技術書のコードや型名、和欧混植の
+    行がそのまま壊れる。
+
+    フォントの字幅の比で配分すれば、実際に組まれた位置に近いところへ落ちる。
+    行全体の幅を bbox に合わせるぶんは Tz で伸縮する。**Tz はテキスト行列の
+    x にも掛かる**ので、原点は先に割ってから置く。
+
+    縦書き (``_draw_vertical_line``) と違って 1 文字ずつに分けないのは、
+    横書きでは文字送りが書字方向と一致していて、抽出器が並べ替えないため。
     """
     size = max(1.0, line.font_size * scale)
+    widths = [pdfmetrics.stringWidth(ch, font_name, size) or size for ch in line.text]
+    # 字幅が取れない (総和 0) / bbox がつぶれている行では伸縮しない
+    horiz_scale = (line.width * scale / sum(widths)) if sum(widths) and line.width else 1.0
     text_obj = c.beginText()
     text_obj.setTextRenderMode(3)  # invisible
     text_obj.setFont(font_name, size)
-    for ch, left, top in line.char_positions():
-        # 文字の左下に置く。top は文字の上端なので 1 文字分下げる
-        text_obj.setTextOrigin(left * scale, page_height - (top + line.font_size) * scale)
-        text_obj.textOut(ch)
+    text_obj.setHorizScale(100.0 * horiz_scale)
+    # 文字の左下に置く。top は文字の上端なので 1 文字分下げる
+    text_obj.setTextOrigin(
+        line.left * scale / horiz_scale, page_height - (line.top + line.font_size) * scale
+    )
+    text_obj.textOut(line.text)
+    # Tz はグラフィクス状態なので ET では戻らない。後続の行に漏らさない
+    text_obj.setHorizScale(100.0)
     c.drawText(text_obj)
 
 
@@ -239,7 +257,7 @@ def _draw_positioned_text(c, layout, page_height, font_name, scale=1.0):
     連結テキストをページ左上から流し込む従来の方法と違い、範囲選択で
     コピーした内容が見えている場所と一致する。
 
-    縦書きの行は 1 列まるごと、横書きの行は 1 文字ずつ置く
+    縦書きの行は 1 文字ずつ、横書きの行は 1 行まるごと置く
     (理由は各ヘルパーの docstring を参照)。
 
     PDF の原点は左下、OCR の座標は左上なので y を反転する。
@@ -251,7 +269,7 @@ def _draw_positioned_text(c, layout, page_height, font_name, scale=1.0):
         if line.vertical:
             _draw_vertical_line(c, line, page_height, font_name, scale)
         else:
-            _draw_line_per_char(c, line, page_height, font_name, scale)
+            _draw_horizontal_line(c, line, page_height, font_name, scale)
         drawn += 1
     return drawn
 

@@ -366,10 +366,11 @@ def test_vertical_column_uses_a_rotated_text_matrix():
     assert len({x for _m, x, _y in obj.placements}) == 1
 
 
-def test_horizontal_line_is_not_rotated():
-    """横書きは回さない。
+def test_horizontal_line_is_drawn_as_one_unrotated_string():
+    """横書きは回さず、1 行まるごと 1 回で置く。
 
-    文字送りが書字方向と一致するので、回さなくても抽出器は 1 行にまとめる。
+    文字送りが書字方向と一致するので抽出器は並べ替えない。1 文字ずつ置いて
+    bbox を等分すると和欧混植の行が壊れるため (#40)、字幅の比に任せる。
     """
     from core.ocr_layout import Line, PageLayout
 
@@ -381,8 +382,8 @@ def test_horizontal_line_is_not_rotated():
     )
 
     (obj,) = _draw(layout)
-    assert obj.strings == ["よ", "こ", "が", "き"]
-    assert [m for m, _x, _y in obj.placements] == [None] * 4
+    assert obj.strings == ["よこがき"]
+    assert [m for m, _x, _y in obj.placements] == [None]
 
 
 def test_empty_lines_are_not_drawn():
@@ -520,6 +521,112 @@ def test_vertical_columns_survive_poppler(
     extracted = re.sub(r"\s", "", result.stdout)
     for text in columns:
         assert text in extracted, f"{text!r} が列としてまとまっていない: {extracted!r}"
+
+
+def _horizontal_page(texts, left=100, top=100, size=24):
+    """上から下へ texts を並べた横書き 1 ページ分の PageLayout。
+
+    幅は実フォントで組んだ幅にする。OCR が返す bbox は実際に組まれた行を
+    囲うので、字数 × 字送りの決め打ちでは和欧混植の行を再現できない。
+    """
+    from reportlab.pdfbase import pdfmetrics
+
+    from core.ocr_layout import Line, PageLayout
+
+    font_name = pdf_builder.register_japanese_font()
+    lines = []
+    for i, text in enumerate(texts):
+        width = pdfmetrics.stringWidth(text, font_name, size)
+        lines.append(
+            Line(
+                text=text,
+                left=left,
+                top=top + i * size * 2,
+                right=int(left + width),
+                bottom=top + i * size * 2 + size,
+            )
+        )
+    return PageLayout(filename="001.png", width=1000, height=1000, lines=lines)
+
+
+# 数字・欧字と和文が混ざる行。料理本の分量、技術書のコードや型名に必ず出る
+MIXED_SCRIPT_LINES = (
+    "薄力粉 200g",
+    "Wi-Fiの設定はiPhoneとWindowsで違う",
+    "AWS Lambdaで100msかかる",
+)
+
+
+def test_horizontal_mixed_script_lines_survive_copying(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """#40: 和文に数字・欧字が混ざった横書きの行が、そのままコピーできる。
+
+    行の幅を文字数で等分すると、字幅の狭い数字・欧字のまわりに隙間が空く。
+    抽出器はそれを語の切れ目とみなすので ``200g`` が ``2 0 0 g``、``Wi-Fi``
+    が ``W i - F i`` になる。字幅の比で配分すれば隙間が空かない。
+    """
+    out = tmp_path / "mixed.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(wide_image_folder), [_horizontal_page(list(MIXED_SCRIPT_LINES))], str(out)
+    )
+    assert ok, msg
+
+    extracted = extract_region(out, 0, 0.0, 0.0, 1.0, 1.0)
+    for text in MIXED_SCRIPT_LINES:
+        assert text in extracted, f"{text!r} が分断されている: {extracted!r}"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("pdftotext") is None,
+    reason="poppler の pdftotext が無い（windows-latest には空文字列を返す別物が入っている）",
+)
+def test_horizontal_mixed_script_lines_survive_poppler(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """#40 を poppler でも見る。隙間の扱いは抽出器ごとに違う。
+
+    実測では現行の等分方式で PDFium が 2/3、poppler が 1/3 しか行を保てず、
+    poppler のほうが隙間に厳しかった。
+    """
+    out = tmp_path / "mixed_poppler.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(wide_image_folder), [_horizontal_page(list(MIXED_SCRIPT_LINES))], str(out)
+    )
+    assert ok, msg
+
+    result = subprocess.run(
+        ["pdftotext", str(out), "-"], capture_output=True, text=True, encoding="utf-8"
+    )
+    for text in MIXED_SCRIPT_LINES:
+        assert text in result.stdout, f"{text!r} が分断されている: {result.stdout!r}"
+
+
+def test_horizontal_line_lands_inside_its_bounding_box(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """字幅の比で配分しても、行全体は bbox の左端から右端に収まる。
+
+    Tz はテキスト行列の x にも掛かるので、原点を割らずに置くと行ごと
+    横へずれる。範囲選択の位置が見えている場所と合わなくなる。
+    """
+    out = tmp_path / "bbox.pdf"
+    layout = _horizontal_page(["Wi-Fiの設定はiPhoneとWindowsで違う"], left=300)
+    (line,) = layout.lines
+    ok, msg = pdf_builder.images_to_searchable_pdf(str(wide_image_folder), [layout], str(out))
+    assert ok, msg
+
+    import pypdfium2 as pdfium
+
+    page = pdfium.PdfDocument(str(out))[0]
+    text_page = page.get_textpage()
+    assert text_page.count_chars() == len(line.text)
+    boxes = [text_page.get_charbox(i) for i in range(text_page.count_chars())]
+    lefts = [b[0] for b in boxes]
+    rights = [b[2] for b in boxes]
+    # 1 文字ぶんの余裕をみる（字面は前後にわずかにはみ出す）
+    assert abs(min(lefts) - line.left) < line.font_size
+    assert abs(max(rights) - line.right) < line.font_size
 
 
 def test_searchable_pdf_scales_text_to_the_image(
