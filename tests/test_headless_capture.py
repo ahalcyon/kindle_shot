@@ -249,9 +249,11 @@ class FakeReader:
     forward に指定したキーで位置が増え、その逆で減る。
     """
 
-    def __init__(self, forward="ArrowLeft", position=10, text=None):
+    def __init__(self, forward="ArrowLeft", position=10, text=None, min_position=1):
         self.forward = forward
         self.position = position
+        # 見開き表示の本は位置が 1 まで下がらない（実機のマンガは 2 で止まる）
+        self.min_position = min_position
         self.text = text
         self.url = "https://read.amazon.co.jp/?asin=B0X"
         self.presses: list[str] = []
@@ -261,7 +263,10 @@ class FakeReader:
         class Keyboard:
             def press(self, key):
                 page.presses.append(key)
-                page.position += 1 if key == page.forward else -1
+                if key == page.forward:
+                    page.position += 1
+                elif page.position > page.min_position:
+                    page.position -= 1
 
         self.keyboard = Keyboard()
 
@@ -366,25 +371,7 @@ def test_rewind_stops_at_spread_pages():
     「戻り切れなかった」として失敗する（実測で 10 冊中 8 冊が該当）。
     押しても下がらなくなったら先頭とみなす。
     """
-
-    class SpreadReader(FakeReader):
-        """位置 2 より下がらないリーダー（見開き表示）。"""
-
-        def __init__(self, position):
-            super().__init__(forward="ArrowLeft", position=position)
-
-        def _press(self, key):
-            pass
-
-    page = SpreadReader(position=8)
-    original = page.keyboard.press
-
-    def press(key):
-        if key == "ArrowRight" and page.position <= 2:
-            return  # これ以上戻れない
-        original(key)
-
-    page.keyboard.press = press
+    page = FakeReader(forward="ArrowLeft", position=8, min_position=2)
     ok, pressed = rewind_to_start(page, "left", page_wait=0, max_retries=3)
     assert ok is True
     assert page.position == 2
