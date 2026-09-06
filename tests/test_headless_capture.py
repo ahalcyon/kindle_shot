@@ -276,7 +276,8 @@ class FakeReader:
             def first(self):
                 return self
 
-            def inner_text(self):
+            def text_content(self):
+                # read_position は text_content を使う（UI を CSS で隠すため）
                 if page.text is not None:
                     return page.text
                 return f"{page.position}/339ページ \u2002●\u2002 1%"
