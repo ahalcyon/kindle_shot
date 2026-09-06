@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 from PIL import Image
@@ -492,7 +493,10 @@ def test_vertical_columns_are_extracted_right_to_left(
     assert positions == sorted(positions), f"読み順が右→左になっていない: {extracted!r}"
 
 
-@pytest.mark.skipif(shutil.which("pdftotext") is None, reason="poppler の pdftotext が無い")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("pdftotext") is None,
+    reason="poppler の pdftotext が無い（windows-latest には空文字列を返す別物が入っている）",
+)
 def test_vertical_columns_survive_poppler(
     font_cache_reset, japanese_font, wide_image_folder, tmp_path
 ):
