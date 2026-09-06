@@ -359,6 +359,37 @@ def test_rewind_is_noop_at_the_first_page():
     assert (ok, presses) == (True, 0)
 
 
+def test_rewind_stops_at_spread_pages():
+    """見開き表示の本は位置が 1 まで下がらず 2 で止まる。
+
+    「位置が 1 になったら先頭」で判定すると、マンガが軒並み
+    「戻り切れなかった」として失敗する（実測で 10 冊中 8 冊が該当）。
+    押しても下がらなくなったら先頭とみなす。
+    """
+
+    class SpreadReader(FakeReader):
+        """位置 2 より下がらないリーダー（見開き表示）。"""
+
+        def __init__(self, position):
+            super().__init__(forward="ArrowLeft", position=position)
+
+        def _press(self, key):
+            pass
+
+    page = SpreadReader(position=8)
+    original = page.keyboard.press
+
+    def press(key):
+        if key == "ArrowRight" and page.position <= 2:
+            return  # これ以上戻れない
+        original(key)
+
+    page.keyboard.press = press
+    ok, pressed = rewind_to_start(page, "left", page_wait=0, max_retries=3)
+    assert ok is True
+    assert page.position == 2
+
+
 def test_rewind_respects_max_rewind():
     """暴走しないよう上限で打ち切り、届かなかったことを返す。"""
     page = FakeReader(forward="ArrowLeft", position=500)

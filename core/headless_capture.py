@@ -309,7 +309,13 @@ def capture_pages(
 
 
 def rewind_to_start(
-    page, forward, *, page_wait=DEFAULT_REWIND_WAIT, max_rewind=DEFAULT_MAX_REWIND, emit=null_emit
+    page,
+    forward,
+    *,
+    page_wait=DEFAULT_REWIND_WAIT,
+    max_rewind=DEFAULT_MAX_REWIND,
+    max_retries=3,
+    emit=null_emit,
 ):
     """先頭ページまで戻す。(ok, 押した回数) を返す。
 
@@ -321,6 +327,10 @@ def rewind_to_start(
 
     画面キャプチャ経路では open_book が画素比較で巻き戻しているが、
     ここでは読書位置の数値が使えるので確実に判定できる。
+
+    先頭かどうかは「位置が 1 になった」ではなく**「押しても下がらなくなった」**で
+    判定する。見開き表示の本は位置が 1 まで下がらず 2 で止まるため、数値だけを
+    見るとマンガが軒並み失敗する（実測で 10 冊中 8 冊が該当した）。
     """
     back = turn_key(reverse_of(forward))
     before = read_position(page)
@@ -330,9 +340,8 @@ def rewind_to_start(
 
     pressed = 0
     stuck = 0
-    while pressed < max_rewind:
-        if before <= 1:
-            break
+    at_start = before <= 1
+    while pressed < max_rewind and not at_start:
         page.keyboard.press(back)
         page.wait_for_timeout(int(page_wait * 1000))
         pressed += 1
@@ -342,12 +351,15 @@ def rewind_to_start(
         else:
             stuck = 0
             before = current
-        if stuck >= 3:
-            break
+        if before <= 1 or stuck >= max_retries:
+            # 位置が 1 になったか、押しても下がらなくなったら先頭。
+            # 見開き表示の本は位置が 1 まで下がらず 2 で止まるため、
+            # 数値だけで判定すると「戻り切れなかった」と誤判定する（実測）。
+            at_start = True
         if pressed % 25 == 0:
             emit("status", human=f"先頭へ巻き戻し中... (位置 {before})")
 
-    ok = before is not None and before <= 1
+    ok = at_start
     emit(
         "rewound",
         human=f"先頭へ巻き戻しました（{pressed} 回、位置 {before}）"
