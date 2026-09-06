@@ -6,11 +6,20 @@ NDLOCR-Lite は行ごとに ``boundingBox`` / ``isVertical`` / ``confidence`` �
 が見えている場所と対応せず、縦書きでは完全に破綻する）。
 
 JSON の ``class_index`` は実測ではテキスト行が一律 1 で、本文 / 図版 / 柱 /
-ノンブルといった細かい種別は XML の ``LINE TYPE`` 側にしか無い。種別が要る
-用途（読み取り品質の検証・図版の分離）では XML を読む必要がある。
+ノンブルといった細かい種別は XML の ``LINE TYPE`` 側にしか無い。そのため
+座標と縦横は JSON から、種別は XML から読んで併合する。両者の行数と順序は
+実測で一致する（B0BVLM8RR2 の 6 ページで 33/33・9/9 行が同順）。
 """
 
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
+
+# NDLOCR-Lite の LINE TYPE（ndlocr-lite/src/ndl_parser.py の categories）のうち、
+# 本文として扱うもの。柱（書名ヘッダー）とノンブル（ページ番号）はビューアや
+# 原本の装飾で、本文ではない。
+BODY_CATEGORIES = frozenset({"本文", "タイトル本文", "割注", "頭注"})
+# ページ画像にビューアの UI が写り込んでいると出る種別
+CHROME_CATEGORIES = frozenset({"柱", "ノンブル"})
 
 
 @dataclass(frozen=True)
@@ -24,6 +33,14 @@ class Line:
     bottom: int
     vertical: bool = False
     confidence: float = 0.0
+    # XML の LINE TYPE（本文 / 図版 / キャプション / 柱 / ノンブル ...）。
+    # XML が読めなかったときは None
+    category: str | None = None
+
+    @property
+    def is_body(self):
+        """本文の行か。種別が取れていないときは本文とみなす。"""
+        return self.category is None or self.category in BODY_CATEGORIES
 
     @property
     def width(self):
@@ -101,6 +118,35 @@ def _bbox(points):
     xs = [int(p[0]) for p in points]
     ys = [int(p[1]) for p in points]
     return min(xs), min(ys), max(xs), max(ys)
+
+
+def parse_ndl_xml_categories(xml_text):
+    """NDLOCR-Lite の XML から LINE TYPE を出現順に返す。
+
+    JSON と同じ順・同じ行数で並ぶので、呼び出し側は index で併合する。
+    読めなければ空リストを返す（種別なしで動く）。
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    return [line.get("TYPE") for line in root.iter("LINE")]
+
+
+def with_categories(layout, categories):
+    """行数が一致するときだけ種別を併合する。
+
+    一致しないなら併合しない。ずれた種別を付けると、本文を図版と誤判定して
+    検証が嘘をつくため、種別なし（＝全部本文とみなす）に倒すほうが安全。
+    """
+    if not categories or len(categories) != len(layout.lines):
+        return layout
+    return replace(
+        layout,
+        lines=[
+            replace(line, category=cat) for line, cat in zip(layout.lines, categories, strict=True)
+        ],
+    )
 
 
 def parse_ndl_json(data, filename):

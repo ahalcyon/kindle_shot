@@ -20,7 +20,13 @@ import threading
 from core import ocr_preprocess, text_replacements
 from core.config import load_config
 from core.image_files import OCR_IMAGE_EXTENSIONS, list_images
-from core.ocr_layout import PageLayout, map_text, parse_ndl_json
+from core.ocr_layout import (
+    PageLayout,
+    map_text,
+    parse_ndl_json,
+    parse_ndl_xml_categories,
+    with_categories,
+)
 
 # ============================================================
 # NDLOCR-Lite エンジン
@@ -332,9 +338,18 @@ class NDLOCREngine:
             return None
         try:
             with open(json_path, encoding="utf-8") as f:
-                return parse_ndl_json(json.load(f), filename)
+                layout = parse_ndl_json(json.load(f), filename)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
+        # 種別（本文 / 図版 / 柱 / ノンブル）は XML にしか無いので併合する
+        xml_path = os.path.join(output_dir, stem + ".xml")
+        if os.path.exists(xml_path):
+            try:
+                with open(xml_path, encoding="utf-8") as f:
+                    layout = with_categories(layout, parse_ndl_xml_categories(f.read()))
+            except OSError:
+                pass
+        return layout
 
     def _maybe_preprocess(self, image_path, tmpdir, opts):
         """前処理が有効なら tmpdir に前処理済み画像を保存し、そのパスを返す。

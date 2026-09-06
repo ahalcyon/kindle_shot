@@ -18,6 +18,7 @@ from core.pipeline import (
     MANIFEST_NAME,
     check_input_folder,
     clear_output_images,
+    clipped_sides,
     read_shot_mode,
     relax_margins,
     remove_intermediates,
@@ -451,3 +452,35 @@ def test_viewport_shot_still_strips_the_reader_chrome(tmp_path, monkeypatch, spy
     assert kwargs["margins"] is None
     assert kwargs["min_margins"] == (0, 0, 80, 80)
     assert kwargs["ui_bands"] is True
+
+
+# ------------------------------------------------------------
+# トリミングが本文に食い込む検出（#28）
+# ------------------------------------------------------------
+
+
+def test_clipped_sides_reproduces_issue_28():
+    """#28 の実測値。上辺で 60px、左辺で 11px 本文に食い込んでいた。
+
+    content_margins も適用マージンも margins_detected イベントに出ていたのに、
+    突き合わせる処理が無かったので本番まで気づけなかった。
+    """
+    clipped = clipped_sides(content_margins=(189, 18, 20, 90), applied_margins=(200, 181, 80, 82))
+
+    assert clipped == [("左", 11), ("右", 163), ("上", 60)]
+
+
+def test_clipped_sides_is_empty_when_the_margin_stays_outside_the_content():
+    assert clipped_sides((189, 18, 20, 90), (189, 18, 20, 90)) == []
+    assert clipped_sides((189, 100, 60, 90), (100, 50, 20, 10)) == []
+
+
+def test_clipped_sides_handles_missing_input():
+    """内容ベースの検出ができなかったページでは判定しない。"""
+    assert clipped_sides(None, (10, 10, 10, 10)) == []
+    assert clipped_sides((10, 10, 10, 10), None) == []
+
+
+def test_element_shot_never_clips():
+    """要素撮影は margins=(0,0,0,0) なので、内容がどこにあっても食い込まない。"""
+    assert clipped_sides((0, 0, 0, 0), (0, 0, 0, 0)) == []

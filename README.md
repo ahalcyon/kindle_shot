@@ -544,6 +544,13 @@ python scripts\convert_2nd.py --books books_c.json --out C:\books --format markd
   `tool` / `title` / `profile_key` / `profile`（解決済みプロファイル全体）/ `total_pages` /
   `save_dir` / `stopped_reason` / `started_at` / `finished_at` / `duration_seconds`。
   headless ではさらに `backend` / `page_turn` / `page_turn_source` / `page_wait` / `shot_mode`
+- **`ocr_validation` イベント（`searchable_pdf` のみ）**: 読み取り結果の機械検証。
+  `problems`（本文が失われている可能性。空でなければ要確認）と `warnings`（読めては
+  いるが精度が疑わしい）に分かれ、`result` イベントにも同じ内容が載ります。
+  ビューアの UI（柱・ノンブル）の写り込み、本文が 1 行も読めなかったページ、
+  低信頼度の行数、既知の誤認識パターン、括弧の対応を見ます
+- **`margins_clip_content` イベント**: 自動検出したトリミングが内容の位置を超えた辺と
+  超過ピクセル数。本文が欠ける可能性があります（要素撮影の本では削らないので出ません）
 - **`ocr_layout` イベント（`searchable_pdf` のみ）**: 文字の位置つきで読めたページ数
   （`positioned` / `pages`）。位置つきのページは不可視テキストが文字の位置に重なるため、
   範囲選択でコピーした内容が見えているものと一致します。位置が取れなかったページは
