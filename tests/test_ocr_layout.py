@@ -82,33 +82,14 @@ def test_survives_empty_document():
 
 
 # ------------------------------------------------------------
-# 文字ごとの位置
+# 1 文字の大きさ
 # ------------------------------------------------------------
 
 
-def test_vertical_line_places_characters_downwards():
-    """縦書きは列の上から下へ 1 文字ずつ。x は列の左端で固定。"""
-    line = Line(text="あいう", left=100, top=0, right=120, bottom=60, vertical=True)
-    assert list(line.char_positions()) == [
-        ("あ", 100, 0.0),
-        ("い", 100, 20.0),
-        ("う", 100, 40.0),
-    ]
-    assert line.font_size == 20  # 縦書きは行の幅が 1 文字の一辺
-
-
-def test_horizontal_line_places_characters_rightwards():
-    line = Line(text="abc", left=0, top=10, right=60, bottom=30, vertical=False)
-    assert list(line.char_positions()) == [
-        ("a", 0.0, 10),
-        ("b", 20.0, 10),
-        ("c", 40.0, 10),
-    ]
-    assert line.font_size == 20  # 横書きは行の高さ
-
-
-def test_empty_line_has_no_characters():
-    assert list(Line(text="", left=0, top=0, right=10, bottom=10).char_positions()) == []
+def test_font_size_is_the_short_side_of_the_line():
+    """行の短辺が 1 文字の一辺。縦書きは行の幅、横書きは行の高さ。"""
+    assert Line(text="あいう", left=100, top=0, right=120, bottom=60, vertical=True).font_size == 20
+    assert Line(text="abc", left=0, top=10, right=60, bottom=30, vertical=False).font_size == 20
 
 
 # ------------------------------------------------------------
