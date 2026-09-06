@@ -122,9 +122,11 @@ jobs:
           pip install -r requirements.txt
           pip install --group dev
 
+      # 対象ファイルを明示する。-m e2e だけだと実 Amazon 用のテストも拾い、
+      # 資格情報が無いので skip されて「緑だが何も試していない」状態になる。
       - name: E2E tests
         shell: bash
-        run: pytest -m e2e -q
+        run: pytest tests/e2e/test_cli_pipeline_e2e.py -m e2e -q
 
   # 実 Amazon に対する E2E。self-hosted runner で回す。
   #
