@@ -20,6 +20,7 @@ import threading
 from core import ocr_preprocess, text_replacements
 from core.config import load_config
 from core.image_files import OCR_IMAGE_EXTENSIONS, list_images
+from core.ocr_layout import PageLayout, map_text, parse_ndl_json
 
 # ============================================================
 # NDLOCR-Lite エンジン
@@ -83,7 +84,13 @@ class NDLOCREngine:
                 return False, f"OCR処理中にエラー: {e}"
 
     def process_folder(
-        self, input_folder, image_files, preprocess_opts=None, on_progress=None, workers=1
+        self,
+        input_folder,
+        image_files,
+        preprocess_opts=None,
+        on_progress=None,
+        workers=1,
+        collect_layout=False,
     ):
         """フォルダ内の画像を ndlocr-lite の --sourcedir で一括 OCR する。
 
@@ -103,10 +110,12 @@ class NDLOCREngine:
             on_progress: 進捗コールバック (current, total, filename)。
                 前処理パスと OCR パスでそれぞれ 1..total を報告する。
             workers: 並列起動する ndlocr-lite プロセス数
+            collect_layout: True なら行ごとの座標を保った PageLayout を返す
 
         Returns:
             (success, results_or_error) のタプル
-            成功時: results は [(filename, text), ...] のリスト
+            成功時: results は [(filename, text), ...]。
+            collect_layout=True なら [PageLayout, ...]
         """
         total = len(image_files)
         workers = max(1, min(int(workers or 1), total))
@@ -147,6 +156,10 @@ class NDLOCREngine:
                         return
                     for filename in chunk:
                         stem = os.path.splitext(filename)[0]
+                        if collect_layout:
+                            layout = self._read_page_layout(ocr_out, stem, filename)
+                            results_map[filename] = layout or PageLayout(filename=filename)
+                            continue
                         text = self._read_page_text(ocr_out, stem)
                         if text is None:
                             text = "[OCRエラー: 出力が見つかりません]"
@@ -166,6 +179,8 @@ class NDLOCREngine:
 
                 if errors:
                     return False, errors[0]
+                if collect_layout:
+                    return True, [results_map[f] for f in image_files]
                 return True, [(f, results_map[f]) for f in image_files]
             except Exception as e:
                 return False, f"OCR一括処理中にエラー: {e}"
@@ -306,6 +321,20 @@ class NDLOCREngine:
             except (json.JSONDecodeError, KeyError):
                 return None
         return None
+
+    def _read_page_layout(self, output_dir, stem, filename):
+        """一括 OCR の出力から 1 ページ分のレイアウト（行と座標）を読む。
+
+        座標は JSON にしか無いので .txt は見ない。読めなければ None。
+        """
+        json_path = os.path.join(output_dir, stem + ".json")
+        if not os.path.exists(json_path):
+            return None
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                return parse_ndl_json(json.load(f), filename)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return None
 
     def _maybe_preprocess(self, image_path, tmpdir, opts):
         """前処理が有効なら tmpdir に前処理済み画像を保存し、そのパスを返す。
@@ -464,25 +493,36 @@ def _apply_replacements_to_results(results, replacements_opts):
     if not replacements_opts or not replacements_opts.get("enabled", True):
         return results
     path = replacements_opts.get("path") or text_replacements.default_path()
+    if results and isinstance(results[0], PageLayout):
+        replacer, _err = text_replacements.load_replacer(path)
+        return [map_text(layout, replacer.apply) for layout in results]
     new_results, _err = text_replacements.apply_to_results(results, path=path)
     return new_results
 
 
-def _process_folder_per_page(input_folder, image_files, preprocess_opts, on_progress):
+def _process_folder_per_page(
+    input_folder, image_files, preprocess_opts, on_progress, collect_layout=False
+):
     """ページ毎にサブプロセスを起動する旧方式のフォルダ OCR。
 
     モデルロードを毎ページやり直すため遅い。一括モードが使えない場合
     (ステム名の衝突時) のフォールバック専用。
+
+    collect_layout=True でも座標は取れない（この経路は連結済みテキストしか
+    受け取らない）。テキストだけを持つ PageLayout を返し、呼び出し側が
+    positioned=False として扱えるようにする。
     """
     total = len(image_files)
-    results = []
+    results: list = []
     for i, filename in enumerate(image_files, 1):
         filepath = os.path.join(input_folder, filename)
         success, text = _ENGINE.process_single(filepath, preprocess_opts=preprocess_opts)
-        if success:
-            results.append((filename, text))
+        if not success:
+            text = f"[OCRエラー: {text}]"
+        if collect_layout:
+            results.append(PageLayout(filename=filename, fallback_text=text))
         else:
-            results.append((filename, f"[OCRエラー: {text}]"))
+            results.append((filename, text))
         if on_progress:
             on_progress(i, total, filename)
     return True, results
@@ -494,6 +534,7 @@ def process_folder_collect(
     preprocess_opts=None,
     replacements_opts=None,
     workers=None,
+    layout=False,
 ):
     """フォルダ内の画像を一括 OCR 処理し、結果をリストで返す。
 
@@ -510,7 +551,8 @@ def process_folder_collect(
 
     Returns:
         (success, results_or_error) のタプル
-        成功時: results は [(filename, text), ...] のリスト
+        成功時: results は [(filename, text), ...] のリスト。
+        layout=True なら [PageLayout, ...]（行ごとの座標つき）
     """
     available, msg = _ENGINE.is_available()
     if not available:
@@ -530,6 +572,7 @@ def process_folder_collect(
             preprocess_opts=opts,
             on_progress=on_progress,
             workers=_resolve_workers(workers),
+            collect_layout=layout,
         )
     else:
         success, results = _process_folder_per_page(
@@ -537,6 +580,7 @@ def process_folder_collect(
             image_files,
             opts,
             on_progress,
+            collect_layout=layout,
         )
     if not success:
         return False, results
