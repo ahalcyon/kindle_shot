@@ -276,6 +276,162 @@ def test_searchable_pdf_puts_text_where_it_is_shown(
     assert "みぎのはしら" not in bottom_left
 
 
+class _RecordingText:
+    """beginText() が返すオブジェクトの記録用スタブ。"""
+
+    def __init__(self):
+        self.strings = []
+
+    def setTextRenderMode(self, mode):
+        pass
+
+    def setFont(self, name, size):
+        pass
+
+    def setCharSpace(self, value):
+        pass
+
+    def setTextOrigin(self, x, y):
+        pass
+
+    def setTextTransform(self, *matrix):
+        pass
+
+    def textOut(self, text):
+        self.strings.append(text)
+
+
+class _RecordingCanvas:
+    def __init__(self):
+        self.text_objects = []
+
+    def beginText(self):
+        obj = _RecordingText()
+        self.text_objects.append(obj)
+        return obj
+
+    def drawText(self, text_object):
+        pass
+
+
+def _drawn_strings(layout):
+    c = _RecordingCanvas()
+    pdf_builder._draw_positioned_text(c, layout, 1000.0, "Helvetica")
+    return [s for obj in c.text_objects for s in obj.strings]
+
+
+def test_vertical_column_is_drawn_as_one_string():
+    """#37: 縦書きの列は 1 回の描画で置く。
+
+    1 文字ずつ独立に置くと PDF の内容ストリームに「どれが同じ列か」の情報が
+    残らない。PDFium (Chrome/Edge) は描画順のおかげで正しく読めるが、
+    poppler (pdftotext) は幾何から推測するため列をまたいで横に読む。
+    実データでは「は ら こ 「 表 に ず じ と」のような並びになり、
+    OCR の行がそのまま取れたのは 133 行中 76 行だけだった。
+    """
+    from core.ocr_layout import Line, PageLayout
+
+    layout = PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[
+            Line(text="それでなくても", left=900, top=100, right=940, bottom=380, vertical=True),
+            Line(text="難しいものです", left=840, top=100, right=880, bottom=380, vertical=True),
+        ],
+    )
+
+    assert _drawn_strings(layout) == ["それでなくても", "難しいものです"]
+
+
+def test_horizontal_line_stays_one_character_per_draw():
+    """横書きは 1 文字ずつのまま。
+
+    文字送りが書字方向と一致するので 1 文字ずつでも抽出器は 1 行にまとめる。
+    OCR の座標をそのまま使えるぶん、欧文混じりの行で位置がずれない。
+    """
+    from core.ocr_layout import Line, PageLayout
+
+    layout = PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[Line(text="よこがき", left=100, top=100, right=260, bottom=140)],
+    )
+
+    assert _drawn_strings(layout) == ["よ", "こ", "が", "き"]
+
+
+def test_empty_lines_are_not_drawn():
+    """テキストが空の行は描かない（座標だけあっても意味が無い）。"""
+    from core.ocr_layout import Line, PageLayout
+
+    layout = PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[Line(text="", left=900, top=100, right=940, bottom=380, vertical=True)],
+    )
+
+    assert _drawn_strings(layout) == []
+
+
+def test_vertical_column_keeps_its_last_character(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """ページ全体を使う列でも末尾の 1 文字が落ちない。
+
+    字送りに行の幅を使うと、送りとの差の分だけ列が bbox からはみ出す。
+    ページ下端を越えた最後の 1 文字は抽出されなくなる（実データでは
+    53 文字の列 15 本すべてで末尾が落ちた）。
+    """
+    from core.ocr_layout import Line, PageLayout
+
+    text = "あいうえおかきくけこさしすせそたちつてと"
+    layout = PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[
+            # 上端から下端まで使い切る列。1 文字あたりの送り(50)より列の幅(80)が広い
+            Line(text=text, left=900, top=0, right=980, bottom=1000, vertical=True)
+        ],
+    )
+    out = tmp_path / "full_height.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(str(wide_image_folder), [layout], str(out))
+    assert ok, msg
+
+    assert text in extract_region(out, 0, 0.0, 0.0, 1.0, 1.0)
+
+
+def test_vertical_text_keeps_plain_punctuation(
+    font_cache_reset, japanese_font, wide_image_folder, tmp_path
+):
+    """縦書きでもコピーした句読点・括弧が原文のままである。
+
+    縦組み CMap の CID フォント（UniJIS-UCS2-V）で描くと列はまとまるが、
+    句読点と括弧が縦書き用の異体字に対応付けられ、コピーすると
+    。「 が ︒ ﹁ (U+FE12 / U+FE41) になってしまう。
+    """
+    from core.ocr_layout import Line, PageLayout
+
+    text = "「これは、本文です。」"
+    layout = PageLayout(
+        filename="001.png",
+        width=1000,
+        height=1000,
+        lines=[Line(text=text, left=900, top=100, right=940, bottom=540, vertical=True)],
+    )
+    out = tmp_path / "punctuation.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(str(wide_image_folder), [layout], str(out))
+    assert ok, msg
+
+    extracted = extract_region(out, 0, 0.0, 0.0, 1.0, 1.0)
+    assert text in extracted
+    for vertical_form in ("\ufe12", "\ufe41", "\ufe10"):
+        assert vertical_form not in extracted
+
+
 def test_searchable_pdf_scales_text_to_the_image(
     font_cache_reset, japanese_font, wide_image_folder, tmp_path
 ):
