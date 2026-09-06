@@ -162,39 +162,56 @@ def images_to_pdf(folder_path, output_folder, output_filename, on_progress=None,
     return True, f"PDFファイルを作成しました: {output_pdf}"
 
 
+def _descent_offset(font_name, size):
+    """回転して置いた文字の字面を、列の左端に合わせるための x のずらし幅。
+
+    -90 度回転すると、フォントのベースラインから上 (ascent) が x の正方向に
+    写る。原点をそのまま列の左端に置くと字面が descent の分だけ左へはみ出し、
+    列の右端に何も無い帯ができる。descent はフォントの単位 (1/1000 em) で
+    負の値なので、その分だけ右へずらす。
+    """
+    try:
+        descent = pdfmetrics.getFont(font_name).face.descent
+    except Exception:  # noqa: BLE001 - 取れないフォントではずらさない
+        return 0.0
+    return -float(descent) / 1000.0 * size
+
+
 def _draw_vertical_line(c, line, page_height, font_name, scale):
-    """縦書きの 1 列を、1 回の描画でまとめて置く。
+    """縦書きの 1 列を、テキスト行列を -90 度回転させて置く。
 
-    **なぜ 1 回にするか** — 1 文字ずつ独立に置くと PDF の内容ストリームには
-    バラバラのグリフが並ぶだけで「どれが同じ列か」の情報が残らない。抽出器は
-    幾何的に推測するしかなく、横組みフォントの送りに引きずられて列をまたいで
-    横に読んでしまう (#37)。1 回の文字列描画にすれば列がそのまま残る。
+    **なぜ回転させるか** — 抽出器は読み順をテキスト行列から決める。横組みの
+    ままだと「右へ進む文字が格子状に並んでいる」と解釈され、列をまたいで
+    横に読まれる (#37)。実測では poppler が 4 列中 0 列しか復元できなかった。
+    行列を回して送りを下向きにすれば、poppler も PDFium も列として読む。
 
-    **どう下向きに送るか** — 横組みフォントのまま、テキスト行列を -90 度
-    回転させる。文字送りが下向きになり、列全体が 1 つの文字列として並ぶ。
-    不可視 (レンダーモード 3) なので字形の向きは問題にならない。
+    **なぜ 1 文字ずつ置くか** — 列を 1 回の文字列描画にまとめると poppler は
+    正しく読むが、**PDFium が列を x の昇順に並べ替えるため読み順が左→右に
+    逆転する** (実測。描画順を変えても直らない)。1 文字ずつ置けば両方とも
+    右→左のまま読む。1 文字ずつなら OCR の座標をそのまま使えるので、
+    列の途中の文字位置もずれない。
 
     縦組み CMap の CID フォント (UniJIS-UCS2-V) を使う手もあるが、そちらは
     句読点や括弧が縦書き用の異体字に対応付けられ、**コピーすると 。「 が
     ︒ ﹁ (U+FE12 / U+FE41) になってしまう**。回転方式なら埋め込み済みの
     TrueType をそのまま使えるので、コピーした文字は原文どおりになる。
-
-    送りは bbox の高さを文字数で割った実測値に合わせる。欧文や数字は字幅が
-    全角より狭く列が詰まってしまうので、実際の文字列幅との差を
-    ``setCharSpace`` で配り直す。
     """
-    n = len(line.text)
-    step = line.height / n * scale
-    size = max(1.0, step)
-    # 回転後は「文字列の幅」が列の長さになる。実測の送りとの差を均等に配る
-    advance = pdfmetrics.stringWidth(line.text, font_name, size)
+    size = max(1.0, line.font_size * scale)
+    step = line.height / len(line.text) * scale
+    x = line.left * scale + _descent_offset(font_name, size)
+    top = page_height - line.top * scale
     text_obj = c.beginText()
     text_obj.setTextRenderMode(3)  # invisible
     text_obj.setFont(font_name, size)
-    text_obj.setCharSpace((step * n - advance) / n)
-    # (0, -1, 1, 0) = -90 度回転。原点は列の左上に置く
-    text_obj.setTextTransform(0, -1, 1, 0, line.left * scale, page_height - line.top * scale)
-    text_obj.textOut(line.text)
+    for i, ch in enumerate(line.text):
+        # 回転後は字幅が列の縦方向の送りになる。半角文字でも 1 マス分になるよう伸ばす
+        width = pdfmetrics.stringWidth(ch, font_name, size) or size
+        text_obj.setHorizScale(100.0 * step / width)
+        # (0, -1, 1, 0) = -90 度回転
+        text_obj.setTextTransform(0, -1, 1, 0, x, top - step * i)
+        text_obj.textOut(ch)
+    # Tz はグラフィクス状態なので ET では戻らない。後続の行に漏らさない
+    text_obj.setHorizScale(100.0)
     c.drawText(text_obj)
 
 

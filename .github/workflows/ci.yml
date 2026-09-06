@@ -72,6 +72,17 @@ jobs:
         shell: bash
         run: mypy
 
+      # 縦書き PDF の読み順は poppler でしか壊れない（PDFium は描画順で読むため
+      # 再現しない）。ユニットテストは windows-latest で走り poppler が無いので、
+      # このジョブでだけ入れて #37 の退行を見張る。
+      # 日本語 TrueType が要る（Noto CJK は CFF なので reportlab で使えない）。
+      - name: 縦書きの読み順を poppler で検査する (#37)
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq poppler-utils fonts-ipafont-gothic
+          pytest tests/test_pdf_builder.py -k poppler -q --no-header -rs
+
   test:
     name: unit tests (windows)
     runs-on: windows-latest
