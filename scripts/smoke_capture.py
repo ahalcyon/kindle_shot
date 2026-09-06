@@ -10,13 +10,14 @@ cli.py run を JSON Lines で起動し、結果を機械的に検証する:
 - 取得画像が全て別物（同じページが並んでいない = ページ送りが効いている）
 - 出力 PDF が存在し、ページ数が合っている
 
+headless で走るので、画面もデスクトップセッションも要らない。実行中に PC を
+使えるため、push のたびに走っても作業の邪魔にならない。
+
 使い方:
     python scripts/smoke_capture.py --asin B0XXXXXXXX
     python scripts/smoke_capture.py --asin B0XXXXXXXX --pages 5 --keep
 
-注意:
-- 実行中は前面ウィンドウとマウスを占有する
-- 先頭ページへの巻き戻しは Kindle の読書位置 (Whispersync) を動かす
+注意: 先頭ページへの巻き戻しは Kindle の読書位置 (Whispersync) を動かす。
 """
 
 import argparse
@@ -128,8 +129,12 @@ def check_pages_differ(image_paths):
 
 
 def build_run_argv(python, asin, out, pages, fmt="image_pdf"):
-    """cli.py run の argv を組み立てる。"""
-    return [
+    """cli.py run の argv を組み立てる。
+
+    必ず headless で走らせる。画面もデスクトップセッションも要らないので、
+    実行中に PC を使えて、push のたびに走っても邪魔にならない。
+    """
+    argv = [
         python,
         CLI,
         "run",
@@ -143,8 +148,10 @@ def build_run_argv(python, asin, out, pages, fmt="image_pdf"):
         fmt,
         "--max-pages",
         str(pages),
-        "--json",
     ]
+    # 読み込み待ちの既定 45 秒は画面キャプチャ経路向けの値
+    argv += ["--headless", "--load-wait", "12", "--json"]
+    return argv
 
 
 def pdf_page_count(path):
@@ -274,7 +281,7 @@ def main(argv=None):
             print(f"  - {p}", file=sys.stderr)
         return EXIT_FAILED
 
-    print(f"\n実機スモーク: OK（{args.pages} ページ取得・PDF 生成まで確認）")
+    print(f"\n実機スモーク: OK（headless / {args.pages} ページ取得・PDF 生成まで確認）")
     return EXIT_OK
 
 

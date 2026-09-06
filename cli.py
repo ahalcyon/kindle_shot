@@ -254,6 +254,17 @@ def cmd_capture(args, rep):
 # ============================================================
 
 
+def cmd_library(args, rep):
+    from core.library import run_library_dump
+
+    return run_library_dump(
+        args.output,
+        keep_edition=args.keep_edition,
+        headless=not args.headed,
+        emit=rep.event,
+    )
+
+
 def cmd_headless(args, rep):
     from core.capture_profiles import get_profile
     from core.config import load_config
@@ -935,6 +946,28 @@ def build_parser():
         "--overwrite", action="store_true", help="出力フォルダの既存画像を削除してから実行する"
     )
     p_pdf.set_defaults(func=cmd_pdf)
+
+    p_lib = sub.add_parser(
+        "library",
+        parents=[common],
+        help="蔵書一覧を取得して batch 用の books.json を書き出す（画面もセッションも不要）",
+    )
+    p_lib.add_argument(
+        "--out",
+        dest="output",
+        required=True,
+        metavar="FILE",
+        help="出力する books.json のパス",
+    )
+    p_lib.add_argument(
+        "--keep-edition",
+        action="store_true",
+        help="タイトルの (Japanese Edition) 等を残す（既定は落とす）",
+    )
+    p_lib.add_argument(
+        "--headed", action="store_true", help="ブラウザを表示する（初回サインインの確認用）"
+    )
+    p_lib.set_defaults(func=cmd_library)
 
     p_head = sub.add_parser(
         "headless",

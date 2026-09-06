@@ -103,7 +103,7 @@ self-hosted runner のワークフローから呼べば CI 化もできる
    python cli.py check --profile kindle_cloud
    ```
 
-2. **1 冊を 3 ページだけ通す**（ここからデスクトップを占有する）
+2. **1 冊を 3 ページだけ通す**（headless なのでデスクトップは占有しない）
 
    ```
    python scripts/smoke_capture.py --asin <ASIN>
@@ -140,7 +140,7 @@ self-hosted runner のワークフローから呼べば CI 化もできる
 
 - 先頭ページへの巻き戻しは Kindle の読書位置 (Whispersync) を動かす。
   本番の蔵書で試すときはそのつもりで
-- キャプチャ中は前面ウィンドウとマウスを占有する
+- スモークは headless で走るので画面もセッションも不要。実行中も PC を使える
 
 #### 結果の残し方
 
