@@ -227,24 +227,28 @@ def _draw_horizontal_line(c, line, page_height, font_name, scale):
     行がそのまま壊れる。
 
     フォントの字幅の比で配分すれば、実際に組まれた位置に近いところへ落ちる。
-    行全体の幅を bbox に合わせるぶんは Tz で伸縮する。**Tz はテキスト行列の
-    x にも掛かる**ので、原点は先に割ってから置く。
+    行全体の幅を bbox に合わせるぶんは Tz で伸縮する。Tz が掛かるのは
+    **グリフの送りだけ**で、テキスト行列の平行移動には掛からない
+    (PDF 32000-1 §9.4.4)。原点はそのまま行の左端に置いてよい。
 
     縦書き (``_draw_vertical_line``) と違って 1 文字ずつに分けないのは、
     横書きでは文字送りが書字方向と一致していて、抽出器が並べ替えないため。
+
+    bbox が壊れている行 (``right < left``) では伸縮しない。負の Tz は文字を
+    鏡像にしてしまい、その行がテキストレイヤーから消える。
     """
     size = max(1.0, line.font_size * scale)
-    widths = [pdfmetrics.stringWidth(ch, font_name, size) or size for ch in line.text]
-    # 字幅が取れない (総和 0) / bbox がつぶれている行では伸縮しない
-    horiz_scale = (line.width * scale / sum(widths)) if sum(widths) and line.width else 1.0
+    # reportlab は字詰めをしないので、行全体の幅は 1 文字ずつの総和と一致する
+    natural_width = pdfmetrics.stringWidth(line.text, font_name, size)
+    horiz_scale = (
+        line.width * scale / natural_width if natural_width > 0 and line.width > 0 else 1.0
+    )
     text_obj = c.beginText()
     text_obj.setTextRenderMode(3)  # invisible
     text_obj.setFont(font_name, size)
     text_obj.setHorizScale(100.0 * horiz_scale)
     # 文字の左下に置く。top は文字の上端なので 1 文字分下げる
-    text_obj.setTextOrigin(
-        line.left * scale / horiz_scale, page_height - (line.top + line.font_size) * scale
-    )
+    text_obj.setTextOrigin(line.left * scale, page_height - (line.top + line.font_size) * scale)
     text_obj.textOut(line.text)
     # Tz はグラフィクス状態なので ET では戻らない。後続の行に漏らさない
     text_obj.setHorizScale(100.0)
