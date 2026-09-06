@@ -333,7 +333,13 @@ headless で 45 秒を使うと 300 冊で 3 時間以上を待機に費やす�
 
 明示するなら `--page-turn left`（縦書き）/ `--page-turn right`（横書き）です。
 
-`manifest.json` には `backend: "headless"` と、実行に使った `page_turn` / `page_wait` が入ります。
+`manifest.json` には `backend: "headless"` と、実行に使った `page_turn` / `page_wait` /
+`shot_mode` が入ります。
+
+Kindle Cloud Reader は本文を**サーバ側でレンダリングした画像 1 枚**（`div.kg-full-page-img > img`）
+として配信しているため、ブラウザの画面全体ではなくこの要素だけを撮ります（`shot_mode: "element"`）。
+書名ヘッダー・しおりアイコン・フッター・めくり矢印が最初から入らないので、余白のトリミングが不要に
+なります。要素が見つからない本ではビューポート全体の撮影に自動で切り替わります（`shot_mode: "viewport"`）。
 `stopped_reason` は次のいずれかです。
 
 | 値 | 意味 |
@@ -536,7 +542,12 @@ python scripts\convert_2nd.py --books books_c.json --out C:\books --format markd
 
 - **`manifest.json`**: `capture` 完了時に保存先へ書き出す実行記録。キー は
   `tool` / `title` / `profile_key` / `profile`（解決済みプロファイル全体）/ `total_pages` /
-  `save_dir` / `stopped_reason` / `started_at` / `finished_at` / `duration_seconds`
+  `save_dir` / `stopped_reason` / `started_at` / `finished_at` / `duration_seconds`。
+  headless ではさらに `backend` / `page_turn` / `page_turn_source` / `page_wait` / `shot_mode`
+- **`shot_mode`（headless のみ）**: `element` ならページ画像の要素だけを撮っており、
+  ビューアの UI も余白も入っていません。`run` / `batch` はこのときトリミングを行いません
+  （ページ画像には削れる余白が無く、削ると本文を失うため）。要素が見つからない本では
+  `viewport`（ビューポート全体）になり、従来どおり余白を自動検出して削ります
 - **中間ファイルの自動削除**: `run` / `batch` は PDF 化に成功した本の中間ファイル
   （キャプチャ画像・トリミング済み画像・`manifest.json`）を消し、空になったフォルダを畳みます。
   1 冊 200MB のうち 130MB を占めるためで、数百冊を無人処理すると効きます。

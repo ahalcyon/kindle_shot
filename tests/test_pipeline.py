@@ -4,6 +4,7 @@ CLI 経由の統合的な検証は test_cli_contract.py が担う。ここでは
 GUI からも直接呼ばれる共有ヘルパーの単体挙動を検証する。
 """
 
+import json
 import os
 
 import pytest
@@ -17,6 +18,7 @@ from core.pipeline import (
     MANIFEST_NAME,
     check_input_folder,
     clear_output_images,
+    read_shot_mode,
     relax_margins,
     remove_intermediates,
     run_trim,
@@ -365,3 +367,87 @@ def test_run_book_cleans_up_only_on_success(tmp_path, monkeypatch, spy_run_book)
 def test_run_book_keep_images_skips_cleanup(tmp_path, monkeypatch, spy_run_book):
     assert call_run_book(tmp_path, EXIT_OK, monkeypatch, keep_images=True) == EXIT_OK
     assert spy_run_book == []
+
+
+# ------------------------------------------------------------
+# 撮影方式に応じたトリミングの既定
+# ------------------------------------------------------------
+
+
+def write_manifest(save_dir, **fields):
+    save_dir.mkdir(parents=True, exist_ok=True)
+    (save_dir / MANIFEST_NAME).write_text(json.dumps(fields), encoding="utf-8")
+
+
+def test_read_shot_mode_reads_the_manifest(tmp_path):
+    write_manifest(tmp_path / "本", shot_mode="element")
+    assert read_shot_mode(str(tmp_path / "本")) == "element"
+
+
+def test_read_shot_mode_survives_a_missing_or_broken_manifest(tmp_path):
+    """manifest が無い/壊れていても落ちない（トリミング側で従来動作に倒す）。"""
+    assert read_shot_mode(str(tmp_path / "no")) is None
+    broken = tmp_path / "壊"
+    broken.mkdir()
+    (broken / MANIFEST_NAME).write_text("{", encoding="utf-8")
+    assert read_shot_mode(str(broken)) is None
+
+
+@pytest.fixture
+def spy_trim(monkeypatch):
+    """run_book が run_trim に渡した引数を捕まえる。"""
+    from core import headless_capture, pipeline, win32_utils
+
+    calls = []
+    monkeypatch.setattr(pipeline, "remove_intermediates", lambda *a, **k: 0)
+    monkeypatch.setattr(win32_utils, "prevent_sleep", lambda **k: None)
+    monkeypatch.setattr(win32_utils, "allow_sleep", lambda: None)
+    monkeypatch.setattr(pipeline, "run_validate", lambda *a, **k: EXIT_OK)
+    monkeypatch.setattr(pipeline, "run_convert", lambda *a, **k: EXIT_OK)
+
+    def record_trim(*_a, **kwargs):
+        calls.append(kwargs)
+        return EXIT_OK
+
+    monkeypatch.setattr(pipeline, "run_trim", record_trim)
+    return calls, headless_capture
+
+
+def run_book_with_shot_mode(tmp_path, monkeypatch, spy, shot_mode):
+    from core import pipeline
+
+    calls, headless_capture = spy
+    save_dir = tmp_path / "本"
+
+    def fake_capture(*_a, **_k):
+        write_manifest(save_dir, shot_mode=shot_mode)
+        return EXIT_OK
+
+    monkeypatch.setattr(headless_capture, "run_headless_capture", fake_capture)
+    code = pipeline.run_book(
+        asin="B0TEST", title="本", output=str(tmp_path), fmt="image_pdf", headless=True
+    )
+    assert code == EXIT_OK
+    return calls[0]
+
+
+def test_element_shot_is_not_trimmed(tmp_path, monkeypatch, spy_trim):
+    """ページ画像の要素は UI も余白も入っていない。削ると本文を失う。
+
+    実測では本文がページ画像の端まで来ているページが 28% ある
+    （B0BVLM8RR2 の先頭 6 ページ、本文 133 行中 37 行）。
+    """
+    kwargs = run_book_with_shot_mode(tmp_path, monkeypatch, spy_trim, "element")
+
+    assert kwargs["margins"] == (0, 0, 0, 0)
+    assert kwargs["min_margins"] == (0, 0, 0, 0)
+    assert kwargs["ui_bands"] is False
+
+
+def test_viewport_shot_still_strips_the_reader_chrome(tmp_path, monkeypatch, spy_trim):
+    """ビューポート全体を撮った本は従来どおり書名ヘッダーとフッターを削る。"""
+    kwargs = run_book_with_shot_mode(tmp_path, monkeypatch, spy_trim, "viewport")
+
+    assert kwargs["margins"] is None
+    assert kwargs["min_margins"] == (0, 0, 80, 80)
+    assert kwargs["ui_bands"] is True

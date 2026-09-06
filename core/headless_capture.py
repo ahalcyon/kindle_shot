@@ -27,6 +27,8 @@ from core.pipeline import (
     EXIT_NO_IMAGES,
     EXIT_OK,
     MANIFEST_NAME,
+    SHOT_ELEMENT,
+    SHOT_VIEWPORT,
     clear_output_images,
     emit_error,
     null_emit,
@@ -34,6 +36,13 @@ from core.pipeline import (
 
 BOOK_URL = "https://read.amazon.co.jp/?asin={asin}"
 SIGNIN_MARKER = "/ap/signin"
+
+# 本文ページのレンダリング結果。Kindle Cloud Reader は 1 ページを
+# サーバ側でレンダリングした画像 1 枚（blob: URL）として配信しており、
+# DOM に本文テキストは無い（実測: canvas 0 / iframe 0 / テキストノード 0 文字）。
+# この要素だけを撮ればビューアの UI も余白も最初から入らない。
+# blob を fetch すると TypeError: Failed to fetch になるので要素撮影を使う。
+PAGE_IMAGE_SELECTOR = ".kg-full-page-img img"
 
 # 撮影前に隠すビューアの UI。実機の DOM から採取した。
 # 左右のシェブロンは幅 160px ずつあり、隠さないと本文の左右に大きく食い込む。
@@ -189,6 +198,7 @@ def build_manifest(
     page_turn=None,
     page_turn_source=None,
     page_wait=None,
+    shot_mode=None,
 ):
     """run_capture が書くものと同じ形の manifest を組み立てる。"""
     return {
@@ -201,6 +211,9 @@ def build_manifest(
         "page_turn": page_turn,
         "page_turn_source": page_turn_source,
         "page_wait": page_wait,
+        # element: ページ画像の要素だけを撮った（UI も余白も入らない）
+        # viewport: 要素が見つからずビューポート全体を撮った（要トリミング）
+        "shot_mode": shot_mode,
         "total_pages": total,
         "save_dir": save_dir,
         "stopped_reason": stopped_reason,
@@ -242,6 +255,30 @@ def dismiss_dialogs(page):
     return closed
 
 
+def page_shot(page, *, selector=PAGE_IMAGE_SELECTOR):
+    """ページ画像の要素だけを撮り、(バイト列, 撮影方式) を返す。
+
+    要素が見つからない・撮れない本（画像レンダラでない本、レイアウト変更）は
+    従来どおりビューポート全体にフォールバックする。無人実行なので、撮れなく
+    なった瞬間に落とすより、方式を記録して撮り続けるほうが被害が小さい。
+    """
+    try:
+        locator = page.locator(selector)
+        if locator.count():
+            return locator.first.screenshot(), SHOT_ELEMENT
+    except Exception:  # noqa: BLE001 - 撮れない理由は問わずフォールバックする
+        pass
+    return page.screenshot(), SHOT_VIEWPORT
+
+
+def resolve_shot_mode(page, *, selector=PAGE_IMAGE_SELECTOR):
+    """この本を要素撮影で撮れるかを 1 回だけ判定する。"""
+    try:
+        return SHOT_ELEMENT if page.locator(selector).count() else SHOT_VIEWPORT
+    except Exception:  # noqa: BLE001 - 判定できないならフォールバック側に倒す
+        return SHOT_VIEWPORT
+
+
 def capture_pages(
     page,
     save_dir,
@@ -250,6 +287,7 @@ def capture_pages(
     max_pages=None,
     page_wait=DEFAULT_PAGE_WAIT,
     max_retries=3,
+    expect_mode=None,
     emit=null_emit,
 ):
     """ページを順に撮る。(枚数, stopped_reason) を返す。
@@ -264,6 +302,10 @@ def capture_pages(
         end_of_book     送っても変わらなくなった（最終ページ到達とみなす）
         no_change       1 ページも進めなかった（送りキーの向き違い・モーダル等）
         signin_required 途中でセッションが切れた
+
+    expect_mode を渡すと、途中で撮影方式が変わったページを警告する。方式が
+    変わるとページの寸法も変わるため、validate の size_mismatch でも拾えるが、
+    どのページで切り替わったかはここでしか分からない。
     """
     prev = None
     total = 0
@@ -273,7 +315,7 @@ def capture_pages(
             emit("signin_required", human="キャプチャ中にセッションが切れました")
             return total, "signin_required"
 
-        shot = page.screenshot()
+        shot, mode = page_shot(page)
         current = digest(shot)
 
         if prev is not None and current == prev:
@@ -289,7 +331,7 @@ def capture_pages(
                 dismiss_dialogs(page)
                 page.keyboard.press(key)
                 page.wait_for_timeout(int(page_wait * 1000))
-                shot = page.screenshot()
+                shot, mode = page_shot(page)
                 current = digest(shot)
             if current == prev:
                 # 1 枚も進めていないなら最終ページではなく送りに失敗している
@@ -297,6 +339,13 @@ def capture_pages(
 
         total += 1
         filename = f"{total:03d}.png"
+        if expect_mode is not None and mode != expect_mode:
+            emit(
+                "status",
+                human=f"{filename}: 撮影方式が {expect_mode} から {mode} に変わりました",
+                page=total,
+                shot_mode=mode,
+            )
         with open(os.path.join(save_dir, filename), "wb") as f:
             f.write(shot)
         emit("page", human=f"Page {total}: {filename}", page=total, file=filename)
@@ -431,6 +480,7 @@ def run_headless_capture(
     key = turn_key(forward)
     total = 0
     stopped_reason = "error"
+    shot_mode = None
 
     def write_manifest():
         """途中終了でもどこまで撮れたか分かるよう必ず書く。"""
@@ -446,6 +496,7 @@ def run_headless_capture(
             page_turn=key,
             page_turn_source=turn_source,
             page_wait=page_wait,
+            shot_mode=shot_mode,
         )
         path = os.path.join(save_dir, MANIFEST_NAME)
         with open(path, "w", encoding="utf-8") as f:
@@ -460,6 +511,20 @@ def run_headless_capture(
             dismiss_dialogs(page)
             page.add_style_tag(content=hide_ui_css())
             emit("status", human="ビューアの UI を隠しました", message="ビューアの UI を隠しました")
+
+            # ページ画像の要素が撮れるなら UI も余白も最初から入らない。
+            # 撮れない本のために従来のビューポート撮影も残してある。
+            shot_mode = resolve_shot_mode(page)
+            emit(
+                "shot_mode",
+                human=(
+                    "ページ画像の要素を撮ります（UI・余白なし）"
+                    if shot_mode == SHOT_ELEMENT
+                    else "ページ画像の要素が見つかりません。ビューポート全体を撮ります"
+                ),
+                shot_mode=shot_mode,
+                selector=PAGE_IMAGE_SELECTOR,
+            )
 
             if requested == AUTO_TURN_KEY:
                 detected = detect_turn_key(page, page_wait=page_wait, emit=emit)
@@ -493,7 +558,13 @@ def run_headless_capture(
                     return EXIT_ERROR
                 dismiss_dialogs(page)
             total, stopped_reason = capture_pages(
-                page, save_dir, key=key, max_pages=max_pages, page_wait=page_wait, emit=emit
+                page,
+                save_dir,
+                key=key,
+                max_pages=max_pages,
+                page_wait=page_wait,
+                expect_mode=shot_mode,
+                emit=emit,
             )
     except KeyboardInterrupt:
         stopped_reason = "user"
