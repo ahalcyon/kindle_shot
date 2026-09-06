@@ -5,6 +5,8 @@ name: probe-amazon
 
 on:
   workflow_dispatch:
+  push:
+    branches: [feature/21-headless-e2e]
 
 jobs:
   probe:
