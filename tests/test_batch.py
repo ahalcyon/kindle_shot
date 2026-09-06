@@ -503,3 +503,59 @@ def test_batch_continues_on_ordinary_failure(tmp_path, monkeypatch):
     emit, events = collect_emit()
     pipeline.run_batch(books, output=str(tmp_path / "out"), emit=emit)
     assert [c["title"] for c in calls] == ["A", "B", "C"]
+
+
+# ------------------------------------------------------------
+# headless の既定（プロファイルで決まる）
+# ------------------------------------------------------------
+
+
+def capture_headless_flag(monkeypatch):
+    """run_book が headless 分岐に入ったかを記録する。"""
+    seen = {}
+
+    def fake_headless_capture(*args, **kwargs):
+        seen["headless"] = True
+        return pipeline.EXIT_ERROR
+
+    def fake_open_book(*args, **kwargs):
+        seen["headless"] = False
+        return pipeline.EXIT_ERROR
+
+    monkeypatch.setattr("core.headless_capture.run_headless_capture", fake_headless_capture)
+    monkeypatch.setattr("core.reader_navigator.open_book", fake_open_book)
+    return seen
+
+
+def test_cloud_reader_defaults_to_headless(tmp_path, monkeypatch):
+    """kindle_cloud では headless が既定。
+
+    画面もセッションも不要で通知の写り込みも無いため、画面キャプチャ経路の
+    上位互換になっている。わざわざ劣る方を既定にしない。
+    """
+    seen = capture_headless_flag(monkeypatch)
+    pipeline.run_book(title="t", output=str(tmp_path), profile_key="kindle_cloud", asin="B0X")
+    assert seen["headless"] is True
+
+
+def test_other_profiles_stay_on_screen_capture(tmp_path, monkeypatch):
+    """headless は read.amazon.co.jp 専用実装なので他ビューアでは使わない。"""
+    seen = capture_headless_flag(monkeypatch)
+    pipeline.run_book(title="t", output=str(tmp_path), profile_key="kobo_web", url="https://x")
+    assert seen["headless"] is False
+
+
+def test_explicit_no_headless_overrides_the_default(tmp_path, monkeypatch):
+    seen = capture_headless_flag(monkeypatch)
+    pipeline.run_book(
+        title="t", output=str(tmp_path), profile_key="kindle_cloud", asin="B0X", headless=False
+    )
+    assert seen["headless"] is False
+
+
+def test_explicit_headless_overrides_the_default(tmp_path, monkeypatch):
+    seen = capture_headless_flag(monkeypatch)
+    pipeline.run_book(
+        title="t", output=str(tmp_path), profile_key="kobo_web", url="https://x", headless=True
+    )
+    assert seen["headless"] is True

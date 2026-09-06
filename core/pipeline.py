@@ -36,6 +36,9 @@ EXIT_WOULD_CLIP = 6
 EXIT_VALIDATION = 7
 
 # 出力形式の候補（CLI の choices・batch ファイルの format 検証で共有）
+# headless キャプチャが対応するプロファイル（read.amazon.co.jp 専用実装）
+HEADLESS_PROFILE = "kindle_cloud"
+
 FORMATS = ("image_pdf", "text_pdf", "searchable_pdf", "markdown")
 
 
@@ -610,7 +613,7 @@ def run_book(
     max_rewind=1000,
     load_wait=None,
     no_rewind=False,
-    headless=False,
+    headless=None,
     safety=8,
     min_margins=None,
     ui_bands=True,
@@ -659,6 +662,13 @@ def run_book(
     out = os.path.abspath(output)
     save_dir = os.path.join(out, title)
     trimmed_dir = save_dir + "_trimmed"
+    # headless は Kindle Cloud Reader 専用の実装（read.amazon.co.jp の DOM に依存）。
+    # そのプロファイルなら既定で使う。画面もセッションも不要で通知の写り込みも
+    # 無いため、画面キャプチャ経路の上位互換になっている。
+    # 他ビューア（kobo_web 等）や PC アプリでは動かないので画面キャプチャのまま。
+    if headless is None:
+        headless = profile_key == HEADLESS_PROFILE
+
     # headless は本を開く処理がキャプチャに含まれるので open のステップが無い
     total_steps = 4 if headless else (5 if (asin or url) else 4)
     step_no = 0
