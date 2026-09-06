@@ -109,6 +109,9 @@ def test_build_run_argv():
     assert argv[argv.index("--asin") + 1] == "B0TEST"
     # OCR エンジンが無い環境でも変換まで通せる形式を使う
     assert argv[argv.index("--format") + 1] == "image_pdf"
+    # 画面を奪わないよう必ず headless で走らせる
+    assert "--headless" in argv
+    assert "--screen" not in argv
     assert "--json" in argv
 
 
