@@ -40,6 +40,12 @@ EXIT_VALIDATION = 7
 # PDF 化後に消す remove_intermediates で共有する）
 MANIFEST_NAME = "manifest.json"
 
+# headless_capture が manifest に記録する撮影方式。
+# element: ページ画像の要素だけを撮った（UI も余白も入らない）
+# viewport: 要素が見つからずビューポート全体を撮った（トリミングが要る）
+SHOT_ELEMENT = "element"
+SHOT_VIEWPORT = "viewport"
+
 # 出力形式の候補（CLI の choices・batch ファイルの format 検証で共有）
 # headless キャプチャが対応するプロファイル（read.amazon.co.jp 専用実装）
 HEADLESS_PROFILE = "kindle_cloud"
@@ -120,6 +126,19 @@ def check_input_folder(input_folder, emit=null_emit):
         emit_error(emit, f"入力フォルダに画像がありません: {input_folder}")
         return EXIT_NO_IMAGES
     return None
+
+
+def read_shot_mode(save_dir):
+    """キャプチャが記録した撮影方式を manifest から読む。読めなければ None。
+
+    ページ画像の要素だけを撮れた本（shot_mode="element"）は、ビューアの UI も
+    余白も最初から画像に入らない。トリミングの既定を変えるためにこれを見る。
+    """
+    try:
+        with open(os.path.join(save_dir, MANIFEST_NAME), encoding="utf-8") as f:
+            return json.load(f).get("shot_mode")
+    except (OSError, ValueError):
+        return None
 
 
 def remove_intermediates(save_dir, trimmed_dir, emit=null_emit):
@@ -846,15 +865,28 @@ def run_book(
             return finish(code)
 
         step("trim: 余白を自動トリミング")
-        # Cloud Reader は書名ヘッダーとページ番号フッターが常時表示されるため、
-        # 上下は最低限この帯を削る (4K 全画面での実測値。min_margins で上書き可)。
-        # UI 帯検出が効かない場合の保険で、合成は辺ごとの max なので害はない
-        if min_margins is None and profile_key == "kindle_cloud":
+        # ページ画像の要素だけを撮れた本は、ビューアの UI も余白も画像に入って
+        # いない。本文がページ画像の端まで来ているページが実測で 28% あり
+        # (B0BVLM8RR2 の先頭 6 ページ、133 行中 37 行)、削ると本文を失う。
+        # 明示指定が無ければ一切削らない。
+        element_shot = headless and read_shot_mode(save_dir) == SHOT_ELEMENT
+        if element_shot:
+            if min_margins is None:
+                min_margins = (0, 0, 0, 0)
+            ui_bands = False
+            emit(
+                "status",
+                human="ページ画像の要素を撮ったのでトリミングは行いません",
+                shot_mode=SHOT_ELEMENT,
+            )
+        elif min_margins is None and profile_key == "kindle_cloud":
+            # ビューポート全体を撮った本は書名ヘッダーとページ番号フッターが
+            # 写り込む。上下は最低限この帯を削る (4K 全画面での実測値)
             min_margins = (0, 0, 80, 80)
         code = run_trim(
             save_dir,
             trimmed_dir,
-            margins=None,
+            margins=None if not element_shot else (0, 0, 0, 0),
             safety=safety,
             min_margins=min_margins,
             ui_bands=ui_bands,

@@ -8,6 +8,7 @@
 誤判定する（実機で踏んだ）。
 """
 
+import datetime
 import json
 import os
 
@@ -15,13 +16,17 @@ import pytest
 
 from core.headless_capture import (
     DEFAULT_TURN_KEY,
+    SHOT_ELEMENT,
+    SHOT_VIEWPORT,
     build_manifest,
     capture_pages,
     detect_turn_key,
     digest,
     hide_ui_css,
     is_signed_in,
+    page_shot,
     read_position,
+    resolve_shot_mode,
     reverse_of,
     rewind_to_start,
     turn_key,
@@ -35,12 +40,24 @@ class FakePage:
     swallow に指定した回数だけキー入力を食う（モーダルが出ている状況の再現）。
     """
 
-    def __init__(self, frames, url="https://read.amazon.co.jp/?asin=B0X", swallow=0):
+    def __init__(
+        self,
+        frames,
+        url="https://read.amazon.co.jp/?asin=B0X",
+        swallow=0,
+        page_image=True,
+        element_frames=None,
+    ):
         self.frames = list(frames)
+        # 要素撮影で返す内容。省略時は frames と同じ（方式を変えても中身は同じ）
+        self.element_frames = list(element_frames) if element_frames else None
         self.index = 0
         self.url = url
         self.pressed: list[str] = []
         self.swallow = swallow
+        # ページ画像の要素があるか（無い本はビューポート撮影にフォールバックする）
+        self.page_image = page_image
+        self.shots: list[str] = []
 
         page = self
 
@@ -56,7 +73,26 @@ class FakePage:
         self.keyboard = Keyboard()
 
     def screenshot(self):
+        self.shots.append("viewport")
         return self.frames[self.index]
+
+    def locator(self, _selector):
+        page = self
+
+        class Loc:
+            def count(self):
+                return 1 if page.page_image else 0
+
+            @property
+            def first(self):
+                return self
+
+            def screenshot(self):
+                page.shots.append("element")
+                frames = page.element_frames or page.frames
+                return frames[page.index]
+
+        return Loc()
 
     def wait_for_timeout(self, _ms):
         pass
@@ -396,3 +432,102 @@ def test_rewind_uses_the_reverse_key():
     page = FakeReader(forward="ArrowLeft", position=3)
     rewind_to_start(page, "left", page_wait=0)
     assert set(page.presses) == {"ArrowRight"}
+
+
+# ------------------------------------------------------------
+# 撮影方式（ページ画像の要素 / ビューポート全体）
+# ------------------------------------------------------------
+
+
+def test_shoots_the_page_image_element_when_present():
+    """要素があるならそれだけを撮る。ビューアの UI も余白も入らない。"""
+    page = FakePage([b"a"], page_image=True)
+    shot, mode = page_shot(page)
+
+    assert mode == SHOT_ELEMENT
+    assert page.shots == ["element"]
+    assert shot == b"a"
+
+
+def test_falls_back_to_the_viewport_when_the_element_is_missing():
+    """画像レンダラでない本やレイアウト変更でも撮り続ける（無人実行のため）。"""
+    page = FakePage([b"a"], page_image=False)
+    shot, mode = page_shot(page)
+
+    assert mode == SHOT_VIEWPORT
+    assert page.shots == ["viewport"]
+    assert shot == b"a"
+
+
+def test_falls_back_when_the_element_screenshot_raises():
+    """要素はあるが撮れない（サイズ 0・描画前）ときもフォールバックする。"""
+
+    class Broken(FakePage):
+        def locator(self, selector):
+            loc = super().locator(selector)
+
+            class Raising:
+                def count(self):
+                    return loc.count()
+
+                @property
+                def first(self):
+                    return self
+
+                def screenshot(self):
+                    raise RuntimeError("element is not visible")
+
+            return Raising()
+
+    page = Broken([b"a"], page_image=True)
+    shot, mode = page_shot(page)
+
+    assert mode == SHOT_VIEWPORT
+    assert shot == b"a"
+
+
+def test_resolve_shot_mode_reports_which_path_will_be_used():
+    assert resolve_shot_mode(FakePage([b"a"], page_image=True)) == SHOT_ELEMENT
+    assert resolve_shot_mode(FakePage([b"a"], page_image=False)) == SHOT_VIEWPORT
+
+
+def test_capture_pages_uses_the_element_path(tmp_path):
+    page = FakePage([b"a", b"b", b"c"], page_image=True)
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_pages=3)
+
+    assert (total, reason) == (3, "max_pages")
+    assert set(page.shots) == {"element"}
+
+
+def test_capture_pages_warns_when_the_shot_mode_changes(tmp_path):
+    """途中で方式が変わるとページの寸法も変わる。どのページで変わったか残す。"""
+    page = FakePage([b"a", b"b"], page_image=False)
+    events = []
+    capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        max_pages=2,
+        expect_mode=SHOT_ELEMENT,
+        emit=lambda e, human=None, **f: events.append({"event": e, "human": human, **f}),
+    )
+
+    changed = [e for e in events if e.get("shot_mode") == SHOT_VIEWPORT]
+    assert len(changed) == 2
+    assert "001.png" in changed[0]["human"]
+
+
+def test_manifest_records_the_shot_mode():
+    """トリミングを飛ばすかの判断に使うので manifest に残す。"""
+    manifest = build_manifest(
+        title="本",
+        profile_key="kindle_cloud",
+        profile=None,
+        total=3,
+        save_dir="C:/out/本",
+        stopped_reason="max_pages",
+        started=datetime.datetime(2026, 1, 1, 0, 0, 0),
+        finished=datetime.datetime(2026, 1, 1, 0, 0, 30),
+        shot_mode=SHOT_ELEMENT,
+    )
+    assert manifest["shot_mode"] == SHOT_ELEMENT
