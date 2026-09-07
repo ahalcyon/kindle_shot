@@ -34,6 +34,7 @@ from core.pipeline import (
     emit_error,
     null_emit,
 )
+from core.safe_names import book_path_name
 
 BOOK_URL = "https://read.amazon.co.jp/?asin={asin}"
 SIGNIN_MARKER = "/ap/signin"
@@ -544,7 +545,10 @@ def run_headless_capture(
     page_wait = DEFAULT_PAGE_WAIT if page_wait is None else page_wait
     load_wait = DEFAULT_LOAD_WAIT if load_wait is None else load_wait
 
-    save_dir = os.path.join(os.path.abspath(output_folder), title)
+    # タイトルには Windows のファイル名に使えない文字が入る (#52)。
+    # 直接呼ばれることもあるので、呼び出し側任せにせずここでも通す。
+    out = os.path.abspath(output_folder)
+    save_dir = os.path.join(out, book_path_name(title, out))
     # 前回の残骸が混ざると後段の PDF に古いページが紛れる（README の契約）
     code = clear_output_images(
         save_dir,

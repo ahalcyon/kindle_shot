@@ -22,6 +22,9 @@ from ctypes.wintypes import DWORD, RECT
 
 import pyautogui as pag
 
+# GUI が core.win32_utils から import しているので、ここで再エクスポートする（#52）
+from core.safe_names import sanitize_folder_name  # noqa: F401
+
 pag.FAILSAFE = False
 
 
@@ -344,23 +347,6 @@ def allow_sleep():
         windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
 
 
-# Windows のフォルダ名に使えない文字 → 全角（見た目を保つ）。
-# タイトルはそのまま保存フォルダ名になるため、使う前に必ず通す。
-_INVALID_NAME_CHARS = {
-    "\\": "￥",
-    "/": "／",
-    ":": "：",
-    "*": "＊",
-    "?": "？",
-    '"': "”",
-    "<": "＜",
-    ">": "＞",
-    "|": "｜",
-}
-
-
-def sanitize_folder_name(text):
-    """フォルダ名として使えるように整える（不正文字を全角に置換）。"""
-    cleaned = "".join(_INVALID_NAME_CHARS.get(ch, ch) for ch in text)
-    # 末尾のピリオド・空白は Windows のフォルダ名として無効
-    return cleaned.strip().rstrip(". 　")
+# sanitize_folder_name の実体は core/safe_names に移した（上で再エクスポート）。
+# CLI / バッチ経路からも使う必要があるが、このモジュールは ctypes.windll と
+# pyautogui を module レベルで import するため Linux から import できない（#52）。

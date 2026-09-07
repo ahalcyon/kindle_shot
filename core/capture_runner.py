@@ -24,6 +24,7 @@ from core.pipeline import (
     emit_error,
     null_emit,
 )
+from core.safe_names import book_path_name
 
 
 def find_verified_window(engine, profile, emit=null_emit, *, strict_process=True):
@@ -135,7 +136,8 @@ def run_capture(
         profile.page_wait = page_wait
 
     save_folder = os.path.abspath(output_folder)
-    save_dir = os.path.join(save_folder, title)
+    # タイトルには Windows のファイル名に使えない文字が入る (#52)
+    save_dir = os.path.join(save_folder, book_path_name(title, save_folder))
     code = clear_output_images(
         save_dir,
         overwrite,

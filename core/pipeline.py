@@ -27,6 +27,7 @@ import tempfile
 
 from core.capture_profiles import PAGE_TURN_KEYS
 from core.image_files import clear_images, list_images
+from core.safe_names import MIN_NAME_CHARS, book_path_name, name_budget
 
 # 終了コード (cli.py の契約。README の CLI セクション参照)
 EXIT_OK = 0
@@ -895,7 +896,10 @@ def run_book(
         return EXIT_BAD_ARGS
 
     out = os.path.abspath(output)
-    save_dir = os.path.join(out, title)
+    # タイトルには Windows のファイル名に使えない文字が入る（洋書の副題の ":" 等）。
+    # 表示とイベントには元のタイトルを残し、パスを作るときだけ通す (#52)
+    path_name = book_path_name(title, out)
+    save_dir = os.path.join(out, path_name)
     trimmed_dir = save_dir + "_trimmed"
     # headless は Kindle Cloud Reader 専用の実装（read.amazon.co.jp の DOM に依存）。
     # そのプロファイルなら既定で使う。画面もセッションも不要で通知の写り込みも
@@ -1046,7 +1050,7 @@ def run_book(
             trimmed_dir,
             out,
             fmt,
-            name=title,
+            name=path_name,
             config=cfg,
             ocr_workers=ocr_workers,
             faithful=faithful,
@@ -1262,11 +1266,15 @@ def _batch_output_path(out, title, fmt):
 
     markdown で ``<title>.md`` がなく分割出力 ``<title>_1.md`` がある場合は
     そちらを返す（split_words による分割時も再開スキップを効かせる）。
+
+    run_book と同じ無害化を通す。ここだけ元のタイトルを使うと、完成済みの本を
+    見つけられず毎回撮り直すことになる (#52)。
     """
     ext = ".md" if fmt == "markdown" else ".pdf"
-    path = os.path.join(out, _ensure_ext(title, ext))
+    name = book_path_name(title, out)
+    path = os.path.join(out, _ensure_ext(name, ext))
     if fmt == "markdown" and not os.path.exists(path):
-        part1 = os.path.join(out, _ensure_ext(f"{title}_1", ext))
+        part1 = os.path.join(out, _ensure_ext(f"{name}_1", ext))
         if os.path.exists(part1):
             return part1
     return path
@@ -1313,6 +1321,17 @@ def run_batch(
     defaults = defaults or {}
     out = os.path.abspath(output)
     total = len(books)
+
+    # 出力先が深すぎると、どんな本もパスが MAX_PATH を超えて保存できない。
+    # 1 冊ずつ不可解に失敗させず、開始時に 1 度だけ弾く (#52)
+    budget = name_budget(out)
+    if budget < MIN_NAME_CHARS:
+        emit_error(
+            emit,
+            f"出力先のパスが深すぎます（本の名前に使える文字数が {budget}）。"
+            "浅いフォルダを指定してください",
+        )
+        return EXIT_BAD_ARGS
 
     emit("batch_start", human=f"バッチ開始: {total} 冊 → {out}", total_books=total, output=out)
 
@@ -1388,7 +1407,7 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, min_fre
 
         # 非対応と分かっている本は開き直しても結果が変わらない。蔵書 405 冊のうち
         # 63 冊がこれに当たり、毎回 20 秒ずつ開き直すと 1 回の再実行で 21 分を捨てる
-        if not overwrite and read_stopped_reason(os.path.join(out, title)) == (
+        if not overwrite and read_stopped_reason(os.path.join(out, book_path_name(title, out))) == (
             UNSUPPORTED_STOPPED_REASON
         ):
             emit(
