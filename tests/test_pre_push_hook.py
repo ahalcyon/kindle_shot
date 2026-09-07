@@ -15,7 +15,6 @@ import pytest
 HOOK = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".githooks", "pre-push"
 )
-ZERO = "0" * 40
 
 
 def _find_sh():
