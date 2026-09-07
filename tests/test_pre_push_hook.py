@@ -29,35 +29,60 @@ SEALED_ENV = {
 }
 
 
+def _git_roots():
+    """Git for Windows の導入先候補。
+
+    git の実体は cmd/ にも mingw64/bin/ にも置かれ、shim (scoop 等) を挟むこともある。
+    どこから来ても届くよう、git 自身と git --exec-path の祖先を全部たどる。
+    """
+    starts = []
+    git = shutil.which("git")
+    if git:
+        starts.append(git)
+    try:
+        out = subprocess.run(["git", "--exec-path"], capture_output=True, text=True, check=True)
+        starts.append(out.stdout.strip())
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+    roots = []
+    for start in starts:
+        path = os.path.dirname(os.path.abspath(start))
+        while True:
+            roots.append(path)
+            parent = os.path.dirname(path)
+            if parent == path:
+                break
+            path = parent
+    return roots
+
+
 def _find_sh():
     """POSIX sh を探す。
 
     Windows の PATH にある bash.EXE は WSL のもので、Windows 側の一時ディレクトリを
     そのままでは扱えないため使わない。Git for Windows が同梱する sh.exe を使う。
     """
-    if os.name == "nt":
-        git = shutil.which("git")
-        if git:
-            root = os.path.dirname(os.path.dirname(git))
-            for rel in ("bin/sh.exe", "usr/bin/sh.exe"):
-                path = os.path.join(root, *rel.split("/"))
-                if os.path.isfile(path):
-                    return path
-        return None
-    return shutil.which("sh")
+    if os.name != "nt":
+        return shutil.which("sh")
+    for root in _git_roots():
+        for rel in ("bin/sh.exe", "usr/bin/sh.exe"):
+            path = os.path.join(root, *rel.split("/"))
+            if os.path.isfile(path):
+                return path
+    return None
 
 
 SH = _find_sh()
-# CI で黙って skip されると、退行検出網が消えたことに誰も気づかない
-needs_sh = pytest.mark.skipif(
-    SH is None and not os.environ.get("CI"), reason="POSIX sh が見つからない"
-)
+needs_sh = pytest.mark.skipif(SH is None, reason="POSIX sh が見つからない")
 
 
-@needs_sh
+@pytest.mark.skipif(not os.environ.get("CI"), reason="CI 以外では sh が無くてもよい")
 def test_sh_is_available_on_ci():
-    """CI では必ず sh を見つけられること（見つからなければ他が全部 skip になる）。"""
-    assert SH is not None, "sh が見つからず、フックのテストが全て skip されている"
+    """CI で黙って skip されると、退行検出網が消えたことに誰も気づかない。"""
+    assert SH is not None, (
+        f"sh が見つからず、フックのテストが全て skip されている（git={shutil.which('git')}）"
+    )
 
 
 def _git(repo, *args):
