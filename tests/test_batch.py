@@ -832,3 +832,120 @@ def test_skipped_unsupported_books_do_not_look_systemic(tmp_path, monkeypatch):
     assert summary["unsupported"] == 2
     assert summary["systemic_unsupported"] is False
     assert code == pipeline.EXIT_OK
+
+
+# ------------------------------------------------------------
+# 空き容量ガード (#48)
+# ------------------------------------------------------------
+
+
+def fake_free(monkeypatch, *values):
+    """free_bytes の戻り値を呼び出し順に差し替える。最後の値を以後も返す。"""
+    seq = list(values)
+
+    def fake(_path):
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+
+    monkeypatch.setattr(pipeline, "free_bytes", fake)
+
+
+def test_low_disk_stops_before_touching_any_book(tmp_path, monkeypatch):
+    """空きが下限を割っていたら 1 冊も開かずに止まる。"""
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    fake_free(monkeypatch, 1 * 1024**3)
+    emit, events = collect_emit()
+
+    code = pipeline.run_batch(
+        [{"title": "A", "asin": "B01"}, {"title": "B", "asin": "B02"}],
+        output=str(tmp_path / "out"),
+        min_free_bytes=5 * 1024**3,
+        emit=emit,
+    )
+
+    assert code == pipeline.EXIT_LOW_DISK
+    assert calls == []
+    low = by_name(events, "low_disk")[0]
+    assert low["free_bytes"] == 1 * 1024**3
+    assert low["unprocessed"] == 2
+
+
+def test_low_disk_stops_between_books(tmp_path, monkeypatch):
+    """1 冊目の途中では止めない。本の切れ目で止めて成果を確定させる。"""
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    fake_free(monkeypatch, 9 * 1024**3, 1 * 1024**3)
+    emit, events = collect_emit()
+
+    code = pipeline.run_batch(
+        [{"title": "A", "asin": "B01"}, {"title": "B", "asin": "B02"}],
+        output=str(tmp_path / "out"),
+        min_free_bytes=5 * 1024**3,
+        emit=emit,
+    )
+
+    assert code == pipeline.EXIT_LOW_DISK
+    assert [c["title"] for c in calls] == ["A"]
+    summary = by_name(events, "batch_summary")[0]
+    assert summary["succeeded"] == 1
+    assert summary["failed"] == 0
+    assert summary["unprocessed"] == 1
+    assert summary["low_disk"] is True
+    # 失敗 0・未処理 1 だけでは「全部終わった」と読めてしまう
+    assert summary["ok"] is False
+
+
+def test_low_disk_does_not_block_skipping_finished_books(tmp_path, monkeypatch):
+    """完成済みの本を読み飛ばすだけならディスクを消費しない。"""
+    out = tmp_path / "out"
+    os.makedirs(out)
+    (out / "A.pdf").write_text("x", encoding="utf-8")
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    fake_free(monkeypatch, 1 * 1024**3)
+    emit, events = collect_emit()
+
+    code = pipeline.run_batch(
+        [{"title": "A", "asin": "B01"}], output=str(out), min_free_bytes=5 * 1024**3, emit=emit
+    )
+
+    assert code == pipeline.EXIT_OK
+    assert calls == []
+    assert not by_name(events, "low_disk")
+
+
+def test_zero_min_free_disables_the_guard(tmp_path, monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    fake_free(monkeypatch, 0)
+    emit, events = collect_emit()
+
+    code = pipeline.run_batch(
+        [{"title": "A", "asin": "B01"}], output=str(tmp_path / "out"), min_free_bytes=0, emit=emit
+    )
+
+    assert code == pipeline.EXIT_OK
+    assert [c["title"] for c in calls] == ["A"]
+
+
+def test_unmeasurable_disk_does_not_stop_the_batch(tmp_path, monkeypatch):
+    """空きを測れない環境で一律に止めると、余裕があっても 1 冊も処理できない。"""
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    monkeypatch.setattr(pipeline, "free_bytes", lambda _path: None)
+    emit, events = collect_emit()
+
+    code = pipeline.run_batch(
+        [{"title": "A", "asin": "B01"}], output=str(tmp_path / "out"), emit=emit
+    )
+
+    assert code == pipeline.EXIT_OK
+    assert [c["title"] for c in calls] == ["A"]
+
+
+def test_free_bytes_walks_up_to_an_existing_directory(tmp_path):
+    """バッチ開始時点では出力先がまだ無い。作る前でも測れる必要がある。"""
+    missing = tmp_path / "not" / "created" / "yet"
+    assert not missing.exists()
+    free = pipeline.free_bytes(str(missing))
+    assert free is not None and free > 0

@@ -55,8 +55,10 @@ from core.capture_profiles import PAGE_TURN_KEYS
 
 # 終了コードは cli の公開契約なので、cli.EXIT_* として全て再エクスポートする
 from core.pipeline import (  # noqa: F401
+    DEFAULT_MIN_FREE_BYTES,
     EXIT_BAD_ARGS,
     EXIT_ERROR,
+    EXIT_LOW_DISK,
     EXIT_NO_IMAGES,
     EXIT_OCR_UNAVAILABLE,
     EXIT_OK,
@@ -471,6 +473,7 @@ def cmd_batch(args, rep):
         defaults=defaults,
         overwrite=args.overwrite,
         stop_on_error=args.stop_on_error,
+        min_free_bytes=int(args.min_free_gb * 1024**3),
         config=load_config(),
         emit=rep.event,
     )
@@ -839,6 +842,15 @@ def build_parser():
         type=int,
         metavar="SEC",
         help="読み込み待ちの秒数（全本の既定。省略時: 画面キャプチャ 45 / headless 12）",
+    )
+    p_batch.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=DEFAULT_MIN_FREE_BYTES / 1024**3,
+        metavar="GB",
+        help="出力先の空きがこれを下回ったら本の切れ目でバッチを中断する"
+        f"（既定: {DEFAULT_MIN_FREE_BYTES / 1024**3:.0f}GB。0 で無効）。"
+        "数百冊を無人で回す途中でディスクが尽きるのを防ぐ",
     )
     p_batch.add_argument(
         "--keep-images",

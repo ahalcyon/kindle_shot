@@ -22,6 +22,7 @@ GUI は 0 / 非 0 で成否を判定する。
 import contextlib
 import json
 import os
+import shutil
 
 from core.capture_profiles import PAGE_TURN_KEYS
 from core.image_files import clear_images, list_images
@@ -38,6 +39,8 @@ EXIT_VALIDATION = 7
 # Kindle Cloud Reader が対応していない本。この本に固有で、再試行しても直らない
 # （サインイン切れのような「以後の全冊が同じ理由で失敗する」種類と区別する）
 EXIT_UNSUPPORTED_BOOK = 8
+# 出力先の空き容量が閾値を割ったのでバッチを中断した (#48)
+EXIT_LOW_DISK = 9
 
 # キャプチャ実行記録のファイル名（書き出す capture_runner / headless_capture と、
 # PDF 化後に消す remove_intermediates で共有する）
@@ -163,6 +166,32 @@ def _ocr_validation_summary(report):
 # 非対応と判定して打ち切ったキャプチャが manifest に残す stopped_reason
 # (core/headless_capture.py が書き、run_batch が再実行時の読み飛ばしに使う)
 UNSUPPORTED_STOPPED_REASON = "unsupported_book"
+
+
+# バッチを止める空き容量の既定。1 冊の中間ファイルは実測で 200MB 前後
+# （197 ページの本。うち 130MB がキャプチャ画像）。図版の多い本はこれより
+# 大きく、PDF 自体も 500MB を超えることがあるので、1 冊分では足りない。
+DEFAULT_MIN_FREE_BYTES = 5 * 1024**3
+
+
+def free_bytes(path):
+    """path のあるドライブの空きバイト数。取得できなければ None。
+
+    バッチ開始時点では出力先がまだ存在しないことがあるので、実在する
+    上位ディレクトリまで遡って測る。後片付けと同じく best-effort に徹し、
+    測れないことを理由にバッチを止めない（測れない環境で一律に止めると、
+    空きが十分あっても 1 冊も処理できなくなる）。
+    """
+    probe = os.path.abspath(path)
+    while not os.path.exists(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return None
+        probe = parent
+    try:
+        return shutil.disk_usage(probe).free
+    except OSError:
+        return None
 
 
 def read_stopped_reason(save_dir):
@@ -1228,6 +1257,7 @@ def run_batch(
     defaults=None,
     overwrite=False,
     stop_on_error=False,
+    min_free_bytes=DEFAULT_MIN_FREE_BYTES,
     config=None,
     emit=null_emit,
 ):
@@ -1244,11 +1274,15 @@ def run_batch(
         defaults: バッチ全体の既定 run_book kwargs（CLI フラグ由来）
         overwrite: True で完成済みの本も再処理する（既定はスキップ）
         stop_on_error: True で最初の失敗時にバッチを中断する
+        min_free_bytes: 出力先の空きがこれを割ったらバッチを中断する。
+            0 以下で無効。数百冊を無人で回す用途では、途中でディスクが尽きると
+            そこまでの成果ごと中途半端になるため既定で有効
         config: 設定 dict（None なら load_config()）
         emit: イベントコールバック
 
     Returns:
-        終了コード（失敗が1冊でもあれば EXIT_ERROR）
+        終了コード（失敗が1冊でもあれば EXIT_ERROR、
+        空き容量で中断したら EXIT_LOW_DISK）
     """
     from core.config import load_config
     from core.win32_utils import allow_sleep, prevent_sleep
@@ -1263,14 +1297,17 @@ def run_batch(
     # 本と本の間も含めてバッチ全体で画面消灯を抑止する (run_book と同趣旨)
     prevent_sleep()
     try:
-        return _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit)
+        return _run_batch_impl(
+            books, out, defaults, cfg, overwrite, stop_on_error, min_free_bytes, emit
+        )
     finally:
         allow_sleep()
 
 
-def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
+def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, min_free_bytes, emit):
     total = len(books)
     results = []
+    low_disk = None
     for i, book in enumerate(books, 1):
         merged = {**defaults, **book}
         title = merged["title"]
@@ -1330,6 +1367,28 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
                 }
             )
             continue
+
+        # 1 冊ごとに出力先の空きを見る (#48)。数百冊を無人で回す用途では、
+        # ディスクが尽きるまで走ると変換途中の PDF や消せない中間ファイルが残り、
+        # どこまで正しく終わったのか分からなくなる。尽きる前に、本の切れ目で止める。
+        free = free_bytes(out) if min_free_bytes > 0 else None
+        if free is not None and free < min_free_bytes:
+            low_disk = {"free": free, "required": min_free_bytes}
+            emit_error(
+                emit,
+                f"出力先の空き容量が {free / 1024**3:.1f} GiB まで減りました"
+                f"（下限 {min_free_bytes / 1024**3:.1f} GiB）。"
+                f"{total - i + 1} 冊を未処理のままバッチを中断します。"
+                "空きを作ってから再実行してください（完成済みの本はスキップされます）",
+            )
+            emit(
+                "low_disk",
+                free_bytes=free,
+                required_bytes=min_free_bytes,
+                output=out,
+                unprocessed=total - i + 1,
+            )
+            break
 
         emit(
             "book_start",
@@ -1422,10 +1481,10 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
             )
             break
 
-    return _emit_batch_summary(emit, results, total)
+    return _emit_batch_summary(emit, results, total, low_disk=low_disk)
 
 
-def _emit_batch_summary(emit, results, total):
+def _emit_batch_summary(emit, results, total, *, low_disk=None):
     """batch_summary イベントを出し、バッチ全体の終了コードを返す。"""
     succeeded = sum(1 for r in results if r["ok"] and not r["skipped"] and not r["unsupported"])
     # 非対応で読み飛ばした本は「非対応」だけで数える（スキップと二重に数えない）
@@ -1434,7 +1493,7 @@ def _emit_batch_summary(emit, results, total):
     # 混ぜると毎回同じ 63 冊が NG として並び、本当の失敗が埋もれる
     unsupported = [r for r in results if r["unsupported"]]
     failures = [r for r in results if not r["ok"] and not r["unsupported"] and not r["skipped"]]
-    unprocessed = total - len(results)  # stop-on-error で残った本
+    unprocessed = total - len(results)  # stop-on-error / 空き容量で残った本
 
     lines = [
         f"バッチ完了: 成功 {succeeded} / 失敗 {len(failures)} / スキップ {skipped}"
@@ -1464,10 +1523,18 @@ def _emit_batch_summary(emit, results, total):
             "再実行しても変わらないので books.json から外してください"
         )
 
+    # 空き容量による中断は「失敗 0・未処理 N」に見えるので、明示しないと
+    # 全部やり終えたように読めてしまう
+    if low_disk:
+        lines.append(
+            f"  出力先の空きが {low_disk['free'] / 1024**3:.1f} GiB まで減ったため中断しました"
+            f"（下限 {low_disk['required'] / 1024**3:.1f} GiB）"
+        )
+
     emit(
         "batch_summary",
         human="\n".join(lines),
-        ok=(not failures and not systemic),
+        ok=(not failures and not systemic and not low_disk),
         total=total,
         succeeded=succeeded,
         failed=len(failures),
@@ -1475,8 +1542,13 @@ def _emit_batch_summary(emit, results, total):
         unsupported=len(unsupported),
         systemic_unsupported=systemic,
         unprocessed=unprocessed,
+        low_disk=bool(low_disk),
         results=results,
     )
+    # 空き容量の中断は「途中まで正しく終わった」状態で、1 冊ごとの失敗とは
+    # 対処が違う（空きを作って再実行すれば続きから流せる）ので別の終了コードにする
+    if low_disk:
+        return EXIT_LOW_DISK
     return EXIT_OK if not failures and not systemic else EXIT_ERROR
 
 
