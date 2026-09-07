@@ -287,12 +287,14 @@ class FakeReader:
     forward に指定したキーで位置が増え、その逆で減る。
     """
 
-    def __init__(self, forward="ArrowLeft", position=10, text=None, min_position=1):
+    def __init__(self, forward="ArrowLeft", position=10, text=None, min_position=1, swallow=0):
         self.forward = forward
         self.position = position
         # 見開き表示の本は位置が 1 まで下がらない（実機のマンガは 2 で止まる）
         self.min_position = min_position
         self.text = text
+        # ダイアログを閉じた直後の n 回は入力が飲まれる（実測。#53）
+        self.swallow = swallow
         self.url = "https://read.amazon.co.jp/?asin=B0X"
         self.presses: list[str] = []
 
@@ -301,6 +303,9 @@ class FakeReader:
         class Keyboard:
             def press(self, key):
                 page.presses.append(key)
+                if page.swallow > 0:
+                    page.swallow -= 1
+                    return
                 if key == page.forward:
                     page.position += 1
                 elif page.position > page.min_position:
@@ -374,6 +379,35 @@ def test_detection_restores_reading_position():
 def test_detection_gives_up_without_position():
     """位置が読めなければ判定しない（決め打ちで進めない）。"""
     assert detect_turn_key(FakeReader(text=""), page_wait=0) is None
+
+
+def test_detects_at_the_first_page_when_a_press_is_swallowed():
+    """#53 の本体。先頭ページ + 1 回目が飲まれる、で判定不能になっていた。
+
+    先頭では後ろ方向が定義上動けないので、もう一方が 1 回飲まれると
+    2 回の試行が両方無情報になる。
+    """
+    page = FakeReader(forward="ArrowRight", position=1, min_position=1, swallow=1)
+    assert detect_turn_key(page, page_wait=0) == "right"
+
+
+def test_detects_at_the_first_page_for_a_vertical_book():
+    """先頭ページの縦書き本。left が前進で、後ろ方向は動けない。"""
+    page = FakeReader(forward="ArrowLeft", position=1, min_position=1, swallow=1)
+    assert detect_turn_key(page, page_wait=0) == "left"
+
+
+def test_detection_restores_position_after_a_swallowed_press():
+    """飲まれた分を数え違えて戻しすぎない。"""
+    page = FakeReader(forward="ArrowLeft", position=42, swallow=1)
+    detect_turn_key(page, page_wait=0)
+    assert page.position == 42
+
+
+def test_detection_gives_up_when_nothing_moves():
+    """本当に動かない本では、決め打ちで進めずに諦める。"""
+    page = FakeReader(forward="ArrowLeft", position=5, swallow=99)
+    assert detect_turn_key(page, page_wait=0) is None
 
 
 # ------------------------------------------------------------

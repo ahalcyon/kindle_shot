@@ -153,6 +153,52 @@ def _settled_position(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=4):
     return None
 
 
+# 1 つの向きにつき押す回数。ダイアログを閉じた直後の 1 回目は飲まれることが
+# あり（実測）、1 回で「その向きではない」と決めると判定不能になる (#53)。
+TURN_PROBE_PRESSES = 3
+
+# 押した後に位置の変化を待つ回数。変化しないことの確認にも使う。
+TURN_WAIT_ATTEMPTS = 2
+
+
+def _wait_for_position_change(page, before, *, page_wait, attempts=TURN_WAIT_ATTEMPTS):
+    """読書位置が before から変わるまで待つ。変わらなければ None。
+
+    「読めるまで待つ」(_settled_position) では足りない。押した直後は前の値が
+    そのまま読めるので、1 回読んで同じなら動いていない、と決めると誤判定する。
+    """
+    for _ in range(attempts):
+        page.wait_for_timeout(int(page_wait * 1000))
+        now = read_position(page)
+        if now is not None and now != before:
+            return now
+    return None
+
+
+def _probe_turn(page, candidate, before, *, page_wait):
+    """candidate を数回押して、位置が動いたら新しい位置を返す。動かなければ None。"""
+    for _ in range(TURN_PROBE_PRESSES):
+        # サインイン直後や Whispersync の「最後に読んでいたページへ移動しますか」が
+        # キーを吸うため、押す前に毎回閉じる
+        dismiss_dialogs(page)
+        page.keyboard.press(turn_key(candidate))
+        moved = _wait_for_position_change(page, before, page_wait=page_wait)
+        if moved is not None:
+            return moved
+    return None
+
+
+def _restore_position(page, candidate, target, *, page_wait):
+    """判定で動かした分を戻す。"""
+    back = turn_key(reverse_of(candidate))
+    for _ in range(TURN_PROBE_PRESSES):
+        if read_position(page) == target:
+            return
+        dismiss_dialogs(page)
+        page.keyboard.press(back)
+        page.wait_for_timeout(int(page_wait * 1000))
+
+
 def detect_turn_key(page, *, page_wait=DEFAULT_PAGE_WAIT, emit=null_emit):
     """前進するページ送りキーを実測で判定する。判定できなければ None。
 
@@ -160,36 +206,39 @@ def detect_turn_key(page, *, page_wait=DEFAULT_PAGE_WAIT, emit=null_emit):
     横書きが混ざるため、決め打ちだと「正常終了したのに中身が逆順」の本が
     紛れ込む。読書位置の数値が増える方を前進とみなす。
 
+    「動かなかった」は「その向きではない」の証拠にならない (#53)。実測では、
+    ダイアログを閉じた直後の 1 回目のキー入力が飲まれる。先頭ページでは
+    後ろ方向が定義上動けないので、もう一方が 1 回飲まれただけで 2 回の試行が
+    両方無情報になり、判定不能が確定していた。向きごとに数回押して確かめる。
+
     判定のために動かした分は元に戻す。戻さないと表紙を落とすため。
     （キャプチャ自体が本を読み進めるので、読書位置は結局末尾まで動く。
     ここで戻すのは読書位置の保全のためではない。）
     """
+    # 位置を読む前に閉じる。開いたままの値を基準にすると、閉じた拍子に
+    # 位置が動いたときに基準がずれる
+    dismiss_dialogs(page)
     before = _settled_position(page, page_wait=page_wait)
     if before is None:
         emit("status", human="読書位置を読めないため送りキーを判定できません")
         return None
 
     for candidate in ("left", "right"):
-        # サインイン直後などに遅れて出るモーダルがキーを吸うため、
-        # 押す前に毎回閉じる（閉じずに判定すると両方向とも動かず失敗する）
-        dismiss_dialogs(page)
-        page.keyboard.press(turn_key(candidate))
-        page.wait_for_timeout(int(page_wait * 1000))
-        after = _settled_position(page, page_wait=page_wait)
-        if after is None or after == before:
+        after = _probe_turn(page, candidate, before, page_wait=page_wait)
+        if after is None:
             continue
         forward = candidate if after > before else reverse_of(candidate)
-        # 判定で動かした分を戻す
-        dismiss_dialogs(page)
-        page.keyboard.press(turn_key(reverse_of(candidate)))
-        page.wait_for_timeout(int(page_wait * 1000))
+        _restore_position(page, candidate, before, page_wait=page_wait)
         emit(
             "page_turn_detected",
             human=f"ページ送りキーを判定しました: {forward}",
             page_turn=forward,
         )
         return forward
-    emit("status", human="ページ送りキーを判定できませんでした")
+    emit(
+        "status",
+        human=f"ページ送りキーを判定できませんでした（読書位置 {before} から動きません）",
+    )
     return None
 
 
