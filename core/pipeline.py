@@ -35,6 +35,9 @@ EXIT_OCR_UNAVAILABLE = 4
 EXIT_NO_IMAGES = 5
 EXIT_WOULD_CLIP = 6
 EXIT_VALIDATION = 7
+# Kindle Cloud Reader が対応していない本。この本に固有で、再試行しても直らない
+# （サインイン切れのような「以後の全冊が同じ理由で失敗する」種類と区別する）
+EXIT_UNSUPPORTED_BOOK = 8
 
 # キャプチャ実行記録のファイル名（書き出す capture_runner / headless_capture と、
 # PDF 化後に消す remove_intermediates で共有する）
@@ -1303,11 +1306,18 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
         # アカウントロックや CAPTCHA 常時化を招く。この本の実行中に
         # signin_required が出たかを見て、出ていたらバッチごと止める。
         signin_required = False
+        # Cloud Reader 非対応の本 (#42)。ログアウトと違い**この本に固有**で、
+        # 残りの本には影響しない。再試行しても直らないので「失敗」ではなく
+        # 別枠で数える（実測で蔵書 405 冊中 63 冊がこれに当たり、失敗として
+        # 数えるとバッチの終了コードが常に 1 になって異常検知に使えなくなる）
+        unsupported = False
 
         def watch(event, human=None, **fields):
-            nonlocal signin_required
+            nonlocal signin_required, unsupported
             if event == "signin_required":
                 signin_required = True
+            if event == "book_unsupported":
+                unsupported = True
             emit(event, human=human, **fields)
 
         try:
@@ -1317,6 +1327,7 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
             code = EXIT_ERROR
 
         ok = code == EXIT_OK
+        unsupported = unsupported or code == EXIT_UNSUPPORTED_BOOK
         # 分割 Markdown 出力なら実体は <title>_1.md。実行後に取り直す
         output_path = _batch_output_path(out, title, fmt)
         results.append(
@@ -1326,6 +1337,7 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
                 "exit_code": code,
                 "ok": ok,
                 "skipped": False,
+                "unsupported": unsupported,
                 "output": output_path if ok else None,
             }
         )
@@ -1340,6 +1352,11 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
             ok=ok,
             output=output_path if ok else None,
         )
+
+        if unsupported:
+            # 非対応は本に固有なので、--stop-on-error でもバッチは止めない。
+            # ここで止めると 63 冊のどれかに当たった時点で残り全部が未処理になる
+            continue
 
         if not ok and signin_required:
             emit_error(
@@ -1363,16 +1380,27 @@ def _emit_batch_summary(emit, results, total):
     """batch_summary イベントを出し、バッチ全体の終了コードを返す。"""
     succeeded = sum(1 for r in results if r["ok"] and not r["skipped"])
     skipped = sum(1 for r in results if r["skipped"])
-    failures = [r for r in results if not r["ok"]]
+    # Cloud Reader 非対応 (#42) は取得手段が無いだけで異常ではない。失敗に
+    # 混ぜると毎回同じ 63 冊が NG として並び、本当の失敗が埋もれる
+    unsupported = [r for r in results if r.get("unsupported")]
+    failures = [r for r in results if not r["ok"] and not r.get("unsupported")]
     unprocessed = total - len(results)  # stop-on-error で残った本
 
     lines = [
         f"バッチ完了: 成功 {succeeded} / 失敗 {len(failures)} / スキップ {skipped}"
+        + (f" / 非対応 {len(unsupported)}" if unsupported else "")
         + (f" / 未処理 {unprocessed}" if unprocessed else "")
         + f"（全 {total} 冊）"
     ]
     for r in failures:
         lines.append(f"  NG {r['asin'] or r['title']} {r['title']} (exit {r['exit_code']})")
+    for r in unsupported:
+        lines.append(f"  非対応 {r['asin'] or r['title']} {r['title']}")
+    if unsupported:
+        lines.append(
+            "  非対応の本は Cloud Reader で開けないため取得手段がありません。"
+            "再実行しても変わらないので books.json から外してください"
+        )
 
     emit(
         "batch_summary",
@@ -1382,6 +1410,7 @@ def _emit_batch_summary(emit, results, total):
         succeeded=succeeded,
         failed=len(failures),
         skipped=skipped,
+        unsupported=len(unsupported),
         unprocessed=unprocessed,
         results=results,
     )

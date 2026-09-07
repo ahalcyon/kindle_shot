@@ -26,6 +26,7 @@ from core.pipeline import (
     EXIT_ERROR,
     EXIT_NO_IMAGES,
     EXIT_OK,
+    EXIT_UNSUPPORTED_BOOK,
     MANIFEST_NAME,
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
@@ -36,6 +37,34 @@ from core.pipeline import (
 
 BOOK_URL = "https://read.amazon.co.jp/?asin={asin}"
 SIGNIN_MARKER = "/ap/signin"
+
+# Cloud Reader が対応していない本の目印 (#42)。蔵書 405 冊のうち 63 冊が該当した。
+#
+# 非対応の本は ?asin=<ASIN> を開いてもエラーにならず、リーダー (#kr-renderer) を
+# 作らないまま ion-alert を出すだけで止まる（実測 2026-09-07）:
+#
+#     Kindle App Is Required
+#     The book you're trying to read can only be opened using Kindle app.
+#
+# ロケールが ja-JP でもこの文言は英語で出た。/manga/<ASIN> で開くと日本語で
+# 「この本は現在、Kindle Cloud Reader でサポートされていません」と出るため、
+# 表示言語に依存しないよう両方の文言を見る。
+#
+# 検出しないとライブラリ画面のまま撮影の手前まで進み、ページ送りの向きの判定で
+# 初めて詰まって「--page-turn で明示してください」と誤った案内を出すことになる。
+UNSUPPORTED_MARKERS = (
+    "kindle app is required",
+    "can only be opened using kindle app",
+    "サポートされていません",
+    "読むことができません",
+)
+
+# 非対応の本がライブラリへ戻される経路も報告されている (#42)。今回の実測では
+# 再現しなかったが、どちらも非対応の印なので両方見る。
+LIBRARY_MARKER = "/kindle-library"
+
+# 非対応の本が出すダイアログ。ion-alert の id は連番で変わるのでクラスで拾う。
+ALERT_SELECTOR = "ion-alert, .alert-wrapper"
 
 # 本文ページのレンダリング結果。Kindle Cloud Reader は 1 ページを
 # サーバ側でレンダリングした画像 1 枚（blob: URL）として配信しており、
@@ -269,6 +298,45 @@ def page_shot(page, *, selector=PAGE_IMAGE_SELECTOR):
     except Exception:  # noqa: BLE001 - 撮れない理由は問わずフォールバックする
         pass
     return page.screenshot(), SHOT_VIEWPORT
+
+
+def alert_text(page, *, selector=ALERT_SELECTOR):
+    """開いた本の上に出ているダイアログの文言を返す。無ければ空文字。
+
+    本文そのものではなくダイアログに限って読む。本文は画像で配信されていて
+    DOM にテキストが無いが、将来テキストレンダラの本が出てきたときに本文の
+    言い回しを非対応の目印と取り違えないようにするため。
+    """
+    try:
+        return page.evaluate(
+            "(sel) => { const a = document.querySelector(sel); return a ? a.innerText : ''; }",
+            selector,
+        )
+    except Exception:  # noqa: BLE001 - 読めないなら判定材料にしない
+        return ""
+
+
+def unsupported_reason(page, *, marker=LIBRARY_MARKER, markers=UNSUPPORTED_MARKERS):
+    """Cloud Reader 非対応の本なら理由を返す。開けているなら None。
+
+    ライブラリのカードの DOM には対応/非対応の違いが無く、**開いてみるまで
+    分からない**（実測）。判定材料は開いたあとの画面だけになる。
+
+    判定できないときは None を返して先へ進める。無人で数百冊を回すので、
+    読み込みが遅いだけの本を「取得手段が無い」と誤って切り捨てるより、
+    従来どおり撮影を試みて失敗するほうが被害が小さい。
+    """
+    try:
+        if marker in page.url:
+            return "ライブラリへ戻されました"
+    except Exception:  # noqa: BLE001 - URL が取れないなら非対応とは断定しない
+        pass
+
+    text = alert_text(page)
+    lowered = text.lower()
+    if any(m in lowered for m in markers):
+        return " ".join(text.split())
+    return None
 
 
 def resolve_shot_mode(page, *, selector=PAGE_IMAGE_SELECTOR):
@@ -508,6 +576,27 @@ def run_headless_capture(
             if page is None:
                 return EXIT_ERROR
             page.wait_for_timeout(int(load_wait * 1000))
+
+            # 非対応の本はここで打ち切る。先へ進めても本文の無い画面を撮り、
+            # ページ送りの向きの判定で詰まって的外れな案内を出すだけになる。
+            # dismiss_dialogs より前に見る（目印のダイアログを閉じてしまうため）。
+            reason = unsupported_reason(page)
+            if reason is not None:
+                emit(
+                    "book_unsupported",
+                    human="この本は Kindle Cloud Reader が対応していないため開けません",
+                    asin=asin,
+                    reason=reason,
+                )
+                emit_error(
+                    emit,
+                    "この本は Kindle Cloud Reader が対応していないため開けません"
+                    f"（{reason}）。再試行しても結果は変わりません",
+                )
+                stopped_reason = "unsupported_book"
+                write_manifest()
+                return EXIT_UNSUPPORTED_BOOK
+
             dismiss_dialogs(page)
             page.add_style_tag(content=hide_ui_css())
             emit("status", human="ビューアの UI を隠しました", message="ビューアの UI を隠しました")

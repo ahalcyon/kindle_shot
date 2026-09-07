@@ -30,6 +30,7 @@ from core.headless_capture import (
     reverse_of,
     rewind_to_start,
     turn_key,
+    unsupported_reason,
 )
 
 
@@ -531,3 +532,76 @@ def test_manifest_records_the_shot_mode():
         shot_mode=SHOT_ELEMENT,
     )
     assert manifest["shot_mode"] == SHOT_ELEMENT
+
+
+# ------------------------------------------------------------
+# Cloud Reader 非対応の本 (#42)
+# ------------------------------------------------------------
+
+
+class AlertPage:
+    """url と、開いた本の上のダイアログだけを持つ page の代役。"""
+
+    def __init__(self, url="https://read.amazon.co.jp/?asin=B0BVLM8RR2", alert=""):
+        self.url = url
+        self.alert = alert
+
+    def evaluate(self, _script, _arg=None):
+        return self.alert
+
+
+class BrokenPage:
+    """url もダイアログも取得できない page の代役。"""
+
+    @property
+    def url(self):
+        raise RuntimeError("navigation in progress")
+
+    def evaluate(self, _script, _arg=None):
+        raise RuntimeError("execution context destroyed")
+
+
+def test_unsupported_book_is_detected_by_its_dialog():
+    """非対応の本はリーダーを作らず、このダイアログを出すだけで止まる（実測）。"""
+    page = AlertPage(
+        alert=(
+            "Kindle App Is Required\n"
+            "The book you\u2019re trying to read can only be opened using Kindle app.\n"
+            "Back to Library"
+        )
+    )
+    reason = unsupported_reason(page)
+    assert reason is not None
+    assert "Kindle App Is Required" in reason
+
+
+def test_japanese_dialog_is_detected_too():
+    """/manga/<ASIN> 経由では同じ状態が日本語で出る。表示言語に依存させない。"""
+    page = AlertPage(
+        alert=(
+            "この本は現在読むことができません\n"
+            "申し訳ありません。この本は現在、Kindle Cloud Reader でサポートされていません。"
+        )
+    )
+    assert unsupported_reason(page) is not None
+
+
+def test_library_redirect_is_also_treated_as_unsupported():
+    """ライブラリへ戻される経路も報告されている (#42)。どちらも非対応の印。"""
+    page = AlertPage(url="https://read.amazon.co.jp/kindle-library")
+    assert unsupported_reason(page) == "ライブラリへ戻されました"
+
+
+def test_open_book_is_not_reported_as_unsupported():
+    assert unsupported_reason(AlertPage()) is None
+
+
+def test_unrelated_dialog_is_not_reported_as_unsupported():
+    """読書位置の確認ダイアログ等で本を切り捨てない。"""
+    page = AlertPage(alert="前回読んでいたページ\n498 に移動しますか?\nいいえ\nはい")
+    assert unsupported_reason(page) is None
+
+
+def test_page_failure_does_not_declare_the_book_unsupported():
+    """判定できないだけで「取得手段が無い」と断定すると本を取りこぼす。"""
+    assert unsupported_reason(BrokenPage()) is None
