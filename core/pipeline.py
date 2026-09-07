@@ -160,6 +160,20 @@ def _ocr_validation_summary(report):
     )
 
 
+# 非対応と判定して打ち切ったキャプチャが manifest に残す stopped_reason
+# (core/headless_capture.py が書き、run_batch が再実行時の読み飛ばしに使う)
+UNSUPPORTED_STOPPED_REASON = "unsupported_book"
+
+
+def read_stopped_reason(save_dir):
+    """前回のキャプチャがどう終わったかを manifest から読む。読めなければ None。"""
+    try:
+        with open(os.path.join(save_dir, MANIFEST_NAME), encoding="utf-8") as f:
+            return json.load(f).get("stopped_reason")
+    except (OSError, ValueError):
+        return None
+
+
 def read_shot_mode(save_dir):
     """キャプチャが記録した撮影方式を manifest から読む。読めなければ None。
 
@@ -1284,7 +1298,35 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
                     "exit_code": EXIT_OK,
                     "ok": True,
                     "skipped": True,
+                    "unsupported": False,
                     "output": output_path,
+                }
+            )
+            continue
+
+        # 非対応と分かっている本は開き直しても結果が変わらない。蔵書 405 冊のうち
+        # 63 冊がこれに当たり、毎回 20 秒ずつ開き直すと 1 回の再実行で 21 分を捨てる
+        if not overwrite and read_stopped_reason(os.path.join(out, title)) == (
+            UNSUPPORTED_STOPPED_REASON
+        ):
+            emit(
+                "book_skipped",
+                human=f"##### [{i}/{total}] スキップ（Cloud Reader 非対応）: {title} #####",
+                index=i,
+                total=total,
+                asin=asin,
+                title=title,
+                reason="unsupported",
+            )
+            results.append(
+                {
+                    "asin": asin,
+                    "title": title,
+                    "exit_code": EXIT_UNSUPPORTED_BOOK,
+                    "ok": False,
+                    "skipped": True,
+                    "unsupported": True,
+                    "output": None,
                 }
             )
             continue
@@ -1341,21 +1383,28 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
                 "output": output_path if ok else None,
             }
         )
+        # 1冊ずつのイベントとサマリで判定が食い違わないようにする。
+        # 405 冊のログを流し見るときに見るのはこちらなので、非対応を NG と
+        # 書くとサマリの「失敗 0」と矛盾する
         emit(
             "book_result",
-            human=f"[{i}/{total}] {'OK' if ok else 'NG'} {title} (exit {code})",
+            human=f"[{i}/{total}] {'OK' if ok else '非対応' if unsupported else 'NG'} "
+            f"{title} (exit {code})",
             index=i,
             total=total,
             asin=asin,
             title=title,
             exit_code=code,
             ok=ok,
+            unsupported=unsupported,
             output=output_path if ok else None,
         )
 
-        if unsupported:
+        if unsupported and not signin_required:
             # 非対応は本に固有なので、--stop-on-error でもバッチは止めない。
-            # ここで止めると 63 冊のどれかに当たった時点で残り全部が未処理になる
+            # ここで止めると 63 冊のどれかに当たった時点で残り全部が未処理になる。
+            # signin_required との同時成立は今の経路では起きないが、
+            # 「ログアウトの中断を飛ばさない」を順序ではなく条件で保証する
             continue
 
         if not ok and signin_required:
@@ -1378,12 +1427,13 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, emit):
 
 def _emit_batch_summary(emit, results, total):
     """batch_summary イベントを出し、バッチ全体の終了コードを返す。"""
-    succeeded = sum(1 for r in results if r["ok"] and not r["skipped"])
-    skipped = sum(1 for r in results if r["skipped"])
+    succeeded = sum(1 for r in results if r["ok"] and not r["skipped"] and not r["unsupported"])
+    # 非対応で読み飛ばした本は「非対応」だけで数える（スキップと二重に数えない）
+    skipped = sum(1 for r in results if r["skipped"] and not r["unsupported"])
     # Cloud Reader 非対応 (#42) は取得手段が無いだけで異常ではない。失敗に
     # 混ぜると毎回同じ 63 冊が NG として並び、本当の失敗が埋もれる
-    unsupported = [r for r in results if r.get("unsupported")]
-    failures = [r for r in results if not r["ok"] and not r.get("unsupported")]
+    unsupported = [r for r in results if r["unsupported"]]
+    failures = [r for r in results if not r["ok"] and not r["unsupported"] and not r["skipped"]]
     unprocessed = total - len(results)  # stop-on-error で残った本
 
     lines = [
@@ -1396,7 +1446,19 @@ def _emit_batch_summary(emit, results, total):
         lines.append(f"  NG {r['asin'] or r['title']} {r['title']} (exit {r['exit_code']})")
     for r in unsupported:
         lines.append(f"  非対応 {r['asin'] or r['title']} {r['title']}")
-    if unsupported:
+
+    # 「全部が非対応」は 1 冊ずつの事実ではありえない。ブラウザや UA が
+    # 弾かれた等、全冊に同じように起きる障害を 1 冊ずつ片付けてしまうと、
+    # 非対応は終了コードに出ないので黙って全冊を取りこぼす
+    # 実際に開いた本だけで見る。前回の記録で読み飛ばした本は今回の環境の証拠にならない
+    attempted = [r for r in results if not r["skipped"]]
+    systemic = len(attempted) > 1 and all(r["unsupported"] for r in attempted)
+    if systemic:
+        lines.append(
+            "  処理した本が 1 冊残らず非対応と判定されました。本ごとの理由ではなく、"
+            "ブラウザやセッションが弾かれている可能性があります（要確認）"
+        )
+    elif unsupported:
         lines.append(
             "  非対応の本は Cloud Reader で開けないため取得手段がありません。"
             "再実行しても変わらないので books.json から外してください"
@@ -1405,16 +1467,17 @@ def _emit_batch_summary(emit, results, total):
     emit(
         "batch_summary",
         human="\n".join(lines),
-        ok=(not failures),
+        ok=(not failures and not systemic),
         total=total,
         succeeded=succeeded,
         failed=len(failures),
         skipped=skipped,
         unsupported=len(unsupported),
+        systemic_unsupported=systemic,
         unprocessed=unprocessed,
         results=results,
     )
-    return EXIT_OK if not failures else EXIT_ERROR
+    return EXIT_OK if not failures and not systemic else EXIT_ERROR
 
 
 # ============================================================

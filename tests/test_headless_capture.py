@@ -18,6 +18,7 @@ from core.headless_capture import (
     DEFAULT_TURN_KEY,
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
+    alert_text,
     build_manifest,
     capture_pages,
     detect_turn_key,
@@ -586,10 +587,54 @@ def test_japanese_dialog_is_detected_too():
     assert unsupported_reason(page) is not None
 
 
-def test_library_redirect_is_also_treated_as_unsupported():
-    """ライブラリへ戻される経路も報告されている (#42)。どちらも非対応の印。"""
+def test_library_url_alone_is_not_enough():
+    """URL だけで永久の判定をしない。
+
+    issue #42 の「/kindle-library へ戻される」は実測で再現しなかった。
+    load_wait は固定待ちなので、読み込みが遅いだけの本がライブラリの URL の
+    ままでいることはあり、それで切り捨てると取得できる本を落とす。
+    """
     page = AlertPage(url="https://read.amazon.co.jp/kindle-library")
-    assert unsupported_reason(page) == "ライブラリへ戻されました"
+    assert unsupported_reason(page) is None
+
+
+def test_environment_level_dialog_is_not_a_per_book_verdict():
+    """本ではなく環境を指す文言で本を切り捨てない。
+
+    「サポートされていません」だけで照合すると、ブラウザが弾かれたときに
+    全冊が 1 冊ずつ「この本は非対応」として片付けられる。非対応は終了コードに
+    出ないので、気づかないまま蔵書すべてを取りこぼすことになる。
+    """
+    page = AlertPage(alert="お使いのブラウザはサポートされていません")
+    assert unsupported_reason(page) is None
+
+
+def test_marker_is_found_when_several_dialogs_are_open():
+    """先に別のダイアログが並んでいても本命を取り逃さない。
+
+    alert_text は表示中のダイアログを全部つないで返す（閉じた残骸が先に
+    並んでいると、最初の 1 つだけ見る実装では本命に届かない）。
+    """
+    page = AlertPage(alert="前回読んでいたページ\nKindle App Is Required")
+    assert unsupported_reason(page) is not None
+
+
+def test_alert_text_asks_only_for_visible_dialogs():
+    """表示されていないダイアログを読まないことを、渡す JS で担保する。
+
+    innerText は非表示の要素では textContent と同じになり、閉じた残骸まで
+    読んでしまう。DOM が要るので実際の絞り込みはここでは検証できない。
+    """
+    sent = {}
+
+    class ScriptCapturingPage:
+        def evaluate(self, script, arg=None):
+            sent["script"] = script
+            return ""
+
+    alert_text(ScriptCapturingPage())
+    assert "querySelectorAll" in sent["script"]
+    assert "display" in sent["script"]
 
 
 def test_open_book_is_not_reported_as_unsupported():
