@@ -54,19 +54,70 @@ def test_does_not_touch_the_first_character():
     assert mine("ャリア " * 5 + "ヤリア") == []
 
 
-def test_chains_are_folded_into_the_final_form():
-    """A -> B と B -> C が出たら A -> C にする。
+def test_prefers_the_fully_corrected_form_over_a_half_corrected_one():
+    """一部だけ直した形がコーパスに多くても、そちらは採らない。
 
-    置換辞書は各ルールを 1 回ずつしか適用しないので、畳んでおかないと
-    A が B 止まりになる。
+    回数が最大の候補を採ると ``フイードバツク -> フイードバック`` という、
+    誤読を別の誤読に書き換えるだけのルールができる。置換辞書はルールを
+    連鎖させないので、それでは直りきらない。
     """
-    text = "フィードバック " * 9 + "フイードバック " * 3 + "フイードバツク"
-    rules = {wrong: right for wrong, right, _w, _r in mine(text, min_ratio=2.0, min_count=2)}
+    text = "フィードバック " * 20 + "フイードバック " * 30 + "フイードバツク"
+    rules = {wrong: right for wrong, right, _w, _r in mine(text)}
     assert rules["フイードバツク"] == "フィードバック"
-    assert rules["フイードバック"] == "フィードバック"
 
 
-def test_reads_a_text_file_and_writes_rules(tmp_path, capsys):
+def test_skips_a_word_with_too_many_big_kana(capsys):
+    """大書きが多すぎる語は調べない。黙って捨てず理由を出す。
+
+    抽出器が語の間に空白を入れなかった行では、長い連なりが 1 語になる。
+    組み合わせが爆発するので諦めるが、区別が付かないと手当てできない。
+    """
+    word = "ア" + "ツ" * 13
+    assert mine(word + " " + word) == []
+    assert "大書きが多すぎる" in capsys.readouterr().err
+
+
+def test_does_not_join_words_across_files(tmp_path):
+    """ファイルの末尾と次のファイルの先頭がつながらない。
+
+    つながると、実在しない語が 1 つでき、本物の語の回数がその分減る。
+    """
+    (tmp_path / "a.txt").write_text("フィード", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("バック", encoding="utf-8")
+
+    text, files = mine_misreads.load_corpus([str(tmp_path)])
+
+    assert files == 2
+    assert "フィードバック" not in text
+
+
+def test_drops_spaces_inside_a_line_but_keeps_line_breaks(tmp_path):
+    """抽出器が字間に入れた空白は落とすが、改行は残す。
+
+    改行まで落とすと隣り合うカタカナ語がつながって 1 語になり、
+    語として数えられなくなる。
+    """
+    source = tmp_path / "book.txt"
+    source.write_text("フィ ード バック\nメッセージ\n", encoding="utf-8")
+
+    text, _files = mine_misreads.load_corpus([str(source)])
+
+    assert "フィードバック" in text
+    assert "フィードバックメッセージ" not in text
+
+
+def test_reads_a_path_that_looks_like_a_glob(tmp_path):
+    """書名に [ ] を含む本を、glob のパターンと取り違えない。"""
+    (tmp_path / "面接質問50 [新版].txt").write_text("フィードバック\n" * 3, encoding="utf-8")
+    (tmp_path / "面接質問505.txt").write_text("まぎらわしいほう\n", encoding="utf-8")
+
+    text, files = mine_misreads.load_corpus([str(tmp_path / "面接質問50 [新版].txt")])
+
+    assert files == 1
+    assert "まぎらわしいほう" not in text
+
+
+def test_reads_a_text_file_and_writes_rules(tmp_path):
     source = tmp_path / "book.txt"
     source.write_text("フィードバック\n" * 5 + "フィードバツク\n", encoding="utf-8")
     out = tmp_path / "rules.json"
@@ -77,6 +128,26 @@ def test_reads_a_text_file_and_writes_rules(tmp_path, capsys):
     assert rules == {"literal": {"フィードバツク": "フィードバック"}}
 
 
-def test_reports_when_nothing_can_be_read(tmp_path, capsys):
+def test_does_not_overwrite_an_existing_file_without_force(tmp_path, capsys):
+    """--out replacements.json と打たれても、既存の辞書を潰さない。
+
+    書き出すのは literal だけなので、上書きすると regex ルールごと消える。
+    """
+    source = tmp_path / "book.txt"
+    source.write_text("フィードバック\n" * 5 + "フィードバツク\n", encoding="utf-8")
+    out = tmp_path / "rules.json"
+    out.write_text('{"literal": {}, "regex": []}', encoding="utf-8")
+
+    assert mine_misreads.main([str(source), "--out", str(out)]) == 1
+    assert "既にあります" in capsys.readouterr().err
+    assert "regex" in out.read_text(encoding="utf-8")
+
+    assert mine_misreads.main([str(source), "--out", str(out), "--force"]) == 0
+    assert "regex" not in out.read_text(encoding="utf-8")
+
+
+def test_reports_a_path_that_does_not_exist(tmp_path, capsys):
     assert mine_misreads.main([str(tmp_path / "missing.txt")]) == 1
-    assert "読めるファイルがありません" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "見つかりません" in err
+    assert "読めるファイルがありません" in err

@@ -50,27 +50,51 @@ PDF_EXTENSIONS = (".pdf",)
 
 
 def read_pdf(path):
-    """PDF のテキスト層を読む。pypdfium2 が無ければ None。"""
-    try:
-        import pypdfium2 as pdfium
-    except ImportError:
-        return None
+    """PDF のテキスト層を読む。pypdfium2 を読み込めなければ ImportError。
+
+    Windows では pypdfium2 が入っていてもネイティブ DLL のロードに失敗すると
+    ImportError になる。「入っていない」と決めつけず、理由をそのまま上げる。
+    """
+    import pypdfium2 as pdfium
+
     doc = pdfium.PdfDocument(path)
-    return "\n".join(doc[i].get_textpage().get_text_bounded() for i in range(len(doc)))
+    try:
+        return "\n".join(doc[i].get_textpage().get_text_bounded() for i in range(len(doc)))
+    finally:
+        # Windows ではファイルがロックされたままになる
+        doc.close()
 
 
 def iter_files(paths):
-    """引数のパス（ファイル / ディレクトリ / glob）を平らにして返す。"""
+    """引数のパス（ファイル / ディレクトリ / glob）を平らにして返す。
+
+    **実在するパスを先に見る。** glob を先に試すと、書名に ``[`` を含む本
+    （``面接質問50 [新版].pdf``）が glob のパターンとして解釈され、指定した
+    ファイルが黙って無視されて別のファイルが読まれる。
+    """
+    seen = set()
+
+    def emit(path):
+        key = os.path.realpath(path)
+        if key not in seen:
+            seen.add(key)
+            yield path
+
     for raw in paths:
-        expanded = glob.glob(raw) or [raw]
+        expanded = [raw] if os.path.exists(raw) else glob.glob(raw)
+        if not expanded:
+            print(f"見つかりません: {raw}", file=sys.stderr)
+            continue
         for path in expanded:
             if os.path.isdir(path):
                 for root, _dirs, files in os.walk(path):
                     for name in sorted(files):
                         if name.lower().endswith(TEXT_EXTENSIONS + PDF_EXTENSIONS):
-                            yield os.path.join(root, name)
+                            yield from emit(os.path.join(root, name))
+            elif path.lower().endswith(TEXT_EXTENSIONS + PDF_EXTENSIONS):
+                yield from emit(path)
             else:
-                yield path
+                print(f"対象外の拡張子です: {path}", file=sys.stderr)
 
 
 def load_corpus(paths):
@@ -82,11 +106,11 @@ def load_corpus(paths):
         if lower.endswith(PDF_EXTENSIONS):
             try:
                 text = read_pdf(path)
+            except ImportError as e:
+                print(f"PDF を読めません（pypdfium2: {e}）", file=sys.stderr)
+                return "", 0
             except Exception as e:  # noqa: BLE001 - 壊れた PDF 1 冊で止めない
                 print(f"読めません: {path} ({e})", file=sys.stderr)
-                continue
-            if text is None:
-                print(f"pypdfium2 が無いため PDF を読めません: {path}", file=sys.stderr)
                 continue
         elif lower.endswith(TEXT_EXTENSIONS):
             try:
@@ -100,8 +124,9 @@ def load_corpus(paths):
         chunks.append(text)
         count += 1
     # 抽出器が字の隙間に入れる空白を落とす。**改行は残す** — 落とすと隣り合う
-    # カタカナ語がつながって 1 語になり、語として数えられなくなる
-    return re.sub(r"[^\S\n]+", "", "".join(chunks)), count
+    # カタカナ語がつながって 1 語になり、語として数えられなくなる。
+    # ファイルの間も改行で区切る（末尾の語と次の先頭の語がつながらないように）
+    return re.sub(r"[^\S\n]+", "", "\n".join(chunks)), count
 
 
 def count_words(text):
@@ -109,8 +134,10 @@ def count_words(text):
     return collections.Counter(KATAKANA_WORD.findall(text))
 
 
-# 1 語あたりに試す直し方の上限。大書きが多い語で組み合わせが爆発しないように
-MAX_COMBINATIONS = 1 << 8
+# 1 語あたりに試す直し方の上限（部分集合の数）。大書きが多い語で組み合わせが
+# 爆発しないように。実データ 13 冊では 1 語も引っかからなかったが、抽出器が
+# 語の間に空白を入れなかった行では長い連なりが 1 語になることがある
+MAX_COMBINATIONS = 1 << 12
 
 
 def corrected(word):
@@ -124,7 +151,11 @@ def corrected(word):
     先頭の 1 文字は対象外。小書きのカナが語頭に来ることは無い。
     """
     positions = [i for i in range(1, len(word)) if word[i] in BIG_TO_SMALL]
-    if not positions or (1 << len(positions)) > MAX_COMBINATIONS:
+    if not positions:
+        return
+    if (1 << len(positions)) > MAX_COMBINATIONS:
+        # 黙って捨てると「大書きが無い語」と区別が付かない。手当てできるよう出す
+        print(f"大書きが多すぎるため調べません: {word}", file=sys.stderr)
         return
     for mask in range(1, 1 << len(positions)):
         chars = list(word)
@@ -138,7 +169,13 @@ def mine(words, *, min_ratio=2.0, min_count=2):
     """誤読とみなせる語を [(誤, 正, 誤の回数, 正の回数), ...] で返す。
 
     「小書きに直した形が min_ratio 倍以上、かつ min_count 回以上出てくる」
-    ものだけを拾う。同じ語に複数の直し方があるときは、正の回数が多いほうを採る。
+    ものだけを拾う。
+
+    同じ語に複数の直し方が残ったときは、**直した箇所が最も多いもの**を採る。
+    回数が最大のものを採ると、``フイードバック`` のように「一部だけ直した形」
+    がコーパスに多いときにそれが選ばれ、誤読を別の誤読に書き換えるだけの
+    ルールができる。置換辞書はルールを連鎖させないので、それでは直りきらない。
+    同数なら回数が多いほうを採る。
     """
     found = []
     for word, wrong_count in words.items():
@@ -147,35 +184,19 @@ def mine(words, *, min_ratio=2.0, min_count=2):
             right_count = words.get(candidate, 0)
             if right_count < min_count or right_count < wrong_count * min_ratio:
                 continue
-            if best is None or right_count > best[1]:
-                best = (candidate, right_count)
+            # 候補は語と同じ長さ（大書き -> 小書きの置換しかしない）
+            fixes = sum(1 for before, after in zip(word, candidate, strict=True) if before != after)
+            if best is None or (fixes, right_count) > (best[2], best[1]):
+                best = (candidate, right_count, fixes)
         if best is not None:
             found.append((word, best[0], wrong_count, best[1]))
     # 効き目の大きい順（誤読の回数）に並べる
     found.sort(key=lambda item: (-item[2], item[0]))
-    return resolve_chains(found)
-
-
-def resolve_chains(found):
-    """直した先がさらに誤読なら、たどって最終形に付け替える。
-
-    ``A -> B`` と ``B -> C`` が両方出たとき、置換辞書はルールを 1 回ずつしか
-    適用しないので ``A`` は ``B`` 止まりになる。``A -> C`` に畳んでおく。
-    """
-    target = {wrong: right for wrong, right, _w, _r in found}
-    resolved = []
-    for wrong, right, wrong_count, right_count in found:
-        seen = {wrong}
-        while right in target and right not in seen:
-            seen.add(right)
-            right = target[right]
-        if right != wrong:
-            resolved.append((wrong, right, wrong_count, right_count))
-    return resolved
+    return found
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0] or None)
     parser.add_argument("paths", nargs="+", help="PDF / テキスト / それらを含むフォルダ")
     parser.add_argument(
         "--min-ratio",
@@ -190,7 +211,16 @@ def main(argv=None):
         help="正しい形の最低出現回数（既定: 2）",
     )
     parser.add_argument("--out", help="replacements.json に貼れる JSON の書き出し先")
+    parser.add_argument(
+        "--force", action="store_true", help="--out の書き出し先が既にあっても上書きする"
+    )
     args = parser.parse_args(argv)
+
+    # 既存ファイルを黙って潰さない。--out replacements.json と打たれると
+    # regex ルールも、手で外した判断も消える
+    if args.out and os.path.exists(args.out) and not args.force:
+        print(f"既にあります（--force で上書き）: {args.out}", file=sys.stderr)
+        return 1
 
     text, files = load_corpus(args.paths)
     if not files:
@@ -206,7 +236,8 @@ def main(argv=None):
         print(f"{wrong_count:7d} {right_count:7d}  {wrong} -> {right}")
 
     if args.out:
-        rules = {"literal": {wrong: right for wrong, right, _w, _r in found}}
+        # キー順で書く。回数順にすると流し直すたびに diff が意味なく揺れる
+        rules = {"literal": dict(sorted((wrong, right) for wrong, right, _w, _r in found))}
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump(rules, f, ensure_ascii=False, indent=2)
             f.write("\n")
