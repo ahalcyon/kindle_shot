@@ -59,6 +59,8 @@ Refs #<issue番号>
 自動テストも CI もこの層を一切カバーしていないため、ここだけは実機確認が要る。
 
 - `core/capture_engine.py` / `core/capture_runner.py` / `core/capture_profiles.py`
+- `core/headless_capture.py` / `core/headless_browser.py`
+  （`kindle_cloud` プロファイルの既定経路＝**本番のキャプチャ経路**）
 - `core/win32_utils.py` / `core/dpi.py` / `core/reader_navigator.py`
 - `core/boundary_detector.py` の境界検出（トリミングの純ロジックは対象外）
 - `cli.py` の `capture` / `open` / `run` / `batch` / `check` コマンド
@@ -86,10 +88,19 @@ push は実機スモークが通らない限りブロックされる。
 ```
 git config core.hooksPath .githooks
 git config kindleshot.smokeAsin B0XXXXXXXX
+git config kindleshot.python .venv/Scripts/python.exe   # 任意。省略時は venv を自動で探す
 ```
 
+どの Python が使われるかは `.githooks/pre-push --check` で確認できる。
+
+**WSL から push する場合の注意。** `kindleshot.python` に Windows 絶対パス
+(`C:\...\python.exe`) を入れると、Git Bash では解決できるが WSL の `sh` は
+exec できない。フックは `wslpath` があれば自動で POSIX 形式に直すが、
+迷ったら相対パス (`.venv/Scripts/python.exe`) にしておくのが確実（#47）。
+
 実機が使えないときは `git push --no-verify` で迂回できるが、
-**PR に未検証である旨と範囲を必ず書く**こと。
+**PR に未検証である旨と範囲を必ず書く**こと。迂回が常態化するとフックは
+意味を失うので、落ちた原因が環境側なら迂回せずに直す。
 
 フックは `scripts/smoke_capture.py` を呼ぶだけなので、同じスクリプトを
 self-hosted runner のワークフローから呼べば CI 化もできる
@@ -174,6 +185,45 @@ PR 説明に、実行したコマンドと `manifest.json` の要点
 - 実行した検証コマンドとその結果を書く
 - レビューで受けた指摘と、その対応/見送りの理由を残す
 - 既知の制約（テスト対象外の範囲など）を書く
+
+## 本番バッチの運用
+
+蔵書を一括で取り込む `cli.py batch` は、**利用者に都度確認を取らずに回してよい**。
+このリポジトリの目的そのものであり、実行のたびに許可を求める必要はない。
+
+ただし次を守ること。守れないなら回さない。
+
+### 1. 中間生成ファイルを溜めない
+
+`remove_intermediates`（`core/pipeline.py`）が、PDF 化に成功した本ごとに
+キャプチャ画像・トリミング後の画像・`manifest.json` を消す。**既定で有効**。
+
+- **`--keep-images` を本番バッチで付けない。** 実機スモークなど記録が要る場面専用
+- 失敗した本の中間ファイルは意図的に残る（原因が追えなくなり、再取得に 1 冊 10 分かかるため）。
+  原因を確認したら手で消す
+- 調査用に書き出した一時ファイルは、その場で消してから次に進む
+
+### 2. ディスクの空きを見ながら進める
+
+**「容量が尽きました」と報告するのは失敗**で、尽きる前に止めるのが正しい。
+
+- 実行前に空きを確認する。1 冊あたりの実測は幅が大きい
+  （手元 62 冊で中央値 1.4 MiB / 最大 555 MiB。図版の多い本が桁違いに大きい）
+- 長時間のバッチ中は定期的に空きを見る。細っていくなら止めて報告する
+- 出力先は作業ツリーの外（`../kindle_shot_run/` など）。リポジトリを汚さない
+
+### 3. 中断と再開
+
+- 非対応の本（Cloud Reader で開けない）は自動で読み飛ばされ、
+  再実行時もスキップされる（#42）
+- ログアウトを検出したらバッチ全体を中断する（#15）。
+  1 冊ずつ失敗を積み上げない
+- 再実行は既に PDF がある本を飛ばすので、途中で止めても続きから流せる
+
+### 4. 結果を数字で残す
+
+成功 / 非対応 / 失敗の内訳、所要時間、実際に使ったディスク量を報告する。
+失敗した本は理由ごとに分類し、必要なら issue に切り出す。
 
 ## このリポジトリ固有の注意
 

@@ -8,15 +8,62 @@
 # 有効化（クローンごとに 1 回）:
 #   git config core.hooksPath .githooks
 #   git config kindleshot.smokeAsin B0XXXXXXXX
-#   git config kindleshot.python kindle_env/Scripts/python.exe   # 任意
+#   git config kindleshot.python .venv/Scripts/python.exe        # 任意
+#
+# どの Python が使われるかの確認:
+#   .githooks/pre-push --check
 #
 # 迂回（実機が使えないときなど。PR に未検証である旨を必ず書くこと）:
 #   git push --no-verify
 
 set -e
 
+# git config に入っているパスが Windows 形式 (C:\... / C:/...) のとき、WSL の sh は
+# それを exec できず 127 で落ちる（Git Bash は解決できるので通る）。exe 自体は
+# interop で起動できるので、wslpath がある環境でだけ POSIX 形式へ直す。
+to_unix_path() {
+    case "$1" in
+        [A-Za-z]:[/\\]*)
+            if command -v wslpath >/dev/null 2>&1; then
+                wslpath -u "$1"
+            else
+                printf '%s' "$1"
+            fi
+            ;;
+        *)
+            printf '%s' "$1"
+            ;;
+    esac
+}
+
+# 使う Python を決める。git config の指定 → リポジトリ内の venv → PATH の python。
+resolve_python() {
+    configured=$(git config kindleshot.python || true)
+    if [ -n "$configured" ]; then
+        to_unix_path "$configured"
+        return
+    fi
+    for candidate in .venv/Scripts/python.exe kindle_env/Scripts/python.exe \
+                     .venv/bin/python kindle_env/bin/python; do
+        if [ -x "$candidate" ]; then
+            printf '%s' "$candidate"
+            return
+        fi
+    done
+    printf '%s' python
+}
+
+# 解決結果だけ見たいとき（git がフックに渡すのは <remote> <url> なので衝突しない）
+if [ "$1" = "--check" ]; then
+    echo "python: $(resolve_python)"
+    echo "asin:   $(git config kindleshot.smokeAsin || echo '(未設定)')"
+    exit 0
+fi
+
 # 実機確認が要るファイル。AGENTS.md の一覧と合わせること。
-WATCH_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/capture_profiles\.py|core/win32_utils\.py|core/dpi\.py|core/reader_navigator\.py|core/boundary_detector\.py|cli\.py|scripts/smoke_capture\.py)$'
+# headless_* は kindle_cloud プロファイルの既定経路＝本番のキャプチャ経路なので、
+# 画面キャプチャ側 (capture_*) と同じく実機でしか壊れが分からない。
+WATCH_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/capture_profiles\.py|core/headless_capture\.py|core/headless_browser\.py|core/win32_utils\.py|core/dpi\.py|core/reader_navigator\.py|core/boundary_detector\.py|cli\.py|scripts/smoke_capture\.py)$'
 
 ZERO='0000000000000000000000000000000000000000'
 changed=''
@@ -62,13 +109,18 @@ if [ -z "$ASIN" ]; then
     exit 1
 fi
 
-PY=$(git config kindleshot.python || true)
-if [ -z "$PY" ]; then
-    if [ -x kindle_env/Scripts/python.exe ]; then
-        PY=kindle_env/Scripts/python.exe
-    else
-        PY=python
-    fi
+PY=$(resolve_python)
+
+if ! "$PY" -c "import sys" >/dev/null 2>&1; then
+    echo "pre-push: Python を実行できませんでした: $PY" >&2
+    echo "" >&2
+    echo "スモークの失敗ではなく、実行環境の問題です。" >&2
+    echo "使う Python を指定するには:" >&2
+    echo "" >&2
+    echo "  git config kindleshot.python .venv/Scripts/python.exe" >&2
+    echo "" >&2
+    echo "解決結果は .githooks/pre-push --check で確認できます。" >&2
+    exit 1
 fi
 
 echo "pre-push: 実機スモークを実行します（デスクトップを占有します）"
