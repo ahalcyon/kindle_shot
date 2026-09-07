@@ -134,14 +134,17 @@ class CaptureEngine:
         )
         return detector.detect(image)
 
-    def start(self, save_folder, title):
-        """別スレッドでキャプチャを開始する。"""
+    def start(self, save_dir):
+        """別スレッドでキャプチャを開始する。
+
+        保存先は組み立て済みのものを受け取る。以前は (save_folder, title) を
+        受けてここで os.path.join していたが、呼び出し側と別々にパスを組むと
+        タイトルの無害化のような処理が片方だけ入り、撮る先と読む先がずれる (#52)。
+        """
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(
-            target=self._capture_loop, args=(save_folder, title), daemon=True
-        )
+        self._thread = threading.Thread(target=self._capture_loop, args=(save_dir,), daemon=True)
         self._thread.start()
 
     def stop(self):
@@ -151,12 +154,13 @@ class CaptureEngine:
     def is_running(self):
         return self._running
 
-    def _capture_loop(self, save_folder, title):
+    def _capture_loop(self, save_dir):
         """メインのキャプチャループ"""
-        save_dir = os.path.join(save_folder, title)
-        os.makedirs(save_dir, exist_ok=True)
-
         try:
+            # 保存先の作成も try の中で行う。外に置くとここで落ちたときに
+            # デーモンスレッドが黙って死に、呼び出し側が完了通知を待ち続ける (#52)
+            os.makedirs(save_dir, exist_ok=True)
+
             # 境界検出
             self._on_status("境界を検出中...")
             image = self._grab()

@@ -32,6 +32,16 @@ def by_name(events, name):
     return [e for e in events if e["event"] == name]
 
 
+def _stub_output(out, title, fmt):
+    """run_book が実際に書く出力パス。
+
+    run_book は Windows で使えない文字を落とした名前で保存する (#52)。
+    スタブが生のタイトルで書くと、再実行時のスキップ判定を検証できない。
+    """
+    ext = ".md" if fmt == "markdown" else ".pdf"
+    return os.path.join(out, pipeline._ensure_ext(pipeline.book_path_name(title, out), ext))
+
+
 def make_signin_failing_run_book(calls, fail_titles=()):
     """指定タイトルで signin_required を出して失敗する run_book の代役。"""
 
@@ -43,9 +53,7 @@ def make_signin_failing_run_book(calls, fail_titles=()):
             return pipeline.EXIT_WINDOW_NOT_FOUND
         out = kwargs["output"]
         os.makedirs(out, exist_ok=True)
-        with open(
-            os.path.join(out, pipeline._ensure_ext(title, ".pdf")), "w", encoding="utf-8"
-        ) as f:
+        with open(_stub_output(out, title, "searchable_pdf"), "w", encoding="utf-8") as f:
             f.write("x")
         return pipeline.EXIT_OK
 
@@ -64,10 +72,10 @@ def make_fake_run_book(calls, fail_titles=()):
         if title in fail_titles:
             return pipeline.EXIT_WINDOW_NOT_FOUND
         out = kwargs["output"]
-        fmt = kwargs.get("fmt", "searchable_pdf")
-        ext = ".md" if fmt == "markdown" else ".pdf"
         os.makedirs(out, exist_ok=True)
-        with open(os.path.join(out, pipeline._ensure_ext(title, ext)), "w", encoding="utf-8") as f:
+        with open(
+            _stub_output(out, title, kwargs.get("fmt", "searchable_pdf")), "w", encoding="utf-8"
+        ) as f:
             f.write("x")
         return pipeline.EXIT_OK
 
@@ -579,9 +587,7 @@ def make_unsupported_run_book(calls, unsupported_titles=(), fail_titles=()):
             return pipeline.EXIT_ERROR
         out = kwargs["output"]
         os.makedirs(out, exist_ok=True)
-        with open(
-            os.path.join(out, pipeline._ensure_ext(title, ".pdf")), "w", encoding="utf-8"
-        ) as f:
+        with open(_stub_output(out, title, "searchable_pdf"), "w", encoding="utf-8") as f:
             f.write("x")
         return pipeline.EXIT_OK
 
@@ -1029,3 +1035,105 @@ def test_free_bytes_returns_none_on_oserror(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pipeline.shutil, "disk_usage", boom)
     assert pipeline.free_bytes(str(tmp_path)) is None
+
+
+# ------------------------------------------------------------
+# ファイル名の無害化 (#52)
+# ------------------------------------------------------------
+
+
+def test_title_with_invalid_characters_is_processed(tmp_path, monkeypatch):
+    """: や ? を含むタイトルの本が [WinError 267] で落ちない。"""
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    emit, events = collect_emit()
+    title = "The Huawei and Snowden Questions: Can It be Verified?"
+
+    code = pipeline.run_batch(
+        [{"title": title, "asin": "B01"}], output=str(tmp_path / "out"), emit=emit
+    )
+
+    assert code == pipeline.EXIT_OK
+    result = by_name(events, "book_result")[0]
+    # イベントには元のタイトルを残す（利用者が見るのはこちら）
+    assert result["title"] == title
+    assert ":" not in os.path.basename(result["output"])
+    assert "?" not in os.path.basename(result["output"])
+
+
+def test_finished_book_with_invalid_characters_is_skipped_on_rerun(tmp_path, monkeypatch):
+    """無害化した名前が実行のたびに同じでないと、同じ本を撮り直す。"""
+    out = tmp_path / "out"
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    books = [{"title": "Q: 総集編 <完全版>", "asin": "B01"}]
+
+    pipeline.run_batch(books, output=str(out), emit=lambda *a, **k: None)
+    assert len(calls) == 1
+
+    emit, events = collect_emit()
+    pipeline.run_batch(books, output=str(out), emit=emit)
+    assert len(calls) == 1, "2 回目で撮り直している"
+    assert by_name(events, "book_skipped")[0]["reason"] == "exists"
+
+
+def test_output_folder_too_deep_is_rejected_up_front(tmp_path, monkeypatch):
+    """1 冊ずつ不可解に失敗させず、開始時に 1 度だけ弾く。"""
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    monkeypatch.setattr(pipeline, "name_budget", lambda _out: 3)
+    emit, events = collect_emit()
+
+    code = pipeline.run_batch(
+        [{"title": "A", "asin": "B01"}], output=str(tmp_path / "out"), emit=emit
+    )
+
+    assert code == pipeline.EXIT_BAD_ARGS
+    assert calls == []
+    assert by_name(events, "error")
+
+
+def test_colliding_sanitized_names_are_rejected_up_front(tmp_path, monkeypatch):
+    """無害化で名前が重なると、2 冊目が黙って飛ばされるか 1 冊目を上書きする。"""
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    emit, events = collect_emit()
+
+    code = pipeline.run_batch(
+        [{"title": "同じ本", "asin": "B01"}, {"title": "同じ本. ", "asin": "B02"}],
+        output=str(tmp_path / "out"),
+        emit=emit,
+    )
+
+    assert code == pipeline.EXIT_BAD_ARGS
+    assert calls == []
+    assert "同じ本" in by_name(events, "error")[0]["message"]
+
+
+def test_markdown_heading_keeps_the_original_title(tmp_path, monkeypatch):
+    """見出しにファイル名の全角置換やハッシュを持ち込まない。"""
+    seen: dict = {}
+
+    def fake_convert(*args, **kwargs):
+        seen.update(kwargs)
+        return pipeline.EXIT_OK
+
+    from core import headless_capture
+
+    monkeypatch.setattr(pipeline, "run_convert", fake_convert)
+    # run_book は headless_capture を関数内で import するのでモジュール側を差し替える
+    monkeypatch.setattr(headless_capture, "run_headless_capture", lambda *a, **k: pipeline.EXIT_OK)
+    monkeypatch.setattr(pipeline, "run_trim", lambda *a, **k: pipeline.EXIT_OK)
+    monkeypatch.setattr(pipeline, "run_validate", lambda *a, **k: pipeline.EXIT_OK)
+
+    title = "Foo: Bar?"
+    pipeline.run_book(
+        title=title,
+        asin="B01",
+        output=str(tmp_path / "out"),
+        fmt="markdown",
+        emit=lambda *a, **k: None,
+    )
+
+    assert seen["display_title"] == title
+    assert ":" not in seen["name"]
