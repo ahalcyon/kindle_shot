@@ -26,6 +26,7 @@ from core.pipeline import (
     EXIT_ERROR,
     EXIT_NO_IMAGES,
     EXIT_OK,
+    EXIT_UNSUPPORTED_BOOK,
     MANIFEST_NAME,
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
@@ -36,6 +37,38 @@ from core.pipeline import (
 
 BOOK_URL = "https://read.amazon.co.jp/?asin={asin}"
 SIGNIN_MARKER = "/ap/signin"
+
+# Cloud Reader が対応していない本の目印 (#42)。蔵書 405 冊のうち 63 冊が該当した。
+#
+# 非対応の本は ?asin=<ASIN> を開いてもエラーにならず、リーダー (#kr-renderer) を
+# 作らないまま ion-alert を出すだけで止まる（実測 2026-09-07）:
+#
+#     Kindle App Is Required
+#     The book you're trying to read can only be opened using Kindle app.
+#
+# ロケールが ja-JP でもこの文言は英語で出た。/manga/<ASIN> で開くと日本語になるので
+# 表示言語に依存しないよう両方の文言を見る。
+#
+# 検出しないと本文の無い画面を撮り続け、ページ送りの向きの判定で初めて詰まって
+# 「--page-turn で明示してください」と誤った案内を出すことになる。
+#
+# **文全体で照合する。** 「サポートされていません」「読むことができません」だけを
+# 見ると、本ではなく環境を指すダイアログ（例:「お使いのブラウザはサポートされて
+# いません」）に一致してしまう。それは全冊に同じように起きる種類の障害なのに、
+# 1 冊ずつ「この本は非対応」として片付けられ、しかも非対応は終了コードに出ない
+# ので、405 冊すべてを黙って取りこぼす。
+UNSUPPORTED_MARKERS = (
+    "kindle app is required",
+    "can only be opened using kindle app",
+    "cloud reader でサポートされていません",
+    "この本は現在読むことができません",
+)
+
+# 非対応の本が出すダイアログ。ion-alert の id は連番で変わるのでクラスで拾う。
+ALERT_SELECTOR = "ion-alert, .alert-wrapper"
+
+# 報告に載せるダイアログ文言の上限。未知のダイアログでログを埋めないため
+REASON_MAX_CHARS = 200
 
 # 本文ページのレンダリング結果。Kindle Cloud Reader は 1 ページを
 # サーバ側でレンダリングした画像 1 枚（blob: URL）として配信しており、
@@ -269,6 +302,60 @@ def page_shot(page, *, selector=PAGE_IMAGE_SELECTOR):
     except Exception:  # noqa: BLE001 - 撮れない理由は問わずフォールバックする
         pass
     return page.screenshot(), SHOT_VIEWPORT
+
+
+def alert_text(page, *, selector=ALERT_SELECTOR):
+    """開いた本の上に**表示されている**ダイアログの文言を返す。無ければ空文字。
+
+    本文そのものではなくダイアログに限って読む。本文は画像で配信されていて
+    DOM にテキストが無いが、将来テキストレンダラの本が出てきたときに本文の
+    言い回しを非対応の目印と取り違えないようにするため。
+
+    閉じたあとも DOM に残るダイアログがあるので display:none は除く
+    (DISMISS_ALERTS_JS が同じ理由で同じ判定をしている)。innerText は
+    表示されていない要素では textContent と同じになり、残骸まで読んでしまう。
+    最初の 1 つだけでなく全部を見る。残骸が先に並んでいると本命を取り逃す。
+
+    入れ子になった一致 (.alert-wrapper は ion-alert の子孫) は外側だけ残す。
+    両方読むと同じ文言が二重に入る。
+    """
+    try:
+        return page.evaluate(
+            "(sel) => {"
+            "  const all = Array.from(document.querySelectorAll(sel))"
+            "      .filter(a => getComputedStyle(a).display !== 'none');"
+            "  return all.filter(a => !all.some(b => b !== a && b.contains(a)))"
+            "      .map(a => a.innerText).join('\\n');"
+            "}",
+            selector,
+        )
+    except Exception:  # noqa: BLE001 - 読めないなら判定材料にしない
+        return ""
+
+
+def unsupported_reason(page, *, markers=UNSUPPORTED_MARKERS):
+    """Cloud Reader 非対応の本なら理由を返す。開けているなら None。
+
+    ライブラリのカードの DOM には対応/非対応の違いが無く、**開いてみるまで
+    分からない**（実測）。判定材料は開いたあとの画面だけになる。
+
+    判定できないときは None を返して先へ進める。無人で数百冊を回すので、
+    読み込みが遅いだけの本を「取得手段が無い」と誤って切り捨てるより、
+    従来どおり撮影を試みて失敗するほうが被害が小さい。非対応と判定された本は
+    終了コードにも出ず「books.json から外してください」と案内されるので、
+    誤判定は 1 冊を黙って永久に失うことになる。
+
+    issue #42 には「?asin= を開くと /kindle-library へ戻される」とも書いたが、
+    非対応の本 2 冊を 9 秒間観測しても再現しなかったので判定に使わない。
+    load_wait は固定待ちなので、読み込みが遅いだけの本がライブラリの URL の
+    ままでいることはあり、それを永久の判定に使うと取得できる本を落とす。
+    """
+    text = alert_text(page)
+    lowered = text.lower()
+    if any(m in lowered for m in markers):
+        # 未知のダイアログが出たときにログを埋めないよう長さを抑える
+        return " ".join(text.split())[:REASON_MAX_CHARS]
+    return None
 
 
 def resolve_shot_mode(page, *, selector=PAGE_IMAGE_SELECTOR):
@@ -508,6 +595,27 @@ def run_headless_capture(
             if page is None:
                 return EXIT_ERROR
             page.wait_for_timeout(int(load_wait * 1000))
+
+            # 非対応の本はここで打ち切る。先へ進めても本文の無い画面を撮り、
+            # ページ送りの向きの判定で詰まって的外れな案内を出すだけになる。
+            # dismiss_dialogs より前に見る（目印のダイアログを閉じてしまうため）。
+            reason = unsupported_reason(page)
+            if reason is not None:
+                emit(
+                    "book_unsupported",
+                    human="この本は Kindle Cloud Reader が対応していないため開けません",
+                    asin=asin,
+                    reason=reason,
+                )
+                emit_error(
+                    emit,
+                    "この本は Kindle Cloud Reader が対応していないため開けません"
+                    f"（{reason}）。再試行しても結果は変わりません",
+                )
+                stopped_reason = "unsupported_book"
+                write_manifest()
+                return EXIT_UNSUPPORTED_BOOK
+
             dismiss_dialogs(page)
             page.add_style_tag(content=hide_ui_css())
             emit("status", human="ビューアの UI を隠しました", message="ビューアの UI を隠しました")

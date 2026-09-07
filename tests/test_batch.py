@@ -559,3 +559,276 @@ def test_explicit_headless_overrides_the_default(tmp_path, monkeypatch):
         title="t", output=str(tmp_path), profile_key="kobo_web", url="https://x", headless=True
     )
     assert seen["headless"] is True
+
+
+# ------------------------------------------------------------
+# Cloud Reader 非対応の本 (#42)
+# ------------------------------------------------------------
+
+
+def make_unsupported_run_book(calls, unsupported_titles=(), fail_titles=()):
+    """指定タイトルを Cloud Reader 非対応として失敗させる run_book の代役。"""
+
+    def fake(**kwargs):
+        calls.append(kwargs)
+        title = kwargs["title"]
+        if title in unsupported_titles:
+            kwargs["emit"]("book_unsupported", human="対応していません")
+            return pipeline.EXIT_UNSUPPORTED_BOOK
+        if title in fail_titles:
+            return pipeline.EXIT_ERROR
+        out = kwargs["output"]
+        os.makedirs(out, exist_ok=True)
+        with open(
+            os.path.join(out, pipeline._ensure_ext(title, ".pdf")), "w", encoding="utf-8"
+        ) as f:
+            f.write("x")
+        return pipeline.EXIT_OK
+
+    return fake
+
+
+def test_unsupported_book_does_not_stop_the_batch(tmp_path, monkeypatch):
+    """非対応はこの本に固有なので、残りの本は最後まで処理する。"""
+    calls: list = []
+    monkeypatch.setattr(
+        pipeline, "run_book", make_unsupported_run_book(calls, unsupported_titles=("B",))
+    )
+    books = [
+        {"title": "A", "asin": "B01"},
+        {"title": "B", "asin": "B02"},
+        {"title": "C", "asin": "B03"},
+    ]
+    emit, events = collect_emit()
+    pipeline.run_batch(books, output=str(tmp_path / "out"), emit=emit)
+    assert [c["title"] for c in calls] == ["A", "B", "C"]
+
+
+def test_unsupported_book_is_counted_apart_from_failures(tmp_path, monkeypatch):
+    """非対応は失敗に混ぜない。混ぜると終了コードが常に非0になって使えなくなる。"""
+    calls: list = []
+    monkeypatch.setattr(
+        pipeline, "run_book", make_unsupported_run_book(calls, unsupported_titles=("B",))
+    )
+    books = [{"title": "A", "asin": "B01"}, {"title": "B", "asin": "B02"}]
+    events = []
+
+    def emit(event, human=None, **fields):
+        events.append({"event": event, "human": human, **fields})
+
+    code = pipeline.run_batch(books, output=str(tmp_path / "out"), emit=emit)
+
+    summary = by_name(events, "batch_summary")[0]
+    assert summary["unsupported"] == 1
+    assert summary["failed"] == 0
+    assert summary["succeeded"] == 1
+    assert summary["ok"] is True
+    assert code == pipeline.EXIT_OK
+    # 人間向けの一覧にも、失敗ではなく非対応として出る
+    assert "非対応" in summary["human"]
+    assert "B02" in summary["human"]
+
+
+def test_real_failure_still_fails_the_batch(tmp_path, monkeypatch):
+    """非対応と本当の失敗が混ざっても、失敗のほうは終了コードに出る。"""
+    calls: list = []
+    monkeypatch.setattr(
+        pipeline,
+        "run_book",
+        make_unsupported_run_book(calls, unsupported_titles=("B",), fail_titles=("C",)),
+    )
+    books = [
+        {"title": "A", "asin": "B01"},
+        {"title": "B", "asin": "B02"},
+        {"title": "C", "asin": "B03"},
+    ]
+    emit, events = collect_emit()
+    code = pipeline.run_batch(books, output=str(tmp_path / "out"), emit=emit)
+
+    summary = by_name(events, "batch_summary")[0]
+    assert summary["unsupported"] == 1
+    assert summary["failed"] == 1
+    assert code == pipeline.EXIT_ERROR
+
+
+def test_stop_on_error_does_not_trigger_on_unsupported(tmp_path, monkeypatch):
+    """--stop-on-error でも非対応では止めない。
+
+    蔵書 405 冊中 63 冊が非対応なので、ここで止めると最初の 1 冊に当たった
+    時点で残り全部が未処理になる。
+    """
+    calls: list = []
+    monkeypatch.setattr(
+        pipeline, "run_book", make_unsupported_run_book(calls, unsupported_titles=("A",))
+    )
+    books = [{"title": "A", "asin": "B01"}, {"title": "B", "asin": "B02"}]
+    emit, events = collect_emit()
+    pipeline.run_batch(books, output=str(tmp_path / "out"), stop_on_error=True, emit=emit)
+    assert [c["title"] for c in calls] == ["A", "B"]
+
+
+def test_systemic_unsupported_is_not_reported_as_success(tmp_path, monkeypatch):
+    """全部が非対応なら、本ごとの理由ではなく環境の障害を疑う。
+
+    ブラウザや UA が弾かれると全冊が同じダイアログで止まりうる。非対応は
+    終了コードに出ないので、1 冊ずつ片付けると蔵書すべてを黙って取りこぼす。
+    """
+    calls: list = []
+    monkeypatch.setattr(
+        pipeline,
+        "run_book",
+        make_unsupported_run_book(calls, unsupported_titles=("A", "B", "C")),
+    )
+    books = [
+        {"title": "A", "asin": "B01"},
+        {"title": "B", "asin": "B02"},
+        {"title": "C", "asin": "B03"},
+    ]
+    events = []
+
+    def emit(event, human=None, **fields):
+        events.append({"event": event, "human": human, **fields})
+
+    code = pipeline.run_batch(books, output=str(tmp_path / "out"), emit=emit)
+
+    summary = by_name(events, "batch_summary")[0]
+    assert summary["systemic_unsupported"] is True
+    assert summary["ok"] is False
+    assert code == pipeline.EXIT_ERROR
+    assert "1 冊残らず非対応" in summary["human"]
+    # books.json から外せ、という案内は出さない（外すべきではないため）
+    assert "books.json" not in summary["human"]
+
+
+def test_one_unsupported_book_is_not_treated_as_systemic(tmp_path, monkeypatch):
+    """普通に非対応が混ざっただけなら従来どおり成功扱い。"""
+    calls: list = []
+    monkeypatch.setattr(
+        pipeline, "run_book", make_unsupported_run_book(calls, unsupported_titles=("B",))
+    )
+    books = [{"title": "A", "asin": "B01"}, {"title": "B", "asin": "B02"}]
+    events = []
+
+    def emit(event, human=None, **fields):
+        events.append({"event": event, "human": human, **fields})
+
+    code = pipeline.run_batch(books, output=str(tmp_path / "out"), emit=emit)
+    summary = by_name(events, "batch_summary")[0]
+    assert summary["systemic_unsupported"] is False
+    assert code == pipeline.EXIT_OK
+    assert "books.json" in summary["human"]
+
+
+def test_book_result_agrees_with_the_summary(tmp_path, monkeypatch):
+    """1冊ずつのイベントとサマリで判定が食い違わないようにする。
+
+    405 冊のログを流し見るときに見るのは book_result なので、非対応を NG と
+    書くとサマリの「失敗 0」と矛盾する。
+    """
+    calls: list = []
+    monkeypatch.setattr(
+        pipeline, "run_book", make_unsupported_run_book(calls, unsupported_titles=("B",))
+    )
+    books = [{"title": "A", "asin": "B01"}, {"title": "B", "asin": "B02"}]
+    events = []
+
+    def emit(event, human=None, **fields):
+        events.append({"event": event, "human": human, **fields})
+
+    pipeline.run_batch(books, output=str(tmp_path / "out"), emit=emit)
+
+    a, b = by_name(events, "book_result")
+    assert a["unsupported"] is False
+    assert b["unsupported"] is True
+    assert "NG" not in b["human"]
+    assert "非対応" in b["human"]
+
+
+def test_every_result_carries_the_unsupported_key(tmp_path, monkeypatch):
+    """results は batch_summary の公開ペイロード。行ごとに形が変わらないようにする。"""
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_unsupported_run_book(calls))
+    out = tmp_path / "out"
+    books = [{"title": "A", "asin": "B01"}]
+    emit, events = collect_emit()
+    pipeline.run_batch(books, output=str(out), emit=emit)
+    # 2 回目は完成済みとしてスキップされる経路を通る
+    emit, events = collect_emit()
+    pipeline.run_batch(books, output=str(out), emit=emit)
+
+    results = by_name(events, "batch_summary")[0]["results"]
+    assert results[0]["skipped"] is True
+    assert all("unsupported" in r for r in results)
+
+
+def test_known_unsupported_book_is_skipped_on_rerun(tmp_path, monkeypatch):
+    """一度非対応と分かった本は開き直さない。
+
+    蔵書 405 冊のうち 63 冊が非対応で、毎回 20 秒ずつ開き直すと 1 回の再実行で
+    21 分を捨てる。判定は前回のキャプチャが manifest に残した stopped_reason。
+    """
+    out = tmp_path / "out"
+    save_dir = out / "A"
+    os.makedirs(save_dir)
+    with open(save_dir / pipeline.MANIFEST_NAME, "w", encoding="utf-8") as f:
+        json.dump({"stopped_reason": pipeline.UNSUPPORTED_STOPPED_REASON}, f)
+
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_unsupported_run_book(calls))
+    emit, events = collect_emit()
+    code = pipeline.run_batch(
+        [{"title": "A", "asin": "B01"}, {"title": "B", "asin": "B02"}],
+        output=str(out),
+        emit=emit,
+    )
+
+    # A は開かない。B だけ実行する
+    assert [c["title"] for c in calls] == ["B"]
+    assert by_name(events, "book_skipped")[0]["reason"] == "unsupported"
+    summary = by_name(events, "batch_summary")[0]
+    # 非対応として 1 度だけ数える（スキップと二重に数えない）
+    assert summary["unsupported"] == 1
+    assert summary["skipped"] == 0
+    assert summary["succeeded"] == 1
+    assert code == pipeline.EXIT_OK
+
+
+def test_overwrite_reopens_a_known_unsupported_book(tmp_path, monkeypatch):
+    """--overwrite なら、非対応の判定が変わっていないか確かめ直せる。"""
+    out = tmp_path / "out"
+    save_dir = out / "A"
+    os.makedirs(save_dir)
+    with open(save_dir / pipeline.MANIFEST_NAME, "w", encoding="utf-8") as f:
+        json.dump({"stopped_reason": pipeline.UNSUPPORTED_STOPPED_REASON}, f)
+
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_unsupported_run_book(calls))
+    emit, events = collect_emit()
+    pipeline.run_batch([{"title": "A", "asin": "B01"}], output=str(out), overwrite=True, emit=emit)
+    assert [c["title"] for c in calls] == ["A"]
+
+
+def test_skipped_unsupported_books_do_not_look_systemic(tmp_path, monkeypatch):
+    """前回の記録で読み飛ばした本は、今回の環境が壊れている証拠にならない。"""
+    out = tmp_path / "out"
+    for title in ("A", "B"):
+        os.makedirs(out / title)
+        with open(out / title / pipeline.MANIFEST_NAME, "w", encoding="utf-8") as f:
+            json.dump({"stopped_reason": pipeline.UNSUPPORTED_STOPPED_REASON}, f)
+
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_unsupported_run_book(calls))
+    emit, events = collect_emit()
+    code = pipeline.run_batch(
+        [
+            {"title": "A", "asin": "B01"},
+            {"title": "B", "asin": "B02"},
+            {"title": "C", "asin": "B03"},
+        ],
+        output=str(out),
+        emit=emit,
+    )
+    summary = by_name(events, "batch_summary")[0]
+    assert summary["unsupported"] == 2
+    assert summary["systemic_unsupported"] is False
+    assert code == pipeline.EXIT_OK

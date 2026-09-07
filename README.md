@@ -238,6 +238,20 @@ kindle_shot.bat check --profile kindle_cloud
 報告します（1冊でも失敗すると終了コードは非0）。同じコマンドを再実行すると完成済みの本は自動で
 スキップされます。
 
+**Cloud Reader 非対応の本**（終了コード 8）は「失敗」ではなく `unsupported` として別に数えます。
+取得手段が無く再実行しても変わらないので、失敗に混ぜると毎回同じ本が並んで本当の失敗が埋もれ、
+終了コードも常に非0になって異常検知に使えなくなるためです。`--stop-on-error` を付けていても
+非対応ではバッチを止めません（この本に固有の理由で、残りの本には影響しないため）。
+
+一度非対応と判定された本は、`manifest.json` の `stopped_reason` を見て**次回以降は開かずに
+読み飛ばします**（`book_skipped` の `reason` が `unsupported`）。`--overwrite` を付けると
+判定し直します。
+
+ただし**処理した本が 1 冊残らず非対応だった場合**は、本ごとの理由ではなくブラウザや
+セッションが弾かれている疑いがあるため、`systemic_unsupported` を立てて終了コードを非0に
+します。「全部が非対応」は 1 冊ずつの事実ではありえないので、黙って蔵書すべてを
+取りこぼさないための歯止めです。
+
 ### `open`
 
 Kindle Cloud Reader で「URL で本を開く → 読み込み完了を待つ → F11 全画面 → UI バーを非表示化 →
@@ -351,6 +365,7 @@ Kindle Cloud Reader は本文を**サーバ側でレンダリングした画像 
 | `user` | 中断された |
 | `rewind_failed` | 先頭ページまで戻せなかった。終了コード 1 |
 | `turn_key_undetected` | 送り向きを判定できなかった。終了コード 1 |
+| `unsupported_book` | Cloud Reader が対応していない本だった。終了コード 8 |
 
 途中で終わった場合も `manifest.json` は書かれるので、どこまで撮れたか分かります。
 
@@ -539,6 +554,7 @@ python scripts\convert_2nd.py --books books_c.json --out C:\books --format markd
   | 5 | 画像が見つからない / 0ページ |
   | 6 | トリミングで内容が切れるページがある（`--force` で強行可） |
   | 7 | validate で検証エラー |
+  | 8 | Kindle Cloud Reader が対応していない本。取得手段が無く、再試行しても変わらない |
 
 - **`manifest.json`**: `capture` 完了時に保存先へ書き出す実行記録。キー は
   `tool` / `title` / `profile_key` / `profile`（解決済みプロファイル全体）/ `total_pages` /

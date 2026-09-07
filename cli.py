@@ -30,6 +30,7 @@
     5: 画像が見つからない / 0ページ
     6: トリミングで内容が切れるページがある（--force で強行可）
     7: validate で検証エラー
+    8: Kindle Cloud Reader が対応していない本（再試行しても変わらない）
 """
 
 # --- DPI 認識は他のどの import よりも先に確定させる ---------------------------
@@ -59,6 +60,7 @@ from core.pipeline import (  # noqa: F401
     EXIT_NO_IMAGES,
     EXIT_OCR_UNAVAILABLE,
     EXIT_OK,
+    EXIT_UNSUPPORTED_BOOK,
     EXIT_VALIDATION,
     EXIT_WINDOW_NOT_FOUND,
     EXIT_WOULD_CLIP,

@@ -18,6 +18,7 @@ from core.headless_capture import (
     DEFAULT_TURN_KEY,
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
+    alert_text,
     build_manifest,
     capture_pages,
     detect_turn_key,
@@ -30,6 +31,7 @@ from core.headless_capture import (
     reverse_of,
     rewind_to_start,
     turn_key,
+    unsupported_reason,
 )
 
 
@@ -531,3 +533,120 @@ def test_manifest_records_the_shot_mode():
         shot_mode=SHOT_ELEMENT,
     )
     assert manifest["shot_mode"] == SHOT_ELEMENT
+
+
+# ------------------------------------------------------------
+# Cloud Reader 非対応の本 (#42)
+# ------------------------------------------------------------
+
+
+class AlertPage:
+    """url と、開いた本の上のダイアログだけを持つ page の代役。"""
+
+    def __init__(self, url="https://read.amazon.co.jp/?asin=B0BVLM8RR2", alert=""):
+        self.url = url
+        self.alert = alert
+
+    def evaluate(self, _script, _arg=None):
+        return self.alert
+
+
+class BrokenPage:
+    """url もダイアログも取得できない page の代役。"""
+
+    @property
+    def url(self):
+        raise RuntimeError("navigation in progress")
+
+    def evaluate(self, _script, _arg=None):
+        raise RuntimeError("execution context destroyed")
+
+
+def test_unsupported_book_is_detected_by_its_dialog():
+    """非対応の本はリーダーを作らず、このダイアログを出すだけで止まる（実測）。"""
+    page = AlertPage(
+        alert=(
+            "Kindle App Is Required\n"
+            "The book you\u2019re trying to read can only be opened using Kindle app.\n"
+            "Back to Library"
+        )
+    )
+    reason = unsupported_reason(page)
+    assert reason is not None
+    assert "Kindle App Is Required" in reason
+
+
+def test_japanese_dialog_is_detected_too():
+    """/manga/<ASIN> 経由では同じ状態が日本語で出る。表示言語に依存させない。"""
+    page = AlertPage(
+        alert=(
+            "この本は現在読むことができません\n"
+            "申し訳ありません。この本は現在、Kindle Cloud Reader でサポートされていません。"
+        )
+    )
+    assert unsupported_reason(page) is not None
+
+
+def test_library_url_alone_is_not_enough():
+    """URL だけで永久の判定をしない。
+
+    issue #42 の「/kindle-library へ戻される」は実測で再現しなかった。
+    load_wait は固定待ちなので、読み込みが遅いだけの本がライブラリの URL の
+    ままでいることはあり、それで切り捨てると取得できる本を落とす。
+    """
+    page = AlertPage(url="https://read.amazon.co.jp/kindle-library")
+    assert unsupported_reason(page) is None
+
+
+def test_environment_level_dialog_is_not_a_per_book_verdict():
+    """本ではなく環境を指す文言で本を切り捨てない。
+
+    「サポートされていません」だけで照合すると、ブラウザが弾かれたときに
+    全冊が 1 冊ずつ「この本は非対応」として片付けられる。非対応は終了コードに
+    出ないので、気づかないまま蔵書すべてを取りこぼすことになる。
+    """
+    page = AlertPage(alert="お使いのブラウザはサポートされていません")
+    assert unsupported_reason(page) is None
+
+
+def test_marker_is_found_when_several_dialogs_are_open():
+    """先に別のダイアログが並んでいても本命を取り逃さない。
+
+    alert_text は表示中のダイアログを全部つないで返す（閉じた残骸が先に
+    並んでいると、最初の 1 つだけ見る実装では本命に届かない）。
+    """
+    page = AlertPage(alert="前回読んでいたページ\nKindle App Is Required")
+    assert unsupported_reason(page) is not None
+
+
+def test_alert_text_asks_only_for_visible_dialogs():
+    """表示されていないダイアログを読まないことを、渡す JS で担保する。
+
+    innerText は非表示の要素では textContent と同じになり、閉じた残骸まで
+    読んでしまう。DOM が要るので実際の絞り込みはここでは検証できない。
+    """
+    sent = {}
+
+    class ScriptCapturingPage:
+        def evaluate(self, script, arg=None):
+            sent["script"] = script
+            return ""
+
+    alert_text(ScriptCapturingPage())
+    assert "querySelectorAll" in sent["script"]
+    assert "display" in sent["script"]
+
+
+def test_open_book_is_not_reported_as_unsupported():
+    assert unsupported_reason(AlertPage()) is None
+
+
+def test_unrelated_dialog_is_not_reported_as_unsupported():
+    """読書位置の確認ダイアログ等で本を切り捨てない。"""
+    page = AlertPage(alert="前回読んでいたページ\n498 に移動しますか?\nいいえ\nはい")
+    assert unsupported_reason(page) is None
+
+
+def test_page_failure_does_not_declare_the_book_unsupported():
+    """判定できないだけで「取得手段が無い」と断定すると本を取りこぼす。"""
+    assert unsupported_reason(BrokenPage()) is None
