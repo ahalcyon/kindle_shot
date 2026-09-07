@@ -255,3 +255,34 @@ def test_reports_rules_that_can_straddle_a_word_boundary():
 
 def test_does_not_report_a_rule_that_stands_alone():
     assert mine_misreads.straddling_rules([("イペント", "イベント")], "イペント") == []
+
+
+def test_reports_how_to_install_the_frequency_table(tmp_path, monkeypatch, capsys):
+    """頻度表が入っていないときに、入れ方まで案内する。
+
+    verify は optional group なので、既定の環境では入っていない。
+    「使えません」だけだと利用者が次に何をすればよいか分からない。
+    """
+    source = tmp_path / "book.txt"
+    source.write_text("イペント\n" * 3, encoding="utf-8")
+
+    def missing():
+        raise ImportError("No module named 'wordfreq'")
+
+    monkeypatch.setattr(mine_misreads, "load_frequencies", missing)
+    assert mine_misreads.main([str(source), "--evidence", "frequency"]) == 1
+    err = capsys.readouterr().err
+    assert "wordfreq" in err
+    assert '".[verify]"' in err
+
+
+def test_does_not_need_the_frequency_table_by_default(tmp_path, monkeypatch):
+    """既定 (--evidence corpus) では頻度表を読みに行かない。"""
+
+    def fail():
+        raise AssertionError("corpus 経路で頻度表を読んではいけない")
+
+    monkeypatch.setattr(mine_misreads, "load_frequencies", fail)
+    source = tmp_path / "book.txt"
+    source.write_text("フィードバック\n" * 5 + "フィードバツク\n", encoding="utf-8")
+    assert mine_misreads.main([str(source)]) == 0
