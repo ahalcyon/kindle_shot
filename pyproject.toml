@@ -26,6 +26,14 @@ dependencies = [
     "customtkinter>=5.2.2",
 ]
 
+[project.optional-dependencies]
+# 誤読の洗い出し (scripts/mine_misreads.py --evidence frequency) だけが使う。
+# キャプチャ・OCR・PDF 化には要らないので既定では入れない (頻度表が約 58MB)。
+#   kindle_env\Scripts\python.exe -m pip install -e ".[verify]"
+verify = [
+    "wordfreq>=3.1,<4",
+]
+
 [dependency-groups]
 # CI (.github/workflows/ci.yml) は `pip install --group dev` でこれを入れる。
 # lint / format / type check はツールのバージョンで結果が変わるため、

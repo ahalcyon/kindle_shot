@@ -151,3 +151,107 @@ def test_reports_a_path_that_does_not_exist(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "見つかりません" in err
     assert "読めるファイルがありません" in err
+
+
+# ============================================================
+# 頻度コーパスを証拠にする経路 (#44)
+# ============================================================
+#
+# 実データ 62 冊で閾値と除外規則を決めた経緯があるので、
+# 「何を拾わないか」を固定する。誤って拾うと**正しく読めている文字列が壊れる**。
+
+
+def frequencies(**words):
+    """zipf 値から wordfreq 形式の頻度表を作る（zipf = log10(頻度 * 1e9)）。"""
+    return {word: 10 ** (zipf - 9) for word, zipf in words.items()}
+
+
+def mine_freq(text, freq, **kw):
+    found, ambiguous = mine_misreads.mine_by_frequency(mine_misreads.count_words(text), freq, **kw)
+    return [(w, r) for w, r, *_ in found], ambiguous
+
+
+def test_finds_a_dakuten_misread_the_corpus_cannot_prove():
+    """正しい形が同じ本に 1 度も出てこなくても拾える。
+
+    corpus 経路の構造的な取りこぼしがここ。イベント が 1 度も現れない本でも
+    イペント は誤読だと分かる。
+    """
+    found, _ = mine_freq("イペント " * 3, frequencies(イペント=0.0, イベント=5.21))
+    assert found == [("イペント", "イベント")]
+
+
+def test_ignores_a_pair_that_are_both_ordinary_words():
+    """バス/パス のように両方よく使う語は直さない（差が小さい）。"""
+    found, _ = mine_freq("パス " * 3, frequencies(パス=4.42, バス=5.04))
+    assert found == []
+
+
+def test_ignores_a_candidate_that_is_itself_rare():
+    """直した先が珍しすぎるなら、直す根拠にならない。"""
+    found, _ = mine_freq("アバア " * 3, frequencies(アバア=0.0, アパア=2.0))
+    assert found == []
+
+
+def test_holds_back_a_word_with_two_plausible_candidates():
+    """候補が 2 つ以上残ったら採らない。
+
+    パッグ からは バッグ と パック の両方が閾値を超える。頻度が最大のものを
+    採ると パック になるが、実データでの正解は バッグ だった。
+    """
+    found, ambiguous = mine_freq("パッグ " * 3, frequencies(パッグ=0.0, バッグ=4.44, パック=4.48))
+    assert found == []
+    assert [w for w, _n, _c in ambiguous] == ["パッグ"]
+
+
+def test_ignores_a_word_cut_by_a_line_break():
+    """行をまたいで切れた語を別の語に化けさせない。
+
+    PDF のテキスト層は行単位なので テーブル は "テーブ" + "ル" に切れる。
+    断片は頻出語の先頭・末尾に一致するので、そこで見分ける。
+    """
+    found, _ = mine_freq("テーブ " * 3, frequencies(テーブ=0.0, テープ=4.35, テーブル=4.40))
+    assert found == []
+
+
+def test_a_misread_is_not_mistaken_for_a_fragment():
+    """誤読は頻出語の一部にならないので、断片の除外に巻き込まれない。"""
+    found, _ = mine_freq(
+        "イペント " * 3, frequencies(イペント=0.0, イベント=5.21, イベントカレンダー=3.5)
+    )
+    assert found == [("イペント", "イベント")]
+
+
+def test_ignores_a_word_seen_only_once():
+    """1 度しか出ない語は証拠が弱い（実データでは漫画の効果音が混ざった）。"""
+    found, _ = mine_freq("イペント", frequencies(イペント=0.0, イベント=5.21))
+    assert found == []
+
+
+def test_fixes_a_misread_at_the_start_of_a_word():
+    """濁点・半濁点の取り違えは語頭にも起きる（小書き化と違う点）。"""
+    found, _ = mine_freq("ポリューム " * 3, frequencies(ポリューム=0.0, ボリューム=4.5))
+    assert found == [("ポリューム", "ボリューム")]
+
+
+def test_drops_a_fragment_of_another_mined_misread():
+    """誤読語が行で切れた断片を拾わない（ハンパーグ -> "ハン" + "パーグ"）。"""
+    found, _ = mine_freq(
+        "ハンパーグ " * 3 + "パーグ " * 3,
+        frequencies(ハンパーグ=0.0, ハンバーグ=3.83, パーグ=0.0, パーク=4.21),
+    )
+    assert found == [("ハンパーグ", "ハンバーグ")]
+
+
+def test_reports_rules_that_can_straddle_a_word_boundary():
+    """literal は語の境界を見ないので、別の語の途中に当たるものを挙げる。
+
+    カツプ -> カップ を入れると トンカツプレート が壊れる、という実例が
+    replacements.json に注記されている。機械では可否を決められないので報告する。
+    """
+    risky = mine_misreads.straddling_rules([("カツプ", "カップ")], "トンカツプレート カツプ")
+    assert risky == [("カツプ", "カップ", ["トンカツプレート"])]
+
+
+def test_does_not_report_a_rule_that_stands_alone():
+    assert mine_misreads.straddling_rules([("イペント", "イベント")], "イペント") == []
