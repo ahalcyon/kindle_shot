@@ -248,6 +248,17 @@ MAX_FREQUENCY_COMBINATIONS = 1 << 12
 MIN_ZIPF_GAP = 2.0
 MIN_CANDIDATE_ZIPF = 3.0
 
+# 断片の親とみなす語の下限。**MIN_CANDIDATE_ZIPF とは別の問いに答える。**
+# あちらは「直した先は書き換えを正当化できるほど普通の語か」、こちらは
+# 「この並びは実在の語が切れたものでありうるか」。行で切れるのに珍しさは
+# 関係ないので、こちらはずっと低くてよい。
+# 3.0 だと ハイクオリティ(2.99) ウエイト(2.94) が親に入らず、
+# ハイク → バイク / ウエイ → ウェイ という誤りが出た（実測）。
+# 2.5 まで下げるとこの 2 件と ホームス が止まり、失う正しいルールは
+# 62 冊で 2 件（パルト / ロピー）だった。誤りは文字列を壊すので、
+# 取りこぼしより高くつく。
+MIN_FRAGMENT_HOST_ZIPF = 2.5
+
 
 def substitutions_at(word, index):
     """位置 index で試す置き換えを返す。
@@ -304,7 +315,7 @@ def zipf_of(frequencies, word):
     return 0.0 if not frequency else math.log10(frequency * 1e9)
 
 
-def build_fragment_index(frequencies, *, min_zipf=MIN_CANDIDATE_ZIPF):
+def build_fragment_index(frequencies, *, min_zipf=MIN_FRAGMENT_HOST_ZIPF):
     """行で切れた語を見分けるための、頻出語の先頭・末尾の並びの集合を返す。
 
     PDF のテキスト層は行単位なので、行をまたぐ語は断片として現れる
@@ -330,6 +341,24 @@ def build_fragment_index(frequencies, *, min_zipf=MIN_CANDIDATE_ZIPF):
     return prefixes | suffixes
 
 
+# これ以上の頻度で使われている語を「直す」なら、実在の語を別の語に
+# 書き換えている可能性がある。棄却はしない（コービー 2.60 / メデイア 2.23 の
+# ように正しいものも含まれる）が、人が見るところに載せる
+SUSPICIOUS_BASE_ZIPF = 2.0
+
+
+def already_common_rules(found, *, min_base=SUSPICIOUS_BASE_ZIPF):
+    """観測語自体がそこそこ使われている語のルールを挙げる。
+
+    採用の条件は候補との**差**しか見ていないので、それ自体が実在の語でも
+    もっとよく使う語との差が開いていれば通ってしまう
+    (ガメラ → カメラ、ジングル → シングル)。頻度表を数えると、この形の語は
+    242 件あった。棄却するとコービー(2.60) のような正しいものまで落ちるので、
+    報告に載せて人に見せる。
+    """
+    return [(w, r, base) for w, r, _c, base, _z in found if base >= min_base]
+
+
 def straddling_rules(found, text):
     """語の境目に当たりうるルールを選び出す。[(誤, 正, [巻き込む語, ...]), ...]
 
@@ -351,6 +380,40 @@ def straddling_rules(found, text):
     return risky
 
 
+def drop_fragments_of_other_misreads(found):
+    """誤読語が行で切れた断片を落とす。
+
+    正しい語の断片は build_fragment_index で落ちるが、**誤読語**の断片は
+    辞書に無いので落ちない (ハンパーグ -> "ハン" + "パーグ" の パーグ)。
+
+    **文字列が重なっているだけでは落とさない。** 短いほうが長いほうの一部で
+    あっても、両方の直し方が食い違わないなら独立したルールとして正しい:
+
+        ネツト -> ネット      ネツトワーク -> ネットワーク    ← 両立する
+        パーグ -> パーク      ハンパーグ -> ハンバーグ        ← 食い違う（断片）
+
+    replacements.json は長いキーから順に当てるので、長いほうが先に効いて
+    短いほうが残りを拾う。両立するルールを落とすと、単独で出てきた語が
+    直らなくなる（実データの ネツト / インターネツト / ネツトワーク は
+    3 つとも辞書に入っている）。
+    """
+    kept = []
+    for wrong, right, *rest in found:
+        piece = False
+        for other_wrong, other_right, *_ in found:
+            if other_wrong == wrong:
+                continue
+            if other_wrong.startswith(wrong):
+                piece = not other_right.startswith(right)
+            elif other_wrong.endswith(wrong):
+                piece = not other_right.endswith(right)
+            if piece:
+                break
+        if not piece:
+            kept.append((wrong, right, *rest))
+    return kept
+
+
 def mine_by_frequency(
     words,
     frequencies,
@@ -364,14 +427,14 @@ def mine_by_frequency(
     採用は [(誤, 正, 誤の回数, 誤の zipf, 正の zipf), ...]、
     判断保留は [(誤, 誤の回数, [(候補, zipf), ...]), ...]。
 
-    **候補が 2 つ以上残った語は採らない。** パッグ からは バッグ (4.44) と
-    パック (4.48) の両方が閾値を超える。頻度が最大のものを選ぶと パック に
-    なるが、実データでの正解は バッグ だった（「キタムラのパッグ」）。
-    どちらとも決められないものは人が見るほうに回す。
+    **直し方が 1 通りに決まらない語は採らない。** パッグ からは バッグ (4.44)
+    と パック (4.48) の両方が、どちらも 1 箇所だけ直して得られる。頻度が最大の
+    ものを選ぶと パック になるが、実データでの正解は バッグ だった
+    （「キタムラのパッグ」）。決められないものは人が見るほうに回す。
     """
     found = []
     ambiguous = []
-    fragments = build_fragment_index(frequencies, min_zipf=min_zipf)
+    fragments = build_fragment_index(frequencies)
     for word, count in words.items():
         # 1 度しか出ない語は証拠が弱い。実データでは漫画の効果音が混ざった
         if count < min_count or word in fragments:
@@ -382,20 +445,23 @@ def mine_by_frequency(
             candidate_zipf = zipf_of(frequencies, candidate)
             if candidate_zipf < min_zipf or candidate_zipf - base < min_gap:
                 continue
-            passing.append((candidate, candidate_zipf))
-        if len(passing) == 1:
-            found.append((word, passing[0][0], count, base, passing[0][1]))
-        elif passing:
-            ambiguous.append((word, count, sorted(passing, key=lambda x: -x[1])))
+            edits = sum(1 for a, b in zip(word, candidate, strict=True) if a != b)
+            passing.append((candidate, candidate_zipf, edits))
+        if not passing:
+            continue
+        # 直した箇所が最も少ない候補を採る。総当たりなので「2 箇所直せば
+        # 別の語になる」候補まで出てくる (ヒツト からは 1 箇所の ヒット と
+        # 2 箇所の ビット が両方閾値を超える)。同数で並んだら決められない
+        fewest = min(edits for _c, _z, edits in passing)
+        best = [item for item in passing if item[2] == fewest]
+        if len(best) == 1:
+            found.append((word, best[0][0], count, base, best[0][1]))
+        else:
+            ambiguous.append(
+                (word, count, [(c, z) for c, z, _e in sorted(passing, key=lambda x: -x[1])])
+            )
 
-    # 誤読語が行で切れた断片を落とす。正しい語の断片は fragments で落ちるが、
-    # 誤読語 (ハンパーグ) の断片 (パーグ) は辞書に無いので残ってしまう
-    mined = {word for word, *_ in found}
-    found = [
-        row
-        for row in found
-        if not any(o != row[0] and (o.startswith(row[0]) or o.endswith(row[0])) for o in mined)
-    ]
+    found = drop_fragments_of_other_misreads(found)
     found.sort(key=lambda item: (-item[2], item[0]))
     ambiguous.sort(key=lambda item: (-item[1], item[0]))
     return found, ambiguous
@@ -411,7 +477,7 @@ def main(argv=None):
         help=(
             "何を証拠に誤読とみなすか。corpus: 同じ本の中で正しい形のほうが多い"
             "（既定・小書きカナ向け）。frequency: 外部の頻度表と比べる"
-            '（濁点・半濁点向け。pip install -e ".[verify]" が要る）'
+            '（濁点・半濁点向け。pip install "wordfreq>=3.1,<4" が要る）'
         ),
     )
     parser.add_argument(
@@ -436,7 +502,10 @@ def main(argv=None):
         "--min-count",
         type=int,
         default=2,
-        help="正しい形の最低出現回数（既定: 2）",
+        help=(
+            "最低出現回数（既定: 2）。corpus では**正しい形**の、"
+            "frequency では**観測した語**の回数を見る"
+        ),
     )
     parser.add_argument("--out", help="replacements.json に貼れる JSON の書き出し先")
     parser.add_argument(
@@ -444,11 +513,36 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
+    # 経路ごとに効かないオプションがある。黙って無視すると、指定したのに
+    # 何も変わらない理由が分からない
+    given = set(argv if argv is not None else sys.argv[1:])
+    ignored = (
+        {"--min-ratio"} if args.evidence == "frequency" else {"--min-gap", "--min-zipf"}
+    ) & given
+    if ignored:
+        print(
+            f"--evidence {args.evidence} では {' '.join(sorted(ignored))} は効きません",
+            file=sys.stderr,
+        )
+
     # 既存ファイルを黙って潰さない。--out replacements.json と打たれると
     # regex ルールも、手で外した判断も消える
     if args.out and os.path.exists(args.out) and not args.force:
         print(f"既にあります（--force で上書き）: {args.out}", file=sys.stderr)
         return 1
+
+    # 頻度表の有無は PDF を読む前に確かめる。62 冊読んでから
+    # 「入っていません」と言われても数分を捨てるだけになる
+    frequencies = None
+    if args.evidence == "frequency":
+        try:
+            frequencies = load_frequencies()
+        except ImportError as e:
+            print(
+                f'頻度表を読み込めません（{e}）。pip install "wordfreq>=3.1,<4" で入ります',
+                file=sys.stderr,
+            )
+            return 1
 
     text, files = load_corpus(args.paths)
     if not files:
@@ -457,15 +551,7 @@ def main(argv=None):
     words = count_words(text)
     print(f"{files} ファイル / カタカナ語 {len(words)} 種 {sum(words.values())} 件")
 
-    if args.evidence == "frequency":
-        try:
-            frequencies = load_frequencies()
-        except ImportError as e:
-            print(
-                f'頻度表を読み込めません（{e}）。pip install -e ".[verify]" で入ります',
-                file=sys.stderr,
-            )
-            return 1
+    if frequencies is not None:
         found, ambiguous = mine_by_frequency(
             words,
             frequencies,
@@ -489,6 +575,11 @@ def main(argv=None):
             for wrong, right, hosts in risky:
                 shown = ", ".join(hosts[:4]) + (" ..." if len(hosts) > 4 else "")
                 print(f"         {wrong} -> {right}   巻き込む語: {shown}")
+        common = already_common_rules(found)
+        if common:
+            print(f"\n要確認（直そうとしている語自体もそこそこ使われる）{len(common)} 語")
+            for wrong, right, base in common:
+                print(f"         {wrong} -> {right}   {wrong} の zipf {base:.2f}")
         found = [(w, r, c, 0) for w, r, c, _b, _z in found]
     else:
         found = mine(words, min_ratio=args.min_ratio, min_count=args.min_count)

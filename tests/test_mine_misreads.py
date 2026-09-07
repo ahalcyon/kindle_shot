@@ -235,12 +235,72 @@ def test_fixes_a_misread_at_the_start_of_a_word():
 
 
 def test_drops_a_fragment_of_another_mined_misread():
-    """誤読語が行で切れた断片を拾わない（ハンパーグ -> "ハン" + "パーグ"）。"""
+    """誤読語が行で切れた断片を拾わない（ハンパーグ -> "ハン" + "パーグ"）。
+
+    パーグ の直し方 (パーク) は ハンパーグ の直し方 (ハンバーグ) と食い違う。
+    食い違うほうが断片である証拠になる。
+    """
     found, _ = mine_freq(
         "ハンパーグ " * 3 + "パーグ " * 3,
         frequencies(ハンパーグ=0.0, ハンバーグ=3.83, パーグ=0.0, パーク=4.21),
     )
     assert found == [("ハンパーグ", "ハンバーグ")]
+
+
+def test_keeps_a_short_rule_that_agrees_with_the_longer_one():
+    """文字列が重なっているだけでは落とさない。
+
+    ネツト は ネツトワーク の一部だが、直し方が食い違わないので**どちらも
+    独立したルールとして正しい**。replacements.json は長いキーから当てるので、
+    長いほうが先に効いて短いほうが単独の出現を拾う。落とすと単独の ネツト が
+    直らなくなる（実データの ネツト / インターネツト / ネツトワーク は
+    3 つとも辞書に入っている）。
+    """
+    found, _ = mine_freq(
+        "ネツトワーク " * 2 + "ネツト " * 5,
+        frequencies(ネツトワーク=0.0, ネットワーク=4.51, ネツト=0.0, ネット=5.23),
+    )
+    assert sorted(found) == [("ネツト", "ネット"), ("ネツトワーク", "ネットワーク")]
+
+
+def test_prefers_the_candidate_with_fewest_changes():
+    """総当たりなので「2 箇所直せば別の語になる」候補まで出てくる。
+
+    ヒツト からは 1 箇所直した ヒット と、2 箇所直した ビット の両方が
+    閾値を超える。直した箇所が少ないほうを採る。
+    """
+    found, ambiguous = mine_freq("ヒツト " * 3, frequencies(ヒツト=0.0, ヒット=4.63, ビット=4.30))
+    assert found == [("ヒツト", "ヒット")]
+    assert ambiguous == []
+
+
+def test_still_holds_back_when_the_fewest_changes_tie():
+    """同じ箇所数で並んだら決められない（パッグ -> バッグ / パック）。"""
+    found, ambiguous = mine_freq("パッグ " * 3, frequencies(パッグ=0.0, バッグ=4.44, パック=4.48))
+    assert found == []
+    assert [w for w, _n, _c in ambiguous] == ["パッグ"]
+
+
+def test_flags_a_rule_whose_source_is_itself_a_common_word():
+    """それ自体が実在の語でも、もっと使う語との差が開いていれば通ってしまう。
+
+    棄却はしない（コービー 2.60 のように正しいものもある）が、人が見る
+    ところに載せる。
+    """
+    common = mine_misreads.already_common_rules([("ガメラ", "カメラ", 3, 2.4, 5.0)])
+    assert common == [("ガメラ", "カメラ", 2.4)]
+    assert mine_misreads.already_common_rules([("イペント", "イベント", 3, 0.0, 5.2)]) == []
+
+
+def test_a_word_that_could_be_a_piece_of_a_less_common_word_is_left_alone():
+    """断片の親は「珍しくない語」ではなく「実在する語」でよい。
+
+    ハイクオリティ(zipf 2.99) は普通の語とまでは言えないが、行で切れれば
+    ハイク になる。親の閾値を直す先の閾値と同じにすると、ここを取り違えて
+    ハイク -> バイク という誤りが出る（実データで出た）。
+    """
+    found, _ = mine_freq("ハイク " * 3, frequencies(ハイク=0.0, バイク=4.5, ハイクオリティ=2.99))
+    assert found == []
 
 
 def test_reports_rules_that_can_straddle_a_word_boundary():
@@ -260,11 +320,19 @@ def test_does_not_report_a_rule_that_stands_alone():
 def test_reports_how_to_install_the_frequency_table(tmp_path, monkeypatch, capsys):
     """頻度表が入っていないときに、入れ方まで案内する。
 
-    verify は optional group なので、既定の環境では入っていない。
-    「使えません」だけだと利用者が次に何をすればよいか分からない。
+    wordfreq は既定の環境には入っていない。「使えません」だけだと
+    利用者が次に何をすればよいか分からない。
+
+    **コーパスを読む前に確かめる。** 62 冊読んでから言われても数分を捨てる
+    だけになるので、読み込みが走らないことも確かめる。
     """
     source = tmp_path / "book.txt"
     source.write_text("イペント\n" * 3, encoding="utf-8")
+
+    def must_not_run(*_a, **_kw):
+        raise AssertionError("頻度表が無いのにコーパスを読んではいけない")
+
+    monkeypatch.setattr(mine_misreads, "load_corpus", must_not_run)
 
     def missing():
         raise ImportError("No module named 'wordfreq'")
@@ -273,7 +341,7 @@ def test_reports_how_to_install_the_frequency_table(tmp_path, monkeypatch, capsy
     assert mine_misreads.main([str(source), "--evidence", "frequency"]) == 1
     err = capsys.readouterr().err
     assert "wordfreq" in err
-    assert '".[verify]"' in err
+    assert "pip install" in err
 
 
 def test_does_not_need_the_frequency_table_by_default(tmp_path, monkeypatch):

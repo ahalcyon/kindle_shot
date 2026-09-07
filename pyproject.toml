@@ -29,7 +29,12 @@ dependencies = [
 [project.optional-dependencies]
 # 誤読の洗い出し (scripts/mine_misreads.py --evidence frequency) だけが使う。
 # キャプチャ・OCR・PDF 化には要らないので既定では入れない (頻度表が約 58MB)。
-#   kindle_env\Scripts\python.exe -m pip install -e ".[verify]"
+#
+# **入れるときは直接指定する。** このリポジトリは flat layout でトップレベルの
+# パッケージが 4 つあり、[build-system] も置いていないので、
+# pip install -e ".[verify]" は setuptools のパッケージ自動検出に失敗する。
+# ここに書いてあるのは版の範囲の記録としての意味が主。
+#   kindle_env\Scripts\python.exe -m pip install "wordfreq>=3.1,<4"
 verify = [
     "wordfreq>=3.1,<4",
 ]
