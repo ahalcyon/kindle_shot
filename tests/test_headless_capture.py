@@ -287,7 +287,15 @@ class FakeReader:
     forward に指定したキーで位置が増え、その逆で減る。
     """
 
-    def __init__(self, forward="ArrowLeft", position=10, text=None, min_position=1, swallow=0):
+    def __init__(
+        self,
+        forward="ArrowLeft",
+        position=10,
+        text=None,
+        min_position=1,
+        swallow=0,
+        dismiss_jumps=None,
+    ):
         self.forward = forward
         self.position = position
         # 見開き表示の本は位置が 1 まで下がらない（実機のマンガは 2 で止まる）
@@ -295,6 +303,9 @@ class FakeReader:
         self.text = text
         # ダイアログを閉じた直後の n 回は入力が飲まれる（実測。#53）
         self.swallow = swallow
+        # ダイアログを閉じると位置が飛ぶ本（Whispersync の「はい」を押した形）。
+        # dismiss の呼び出しごとに先頭から消費する。None の回は何も起きない
+        self.dismiss_jumps = list(dismiss_jumps or [])
         self.url = "https://read.amazon.co.jp/?asin=B0X"
         self.presses: list[str] = []
 
@@ -303,7 +314,10 @@ class FakeReader:
         class Keyboard:
             def press(self, key):
                 page.presses.append(key)
-                if page.swallow > 0:
+                moves = key == page.forward or page.position > page.min_position
+                # 動けない押下（先頭で戻ろうとする等）は「飲まれた 1 回」を
+                # 消費しない。実測ではそうなっている（#53 のログ）
+                if page.swallow > 0 and moves:
                     page.swallow -= 1
                     return
                 if key == page.forward:
@@ -334,6 +348,16 @@ class FakeReader:
 
     def wait_for_timeout(self, _ms):
         pass
+
+    def evaluate(self, _js):
+        """dismiss_dialogs の代役。閉じた拍子に位置が飛ぶ本を再現する。"""
+        if not self.dismiss_jumps:
+            return 0
+        jump = self.dismiss_jumps.pop(0)
+        if jump is None:
+            return 0
+        self.position = jump
+        return 1
 
 
 def test_reverse_of():
@@ -402,6 +426,19 @@ def test_detection_restores_position_after_a_swallowed_press():
     page = FakeReader(forward="ArrowLeft", position=42, swallow=1)
     detect_turn_key(page, page_wait=0)
     assert page.position == 42
+
+
+def test_verdict_is_not_reversed_when_a_dialog_moves_the_position():
+    """ダイアログを閉じた拍子の移動を、ページ送りの効果と取り違えない。
+
+    古い基準と比べると向きを逆に判定しうる。逆向きのまま巻き戻すと
+    rewind_to_start の停滞判定で「先頭に戻した」と成功扱いになり、
+    逆走した部分本が完成扱いになる（この判定が防ぐべき事故そのもの）。
+    """
+    # 縦書き（ArrowLeft が前進）。判定の最初の dismiss では何も起きず、
+    # 候補を押す直前の dismiss で 42 -> 10 へ飛ぶ
+    page = FakeReader(forward="ArrowLeft", position=42, dismiss_jumps=[None, 10])
+    assert detect_turn_key(page, page_wait=0) == "left"
 
 
 def test_detection_gives_up_when_nothing_moves():

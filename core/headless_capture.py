@@ -175,24 +175,46 @@ def _wait_for_position_change(page, before, *, page_wait, attempts=TURN_WAIT_ATT
     return None
 
 
-def _probe_turn(page, candidate, before, *, page_wait):
-    """candidate を数回押して、位置が動いたら新しい位置を返す。動かなければ None。"""
+def _probe_turn(page, candidate, *, page_wait):
+    """candidate を数回押して (押す直前の位置, 動いた後の位置) を返す。動かなければ None。
+
+    **基準は押す直前に読み直す。** 呼び出し側が持っている古い値と比べてはいけない。
+    前の候補の押下が遅れて効いた場合や、dismiss_dialogs が位置を動かした場合、
+    古い基準と比べると向きを逆に判定しうる。逆向きのまま巻き戻すと
+    rewind_to_start の停滞判定に引っかかって「先頭に戻した」と成功扱いになり、
+    逆走した部分本が完成扱いになる。この関数が防ぐべき事故そのもの (#53)。
+    """
     for _ in range(TURN_PROBE_PRESSES):
         # サインイン直後や Whispersync の「最後に読んでいたページへ移動しますか」が
-        # キーを吸うため、押す前に毎回閉じる
+        # キーを吸うため、押す前に毎回閉じる。閉じた拍子に位置が動くこともあるので、
+        # 基準はその後に読む
         dismiss_dialogs(page)
+        before = read_position(page)
+        if before is None:
+            continue
         page.keyboard.press(turn_key(candidate))
         moved = _wait_for_position_change(page, before, page_wait=page_wait)
         if moved is not None:
-            return moved
+            return before, moved
     return None
 
 
-def _restore_position(page, candidate, target, *, page_wait):
-    """判定で動かした分を戻す。"""
+def _restore_position(page, candidate, target, *, descending, page_wait):
+    """判定で動かした分を戻す。
+
+    descending が True なら押すたびに位置が下がる。「target に到達」だけを
+    停止条件にすると、位置表示が古い値を返したときに 1 回余計に押して
+    通り越す。--no-rewind ではそれがそのままキャプチャ開始位置になり、
+    先頭数ページが黙って欠ける (#53)。跨いだら止める。
+    """
+    # 押したのと逆のキー。どちらのキーで位置が上がるかは本によって違うので、
+    # 「left なら下がる」のような決め打ちにしない
     back = turn_key(reverse_of(candidate))
-    for _ in range(TURN_PROBE_PRESSES):
-        if read_position(page) == target:
+    for _ in range(TURN_PROBE_PRESSES + 1):
+        now = _settled_position(page, page_wait=page_wait)
+        if now is None:
+            return
+        if (now <= target) if descending else (now >= target):
             return
         dismiss_dialogs(page)
         page.keyboard.press(back)
@@ -218,17 +240,20 @@ def detect_turn_key(page, *, page_wait=DEFAULT_PAGE_WAIT, emit=null_emit):
     # 位置を読む前に閉じる。開いたままの値を基準にすると、閉じた拍子に
     # 位置が動いたときに基準がずれる
     dismiss_dialogs(page)
-    before = _settled_position(page, page_wait=page_wait)
-    if before is None:
+    start = _settled_position(page, page_wait=page_wait)
+    if start is None:
         emit("status", human="読書位置を読めないため送りキーを判定できません")
         return None
 
     for candidate in ("left", "right"):
-        after = _probe_turn(page, candidate, before, page_wait=page_wait)
-        if after is None:
+        probed = _probe_turn(page, candidate, page_wait=page_wait)
+        if probed is None:
             continue
+        before, after = probed
         forward = candidate if after > before else reverse_of(candidate)
-        _restore_position(page, candidate, before, page_wait=page_wait)
+        # 戻すのは「自分が押して動かした分」だけ。判定を始めた位置 (start) を
+        # 目標にすると、ダイアログが位置を飛ばした場合にキーでは到達できない
+        _restore_position(page, candidate, before, descending=after > before, page_wait=page_wait)
         emit(
             "page_turn_detected",
             human=f"ページ送りキーを判定しました: {forward}",
@@ -237,7 +262,8 @@ def detect_turn_key(page, *, page_wait=DEFAULT_PAGE_WAIT, emit=null_emit):
         return forward
     emit(
         "status",
-        human=f"ページ送りキーを判定できませんでした（読書位置 {before} から動きません）",
+        human=f"ページ送りキーを判定できませんでした（読書位置 {start} から動きません）",
+        position=start,
     )
     return None
 
