@@ -23,6 +23,7 @@ import contextlib
 import json
 import os
 import shutil
+import tempfile
 
 from core.capture_profiles import PAGE_TURN_KEYS
 from core.image_files import clear_images, list_images
@@ -192,6 +193,27 @@ def free_bytes(path):
         return shutil.disk_usage(probe).free
     except OSError:
         return None
+
+
+def smallest_free(paths):
+    """複数の場所のうち、最も空きが少ないものを (パス, バイト数) で返す。
+
+    出力先だけでは足りない。OCR は ``tempfile.TemporaryDirectory()``（＝ %TEMP%、
+    通常 C:）に作業領域を取り、出力先が別ボリュームだとハードリンクを張れず
+    画像を実コピーする（core/ocr_engine.py の _prepare_batch_inputs）。
+    出力先に余裕があっても %TEMP% が枯れれば OCR が倒れる。
+
+    どれも測れなければ (None, None)。
+    """
+    measured = [(path, free) for path in paths if (free := free_bytes(path)) is not None]
+    if not measured:
+        return None, None
+    return min(measured, key=lambda pair: pair[1])
+
+
+def guard_paths(out):
+    """空き容量ガードが見張る場所。出力先と OCR の作業領域。"""
+    return [out, tempfile.gettempdir()]
 
 
 def read_stopped_reason(save_dir):
@@ -1274,9 +1296,9 @@ def run_batch(
         defaults: バッチ全体の既定 run_book kwargs（CLI フラグ由来）
         overwrite: True で完成済みの本も再処理する（既定はスキップ）
         stop_on_error: True で最初の失敗時にバッチを中断する
-        min_free_bytes: 出力先の空きがこれを割ったらバッチを中断する。
-            0 以下で無効。数百冊を無人で回す用途では、途中でディスクが尽きると
-            そこまでの成果ごと中途半端になるため既定で有効
+        min_free_bytes: 出力先か OCR の作業領域 (%TEMP%) の空きがこれを割ったら
+            バッチを中断する。0 以下で無効。数百冊を無人で回す用途では、途中で
+            ディスクが尽きるとそこまでの成果ごと中途半端になるため既定で有効
         config: 設定 dict（None なら load_config()）
         emit: イベントコールバック
 
@@ -1293,6 +1315,29 @@ def run_batch(
     total = len(books)
 
     emit("batch_start", human=f"バッチ開始: {total} 冊 → {out}", total_books=total, output=out)
+
+    # ガードが生きているかを開始時に 1 度だけ示す。測れない場所（未マップの
+    # ドライブ、到達できない UNC）では黙って素通りするので、それを知らずに
+    # 数十時間走らせないため。冊数分のスキップだけで終わる実行でも必ず出る
+    if min_free_bytes > 0:
+        where, free = smallest_free(guard_paths(out))
+        if free is None:
+            emit(
+                "disk_guard",
+                human="空きを取得できないため、空き容量による中断は行いません",
+                enabled=False,
+                required_bytes=min_free_bytes,
+            )
+        else:
+            emit(
+                "disk_guard",
+                human=f"空き {free / 1024**3:.1f} GiB / 下限 {min_free_bytes / 1024**3:.1f} GiB"
+                f"（{where}）",
+                enabled=True,
+                path=where,
+                free_bytes=free,
+                required_bytes=min_free_bytes,
+            )
 
     # 本と本の間も含めてバッチ全体で画面消灯を抑止する (run_book と同趣旨)
     prevent_sleep()
@@ -1368,25 +1413,29 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, min_fre
             )
             continue
 
-        # 1 冊ごとに出力先の空きを見る (#48)。数百冊を無人で回す用途では、
-        # ディスクが尽きるまで走ると変換途中の PDF や消せない中間ファイルが残り、
-        # どこまで正しく終わったのか分からなくなる。尽きる前に、本の切れ目で止める。
-        free = free_bytes(out) if min_free_bytes > 0 else None
+        # 1 冊ごとに空きを見る (#48)。数百冊を無人で回す用途では、ディスクが
+        # 尽きるまで走ると変換途中の PDF や消せない中間ファイルが残り、どこまで
+        # 正しく終わったのか分からなくなる。尽きる前に、本の切れ目で止める。
+        where, free = smallest_free(guard_paths(out)) if min_free_bytes > 0 else (None, None)
         if free is not None and free < min_free_bytes:
-            low_disk = {"free": free, "required": min_free_bytes}
+            remaining = total - len(results)
+            low_disk = {"path": where, "free_bytes": free, "required_bytes": min_free_bytes}
             emit_error(
                 emit,
-                f"出力先の空き容量が {free / 1024**3:.1f} GiB まで減りました"
-                f"（下限 {min_free_bytes / 1024**3:.1f} GiB）。"
-                f"{total - i + 1} 冊を未処理のままバッチを中断します。"
-                "空きを作ってから再実行してください（完成済みの本はスキップされます）",
+                f"空き容量が {free / 1024**3:.1f} GiB まで減りました"
+                f"（{where} / 下限 {min_free_bytes / 1024**3:.1f} GiB）。"
+                f"{remaining} 冊を未処理のままバッチを中断します。"
+                "空きを作ってから再実行してください（完成済みの本はスキップされます）。"
+                "失敗した本のフォルダには中間ファイルが残っているので、"
+                "原因を確認したら消してください",
             )
             emit(
                 "low_disk",
+                path=where,
                 free_bytes=free,
                 required_bytes=min_free_bytes,
                 output=out,
-                unprocessed=total - i + 1,
+                unprocessed=remaining,
             )
             break
 
@@ -1527,8 +1576,8 @@ def _emit_batch_summary(emit, results, total, *, low_disk=None):
     # 全部やり終えたように読めてしまう
     if low_disk:
         lines.append(
-            f"  出力先の空きが {low_disk['free'] / 1024**3:.1f} GiB まで減ったため中断しました"
-            f"（下限 {low_disk['required'] / 1024**3:.1f} GiB）"
+            f"  空きが {low_disk['free_bytes'] / 1024**3:.1f} GiB まで減ったため中断しました"
+            f"（{low_disk['path']} / 下限 {low_disk['required_bytes'] / 1024**3:.1f} GiB）"
         )
 
     emit(
@@ -1545,11 +1594,17 @@ def _emit_batch_summary(emit, results, total, *, low_disk=None):
         low_disk=bool(low_disk),
         results=results,
     )
+    # 失敗を先に返す。ディスクを食い潰す主因は「失敗した本の残骸」
+    # （run_book は成功した本しか remove_intermediates を呼ばない）なので、
+    # ガードが発動するときは失敗も出ている公算が高い。EXIT_LOW_DISK を先に
+    # 返すと、その失敗が終了コードから消える
+    if failures or systemic:
+        return EXIT_ERROR
     # 空き容量の中断は「途中まで正しく終わった」状態で、1 冊ごとの失敗とは
     # 対処が違う（空きを作って再実行すれば続きから流せる）ので別の終了コードにする
     if low_disk:
         return EXIT_LOW_DISK
-    return EXIT_OK if not failures and not systemic else EXIT_ERROR
+    return EXIT_OK
 
 
 # ============================================================

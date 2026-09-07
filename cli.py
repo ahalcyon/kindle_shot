@@ -45,6 +45,7 @@ enable_per_monitor_dpi_awareness()
 
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -441,6 +442,14 @@ def cmd_batch(args, rep):
         if min_margins is None:
             rep.error(f"--min-margins は L,R,T,B の4整数で指定してください: {args.min_margins}")
             return EXIT_BAD_ARGS
+
+    # 負値やタイプミスで安全網が黙って外れないよう、ここで弾く
+    # （min_free_bytes <= 0 は「無効」を意味する）
+    if not math.isfinite(args.min_free_gb) or args.min_free_gb < 0:
+        rep.error(
+            f"--min-free-gb は 0 以上の数値で指定してください（0 で無効）: {args.min_free_gb}"
+        )
+        return EXIT_BAD_ARGS
 
     books, code = load_batch_file(args.books, rep.event)
     if code is not None:
@@ -848,9 +857,9 @@ def build_parser():
         type=float,
         default=DEFAULT_MIN_FREE_BYTES / 1024**3,
         metavar="GB",
-        help="出力先の空きがこれを下回ったら本の切れ目でバッチを中断する"
-        f"（既定: {DEFAULT_MIN_FREE_BYTES / 1024**3:.0f}GB。0 で無効）。"
-        "数百冊を無人で回す途中でディスクが尽きるのを防ぐ",
+        help="出力先か OCR の作業領域 (%TEMP%) の空きがこれを下回ったら、"
+        f"本の切れ目でバッチを中断する（既定: {DEFAULT_MIN_FREE_BYTES / 1024**3:.0f}GB。"
+        "0 で無効）。数百冊を無人で回す途中でディスクが尽きるのを防ぐ",
     )
     p_batch.add_argument(
         "--keep-images",

@@ -840,13 +840,15 @@ def test_skipped_unsupported_books_do_not_look_systemic(tmp_path, monkeypatch):
 
 
 def fake_free(monkeypatch, *values):
-    """free_bytes の戻り値を呼び出し順に差し替える。最後の値を以後も返す。"""
+    """smallest_free の戻り値を呼び出し順に差し替える。最後の値を以後も返す。"""
+    assert values, "少なくとも 1 つの値が要る"
     seq = list(values)
 
-    def fake(_path):
-        return seq.pop(0) if len(seq) > 1 else seq[0]
+    def fake(_paths):
+        free = seq.pop(0) if len(seq) > 1 else seq[0]
+        return ("D:", free)
 
-    monkeypatch.setattr(pipeline, "free_bytes", fake)
+    monkeypatch.setattr(pipeline, "smallest_free", fake)
 
 
 def test_low_disk_stops_before_touching_any_book(tmp_path, monkeypatch):
@@ -874,7 +876,7 @@ def test_low_disk_stops_between_books(tmp_path, monkeypatch):
     """1 冊目の途中では止めない。本の切れ目で止めて成果を確定させる。"""
     calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
-    fake_free(monkeypatch, 9 * 1024**3, 1 * 1024**3)
+    fake_free(monkeypatch, 9 * 1024**3, 9 * 1024**3, 1 * 1024**3)
     emit, events = collect_emit()
 
     code = pipeline.run_batch(
@@ -932,7 +934,7 @@ def test_unmeasurable_disk_does_not_stop_the_batch(tmp_path, monkeypatch):
     """空きを測れない環境で一律に止めると、余裕があっても 1 冊も処理できない。"""
     calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
-    monkeypatch.setattr(pipeline, "free_bytes", lambda _path: None)
+    monkeypatch.setattr(pipeline, "smallest_free", lambda _paths: (None, None))
     emit, events = collect_emit()
 
     code = pipeline.run_batch(
@@ -949,3 +951,81 @@ def test_free_bytes_walks_up_to_an_existing_directory(tmp_path):
     assert not missing.exists()
     free = pipeline.free_bytes(str(missing))
     assert free is not None and free > 0
+
+
+def test_failure_is_not_swallowed_by_the_disk_guard(tmp_path, monkeypatch):
+    """失敗した本の残骸こそがディスクを食う。失敗が終了コードから消えてはいけない。
+
+    run_book は成功した本しか remove_intermediates を呼ばないので、ガードが
+    発動する場面では失敗も出ている公算が高い。
+    """
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls, fail_titles=("A",)))
+    fake_free(monkeypatch, 9 * 1024**3, 9 * 1024**3, 1 * 1024**3)
+    emit, events = collect_emit()
+
+    code = pipeline.run_batch(
+        [{"title": "A", "asin": "B01"}, {"title": "B", "asin": "B02"}],
+        output=str(tmp_path / "out"),
+        min_free_bytes=5 * 1024**3,
+        emit=emit,
+    )
+
+    assert code == pipeline.EXIT_ERROR
+    summary = by_name(events, "batch_summary")[0]
+    assert summary["failed"] == 1
+    assert summary["low_disk"] is True
+    assert summary["ok"] is False
+
+
+def test_disk_guard_reports_that_it_is_active(tmp_path, monkeypatch):
+    """ガードが効いているかを開始時に示す。全冊スキップの実行でも出る。"""
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    fake_free(monkeypatch, 9 * 1024**3)
+    emit, events = collect_emit()
+
+    pipeline.run_batch(
+        [{"title": "A", "asin": "B01"}],
+        output=str(tmp_path / "out"),
+        min_free_bytes=5 * 1024**3,
+        emit=emit,
+    )
+
+    guard = by_name(events, "disk_guard")[0]
+    assert guard["enabled"] is True
+    assert guard["free_bytes"] == 9 * 1024**3
+
+
+def test_disk_guard_says_when_it_cannot_measure(tmp_path, monkeypatch):
+    """測れないまま数十時間走らせないよう、無効であることを明示する。"""
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    monkeypatch.setattr(pipeline, "smallest_free", lambda _paths: (None, None))
+    emit, events = collect_emit()
+
+    pipeline.run_batch([{"title": "A", "asin": "B01"}], output=str(tmp_path / "out"), emit=emit)
+
+    assert by_name(events, "disk_guard")[0]["enabled"] is False
+
+
+def test_smallest_free_picks_the_tightest_volume(monkeypatch):
+    """出力先に余裕があっても %TEMP% が枯れれば OCR が倒れる。"""
+    sizes = {"out": 900, "temp": 3}
+    monkeypatch.setattr(pipeline, "free_bytes", lambda path: sizes.get(path))
+    assert pipeline.smallest_free(["out", "temp"]) == ("temp", 3)
+
+
+def test_smallest_free_returns_none_when_nothing_is_measurable(monkeypatch):
+    monkeypatch.setattr(pipeline, "free_bytes", lambda _path: None)
+    assert pipeline.smallest_free(["a", "b"]) == (None, None)
+
+
+def test_free_bytes_returns_none_on_oserror(monkeypatch, tmp_path):
+    """到達できない UNC や未マップのドライブ。止める理由にはしない。"""
+
+    def boom(_path):
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(pipeline.shutil, "disk_usage", boom)
+    assert pipeline.free_bytes(str(tmp_path)) is None
