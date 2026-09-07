@@ -10,13 +10,74 @@
 #   git config kindleshot.smokeAsin B0XXXXXXXX
 #   git config kindleshot.python kindle_env/Scripts/python.exe   # 任意
 #
+# どの Python が使われるかの確認:
+#   .githooks/pre-push --check
+#
 # 迂回（実機が使えないときなど。PR に未検証である旨を必ず書くこと）:
 #   git push --no-verify
 
 set -e
 
+# git config に入っているパスが Windows 形式 (C:\... / C:/...) のとき、WSL の sh は
+# それを exec できず 127 で落ちる（Git Bash は解決できるので通る）。exe 自体は
+# interop で起動できるので、wslpath がある環境でだけ POSIX 形式へ直す。
+to_unix_path() {
+    case "$1" in
+        [A-Za-z]:[/\\]*)
+            # wslpath は「WSL にマウントされていないドライブ」で失敗する。
+            # set -e 下ではコマンド置換の失敗がそのままフックの終了になり、
+            # 後段の親切なエラーに届かないまま push が黙って止まる。
+            # 変換できなければ元の値を返し、判断は起動確認に委ねる。
+            if command -v wslpath >/dev/null 2>&1; then
+                wslpath -u "$1" 2>/dev/null || printf '%s' "$1"
+            else
+                printf '%s' "$1"
+            fi
+            ;;
+        *)
+            printf '%s' "$1"
+            ;;
+    esac
+}
+
+# 使う Python を決める。git config の指定 → リポジトリ内の venv → PATH の python。
+resolve_python() {
+    configured=$(git config kindleshot.python || true)
+    if [ -n "$configured" ]; then
+        to_unix_path "$configured"
+        return
+    fi
+    # setup.bat が作る kindle_env が正典（README「動作環境」）。手で作った .venv も
+    # 拾うが、両方ある環境で依存の入っていない方を選ばないよう正典を先に見る。
+    for candidate in kindle_env/Scripts/python.exe .venv/Scripts/python.exe \
+                     kindle_env/bin/python .venv/bin/python; do
+        if [ -x "$candidate" ]; then
+            printf '%s' "$candidate"
+            return
+        fi
+    done
+    printf '%s' python
+}
+
+# 解決結果だけ見たいとき（git がフックに渡すのは <remote> <url> なので衝突しない）
+if [ "$1" = "--check" ]; then
+    checked=$(resolve_python)
+    # echo は dash でバックスラッシュをエスケープとして解釈する（C:\temp が
+    # C:<TAB>emp になる）。Windows パスを見せるのが目的なので printf を使う。
+    printf 'python: %s\n' "$checked"
+    if "$checked" -c "import sys" >/dev/null 2>&1; then
+        printf 'status: 起動できました\n'
+    else
+        printf 'status: 起動できません（この状態では push がブロックされます）\n'
+    fi
+    printf 'asin:   %s\n' "$(git config kindleshot.smokeAsin || echo '(未設定)')"
+    exit 0
+fi
+
 # 実機確認が要るファイル。AGENTS.md の一覧と合わせること。
-WATCH_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/capture_profiles\.py|core/win32_utils\.py|core/dpi\.py|core/reader_navigator\.py|core/boundary_detector\.py|cli\.py|scripts/smoke_capture\.py)$'
+# headless_* は kindle_cloud プロファイルの既定経路＝本番のキャプチャ経路なので、
+# 画面キャプチャ側 (capture_*) と同じく実機でしか壊れが分からない。
+WATCH_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/capture_profiles\.py|core/headless_capture\.py|core/headless_browser\.py|core/win32_utils\.py|core/dpi\.py|core/reader_navigator\.py|core/boundary_detector\.py|cli\.py|scripts/smoke_capture\.py)$'
 
 ZERO='0000000000000000000000000000000000000000'
 changed=''
@@ -62,17 +123,24 @@ if [ -z "$ASIN" ]; then
     exit 1
 fi
 
-PY=$(git config kindleshot.python || true)
-if [ -z "$PY" ]; then
-    if [ -x kindle_env/Scripts/python.exe ]; then
-        PY=kindle_env/Scripts/python.exe
-    else
-        PY=python
-    fi
+PY=$(resolve_python)
+
+if ! probe=$("$PY" -c "import sys" 2>&1 >/dev/null); then
+    printf 'pre-push: Python を実行できませんでした: %s\n' "$PY" >&2
+    # not found / DLL ロード失敗 / Store のスタブ は原因も対処も違う
+    [ -n "$probe" ] && printf '  %s\n' "$(printf '%s' "$probe" | head -n 1)" >&2
+    echo "" >&2
+    echo "スモークの失敗ではなく、実行環境の問題です。" >&2
+    echo "使う Python を指定するには:" >&2
+    echo "" >&2
+    printf '  git config kindleshot.python kindle_env/Scripts/python.exe\n' >&2
+    echo "" >&2
+    echo "解決結果は .githooks/pre-push --check で確認できます。" >&2
+    exit 1
 fi
 
-echo "pre-push: 実機スモークを実行します（デスクトップを占有します）"
-echo "          ASIN=$ASIN python=$PY"
+printf 'pre-push: 実機スモークを実行します（headless。画面は占有しません）\n'
+printf '          ASIN=%s python=%s\n' "$ASIN" "$PY"
 echo ""
 
 if "$PY" scripts/smoke_capture.py --asin "$ASIN"; then
