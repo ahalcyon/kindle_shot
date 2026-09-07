@@ -64,6 +64,7 @@ Refs #<issue番号>
 - `core/win32_utils.py` / `core/dpi.py` / `core/reader_navigator.py`
 - `core/boundary_detector.py` の境界検出（トリミングの純ロジックは対象外）
 - `cli.py` の `capture` / `open` / `run` / `batch` / `check` コマンド
+- `scripts/smoke_capture.py`（スモーク自身。壊れると全ての確認が無意味になる）
 
 **Playwright などのブラウザ自動化は使えない。** このアプリはブラウザを操作していない。
 Win32 API でネイティブウィンドウを探し、`ImageGrab` で画面そのものを物理ピクセルで
@@ -88,7 +89,7 @@ push は実機スモークが通らない限りブロックされる。
 ```
 git config core.hooksPath .githooks
 git config kindleshot.smokeAsin B0XXXXXXXX
-git config kindleshot.python .venv/Scripts/python.exe   # 任意。省略時は venv を自動で探す
+git config kindleshot.python kindle_env/Scripts/python.exe   # 任意。省略時は自動で探す
 ```
 
 どの Python が使われるかは `.githooks/pre-push --check` で確認できる。
@@ -96,7 +97,7 @@ git config kindleshot.python .venv/Scripts/python.exe   # 任意。省略時は 
 **WSL から push する場合の注意。** `kindleshot.python` に Windows 絶対パス
 (`C:\...\python.exe`) を入れると、Git Bash では解決できるが WSL の `sh` は
 exec できない。フックは `wslpath` があれば自動で POSIX 形式に直すが、
-迷ったら相対パス (`.venv/Scripts/python.exe`) にしておくのが確実（#47）。
+迷ったら相対パス (`kindle_env/Scripts/python.exe`) にしておくのが確実（#47）。
 
 実機が使えないときは `git push --no-verify` で迂回できるが、
 **PR に未検証である旨と範囲を必ず書く**こと。迂回が常態化するとフックは
@@ -105,6 +106,15 @@ exec できない。フックは `wslpath` があれば自動で POSIX 形式に
 フックは `scripts/smoke_capture.py` を呼ぶだけなので、同じスクリプトを
 self-hosted runner のワークフローから呼べば CI 化もできる
 （GitHub ホストのランナーは対話的なデスクトップが無いため不可）。
+
+**スモークが緑でも、画面キャプチャ経路は検証されていない。**
+`scripts/smoke_capture.py` は常に `--headless` を付けて `cli.py run` を呼ぶので、
+実際に通るのは `core/headless_capture.py` / `core/headless_browser.py` /
+`core/boundary_detector.py` / `cli.py` / `core/pipeline.py` だけ。
+`core/capture_engine.py` / `core/capture_runner.py` / `core/dpi.py` /
+`core/reader_navigator.py` を変更したときは、**その回帰を検出できないスモークの
+成功をもって push が許可される**。これらに触ったら `--no-headless` で
+`cli.py run` を手で流して確認すること。
 
 #### 手順
 

@@ -7,14 +7,26 @@
 """
 
 import os
+import re
 import shutil
 import subprocess
 
 import pytest
 
-HOOK = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".githooks", "pre-push"
-)
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HOOK = os.path.join(ROOT, ".githooks", "pre-push")
+AGENTS = os.path.join(ROOT, "AGENTS.md")
+
+# git が「ブランチ削除の push」を表すのに使う全ゼロの sha
+ZERO = "0" * 40
+
+# git config / フック内の git 呼び出しを利用者の global 設定から切り離す。
+# commit.gpgsign=true のような設定があるとフィクスチャの commit が落ちる。
+SEALED_ENV = {
+    **os.environ,
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+}
 
 
 def _find_sh():
@@ -36,11 +48,20 @@ def _find_sh():
 
 
 SH = _find_sh()
-needs_sh = pytest.mark.skipif(SH is None, reason="POSIX sh が見つからない")
+# CI で黙って skip されると、退行検出網が消えたことに誰も気づかない
+needs_sh = pytest.mark.skipif(
+    SH is None and not os.environ.get("CI"), reason="POSIX sh が見つからない"
+)
+
+
+@needs_sh
+def test_sh_is_available_on_ci():
+    """CI では必ず sh を見つけられること（見つからなければ他が全部 skip になる）。"""
+    assert SH is not None, "sh が見つからず、フックのテストが全て skip されている"
 
 
 def _git(repo, *args):
-    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, env=SEALED_ENV)
 
 
 def _native_path(path):
@@ -51,7 +72,10 @@ def _native_path(path):
     if wslpath is None:
         return None
     out = subprocess.run([wslpath, "-w", path], capture_output=True, text=True, check=True)
-    return out.stdout.strip()
+    native = out.stdout.strip()
+    # pytest の tmp_path は WSL では ext4 上なので UNC (\\wsl.localhost\...) になる。
+    # このテストが見たいのはドライブレター形式なので、そうでなければ諦める。
+    return native if re.match(r"^[A-Za-z]:[\\/]", native) else None
 
 
 @pytest.fixture
@@ -59,7 +83,6 @@ def repo(tmp_path):
     """フックを入れた git リポジトリ。base → head の 2 コミットを持つ。"""
     root = tmp_path / "repo"
     (root / ".githooks").mkdir(parents=True)
-    (root / "core").mkdir()
     shutil.copy(HOOK, root / ".githooks" / "pre-push")
     os.chmod(root / ".githooks" / "pre-push", 0o755)
 
@@ -101,6 +124,7 @@ def _run_hook(repo, *args, stdin=""):
         cwd=repo,
         input=stdin.encode(),
         capture_output=True,
+        env=SEALED_ENV,
     )
     return (
         proc.returncode,
@@ -111,10 +135,20 @@ def _run_hook(repo, *args, stdin=""):
 
 def _push_input(repo):
     head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        env=SEALED_ENV,
     ).stdout.strip()
     base = subprocess.run(
-        ["git", "rev-parse", "HEAD~1"], cwd=repo, capture_output=True, text=True, check=True
+        ["git", "rev-parse", "HEAD~1"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+        env=SEALED_ENV,
     ).stdout.strip()
     return f"refs/heads/main {head} refs/heads/main {base}\n"
 
@@ -189,3 +223,43 @@ def test_unusable_python_is_reported_as_environment_problem(repo):
     assert code == 1
     assert "Python を実行できませんでした" in err
     assert "スモークに失敗" not in err
+
+
+@needs_sh
+def test_branch_deletion_push_does_not_run_smoke(repo, tmp_path):
+    """ブランチ削除の push（local_sha が全ゼロ）は対象外。"""
+    marker = tmp_path / "ran.txt"
+    _git(repo, "config", "kindleshot.python", str(_stub_python(repo, marker)))
+    _commit_change(repo, "cli.py")
+
+    stdin = f"(delete) {ZERO} refs/heads/main {ZERO}\n"
+    code, _, err = _run_hook(repo, "origin", "u", stdin=stdin)
+    assert code == 0, err
+    assert not marker.exists()
+
+
+def _watch_re_files():
+    """フックの WATCH_RE が列挙しているファイル名。"""
+    with open(HOOK, encoding="utf-8") as f:
+        text = f.read()
+    m = re.search(r"^WATCH_RE='\^\((.+)\)\$'$", text, re.MULTILINE)
+    assert m, "WATCH_RE を読み取れない"
+    return {alt.replace("\\.", ".") for alt in m.group(1).split("|")}
+
+
+def _documented_files():
+    """AGENTS.md「実機スモーク」節が挙げているファイル名。"""
+    with open(AGENTS, encoding="utf-8") as f:
+        text = f.read()
+    section = text.split("### 5. 実機スモーク", 1)[1].split("#### 対象は Cloud Reader", 1)[0]
+    listed = [line for line in section.splitlines() if line.startswith("- ")]
+    return {t for line in listed for t in re.findall(r"`([\w/]+\.py)`", line)}
+
+
+def test_watch_list_matches_the_documentation():
+    """フックと AGENTS.md の一覧がずれていないこと。
+
+    「AGENTS.md の一覧と合わせること」というコメントだけでは守られず、
+    本番経路の headless_capture.py が実際に漏れていた（#47）。
+    """
+    assert _watch_re_files() == _documented_files()
