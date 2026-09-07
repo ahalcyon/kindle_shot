@@ -5,8 +5,9 @@ PR を出したあと、CI が通ったことを利用者から知らされる�
 2 通りで同じことが起きる。1 コマンドに固めて、起動の仕方を間違える余地を減らす。
 
 使い方:
-    python scripts/watch_ci.py 55
-    python scripts/watch_ci.py 55 --timeout 3600 --interval 30
+    python3 scripts/watch_ci.py         # 今のブランチの PR を見る
+    python3 scripts/watch_ci.py 55
+    python3 scripts/watch_ci.py 55 --timeout 3600 --interval 30
 
 **エージェントは、ハーネスが追跡するバックグラウンド実行で起動すること。**
 シェルの ``&`` でデタッチすると、終了しても誰も気づかない（#58 の原因）。
@@ -27,17 +28,29 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
 
 DEFAULT_INTERVAL = 30
 DEFAULT_TIMEOUT = 3600
 
+# gh 自体が固まることがある。watch_ci の --timeout はポーリングの上限であって
+# 1 回の gh 呼び出しには効かないので、こちらにも上限を置く
+GH_TIMEOUT = 60
+
+# 「全チェックが終わった」をこの秒数あけて 2 回続けて観測したときだけ確定する。
+# ci.yml は cancel-in-progress を有効にしているので、監視中に修正を push すると
+# 古い run が cancel になり、新しい run のチェックが登録されるまでの一瞬だけ
+# 「全部 terminal・cancel あり」に見える。1 回で決めると CI 失敗と誤報する。
+# needs: で連なるジョブ（test -> e2e）の登録の隙間も同じ形で塞げる。
+CONFIRM_DELAY = 10
+
 # 失敗したジョブのログはそのまま出すと長いので、末尾だけ見せる
 LOG_TAIL_LINES = 25
 
-# gh がこの回数続けて失敗したら、待っても状況は変わらないと判断して諦める。
-# 「まだチェックが登録されていない」との区別が付かないまま待ち続けると、
-# PR 番号の打ち間違いで 1 時間黙ることになる。
-MAX_CONSECUTIVE_ERRORS = 3
+# gh がこの回数続けて失敗したら諦める。恒久的な誤り（PR 番号の打ち間違い等）は
+# 起動時の存在確認で弾くので、ここで相手にするのは一時的な失敗
+# （API の 5xx・レート制限・DNS の瞬断）だけ。短く切りすぎない。
+MAX_CONSECUTIVE_ERRORS = 8
 
 # gh pr checks が受け付けるフィールドだけを指定する。無効な名前を混ぜると
 # コマンドごと失敗し、「チェックがまだ無い」と区別が付かない（実際にやった）
@@ -48,11 +61,40 @@ def run_gh(args):
     """gh を叩いて (stdout, stderr, returncode) を返す。"""
     try:
         out = subprocess.run(
-            ["gh", *args], capture_output=True, text=True, encoding="utf-8", errors="replace"
+            ["gh", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=GH_TIMEOUT,
         )
+    except subprocess.TimeoutExpired:
+        # ここで固まると watch_ci の --timeout も効かず、
+        # 「誰も気づかない」を潰すための道具が気づかれずに止まる
+        return "", f"gh が {GH_TIMEOUT} 秒で応答しませんでした", 124
     except OSError as e:
         return "", str(e), 127
     return out.stdout, out.stderr, out.returncode
+
+
+def resolve_pr(pr):
+    """PR の存在を確かめ、(番号, 表示名) を返す。見つからなければ (None, 理由)。
+
+    起動時に一度だけ確かめる。恒久的な誤り（番号の打ち間違い、別リポジトリ）を
+    ここで弾いておけば、ループ中のエラーは全部「一時的」として寛容に扱える。
+    pr が None なら今のブランチの PR を解決する（番号を控えなくてよい）。
+    """
+    args = ["pr", "view", "--json", "number,title,state"]
+    if pr is not None:
+        args.insert(2, str(pr))
+    stdout, stderr, code = run_gh(args)
+    if code != 0:
+        return None, (stderr or stdout).strip() or "PR が見つかりません"
+    try:
+        info = json.loads(stdout)
+    except ValueError:
+        return None, f"gh の出力を JSON として読めません: {stdout[:200]}"
+    return info.get("number"), f"#{info.get('number')} {info.get('title', '')}"
 
 
 def fetch_checks(pr):
@@ -84,7 +126,9 @@ def failed(rows):
 
 def failing_log(row):
     """失敗したジョブのログの末尾。取れなければ空文字。"""
-    link = row.get("link") or ""
+    # クエリやフラグメントが付く形（?check_suite_focus=true, #step:3:1）でも
+    # id を壊さないよう、パスだけ見る
+    link = urllib.parse.urlparse(row.get("link") or "").path
     job_id = link.rsplit("/", 1)[-1] if "/job/" in link else ""
     if not job_id:
         return ""
@@ -102,6 +146,8 @@ def report(pr, rows):
     if not bad:
         print("すべて成功しました。")
         return False
+    if any(r.get("bucket") == "cancel" for r in bad):
+        print("  （cancel は、新しい push で打ち切られた可能性があります）")
     for row in bad:
         print(f"\n--- {row.get('name', '?')} の失敗ログ（末尾 {LOG_TAIL_LINES} 行）---")
         print(failing_log(row) or "（ログを取得できませんでした）")
@@ -116,24 +162,45 @@ def watch(pr, *, interval, timeout):
     deadline = time.monotonic() + timeout
     errors = 0
     seen_any = False
+    settled = None  # 「全部終わった」と観測したときのチェック名の集合
+    last_rows = []
     while True:
         rows, error = fetch_checks(pr)
         if error is not None:
             errors += 1
+            # 黙って再試行しない。1 時間黙ってから諦めるのは #58 の問題そのもの
+            print(
+                f"PR #{pr}: 取得に失敗しました（{errors}/{MAX_CONSECUTIVE_ERRORS}）: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
             if errors >= MAX_CONSECUTIVE_ERRORS:
-                print(f"PR #{pr} のチェックを取得できません: {error}", file=sys.stderr)
                 return 2
+            settled = None
         else:
             errors = 0
+            last_rows = rows
             seen_any = seen_any or bool(rows)
             if rows and not pending(rows):
-                return 1 if report(pr, rows) else 0
+                names = {r.get("name") for r in rows}
+                if settled == names:
+                    return 1 if report(pr, rows) else 0
+                # 1 回では決めない。cancel-in-progress で古い run が打ち切られた
+                # 直後や、needs: の後続ジョブが登録される直前がこの形になる
+                settled = names
+                if time.monotonic() < deadline:
+                    time.sleep(min(CONFIRM_DELAY, interval))
+                    continue
+            else:
+                settled = None
         if time.monotonic() >= deadline:
-            waiting = [r.get("name", "?") for r in (rows or []) if r.get("bucket") == "pending"]
+            waiting = [r.get("name", "?") for r in last_rows if r.get("bucket") == "pending"]
             if not seen_any:
                 print(f"PR #{pr}: チェックが 1 つも登録されないまま時間切れになりました。")
             else:
-                print(f"PR #{pr}: 時間切れです。まだ終わっていません: {', '.join(waiting)}")
+                print(
+                    f"PR #{pr}: 時間切れです。まだ終わっていません: {', '.join(waiting) or '(不明)'}"
+                )
             print(
                 "self-hosted runner (windows-local) が動いていない可能性があります。"
                 "PC の電源とランナーの状態を確認してください。"
@@ -144,7 +211,7 @@ def watch(pr, *, interval, timeout):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="PR の CI が終わるまで待って結果を出す")
-    parser.add_argument("pr", help="PR 番号")
+    parser.add_argument("pr", nargs="?", help="PR 番号（省略時は今のブランチの PR）")
     parser.add_argument(
         "--interval",
         type=int,
@@ -170,13 +237,20 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
-    if not str(args.pr).isdigit():
+    if args.pr is not None and not str(args.pr).isdigit():
         print(f"PR 番号は数字で指定してください: {args.pr}", file=sys.stderr)
         return 2
     if args.interval < 1 or args.timeout < 1:
         print("--interval と --timeout は 1 以上で指定してください", file=sys.stderr)
         return 2
-    return watch(args.pr, interval=args.interval, timeout=args.timeout)
+    number, label = resolve_pr(args.pr)
+    if number is None:
+        print(f"PR を特定できません: {label}", file=sys.stderr)
+        return 2
+    print(
+        f"{label} を監視します（interval={args.interval}s / timeout={args.timeout}s）", flush=True
+    )
+    return watch(number, interval=args.interval, timeout=args.timeout)
 
 
 if __name__ == "__main__":

@@ -208,11 +208,16 @@ PR 説明に、実行したコマンドと `manifest.json` の要点
 **PR を作ったら、その場で CI の監視を起動する。**
 
 ```
-python scripts/watch_ci.py <PR番号>
+python3 scripts/watch_ci.py          # 今のブランチの PR を見る（番号を控えなくてよい）
+python3 scripts/watch_ci.py 59
 ```
 
 全チェックが終わるまで待ち、結果を出して終わる（成功 0 / 失敗 1 / 時間切れ 3）。
 失敗したチェックのログの末尾も出すので、`gh run view --log-failed` を手で叩かなくてよい。
+
+`ci.yml` は `cancel-in-progress` を有効にしているので、監視中に修正を push すると
+古い run が cancel になる。**「全部終わった」は間をあけて 2 回続けて観測したときだけ
+確定する**（1 回で決めると、その一瞬を「CI 失敗」と誤報する）。
 
 `gh` は WSL 側にしか入っていないので **WSL の python3 で実行する**
 （Windows の `kindle_env` からは `gh` が見えない）。
