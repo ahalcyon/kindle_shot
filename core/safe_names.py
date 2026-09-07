@@ -34,14 +34,22 @@ _RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", re.IGNORECASE)
 # 制御文字はファイル名に使えない
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
-# Windows の MAX_PATH（終端 NUL を含む 260）
+# Windows の MAX_PATH（終端 NUL を含む 260）。
+# 長さは Python のコードポイント数で測っている。Windows API は UTF-16 の
+# コードユニット数で数えるので、BMP 外の文字（絵文字など）は 1 文字で 2 を
+# 消費する。実害が出るのは絵文字入りの極端に長いタイトルだけなので許容する。
 MAX_PATH = 260
 
-# 名前の後ろに付く分の見積り。save_dir の下には manifest.json と連番画像が、
-# trimmed_dir（save_dir + "_trimmed"）の下には連番画像が置かれる。
-#   <name>_trimmed\0000.png  → 8 + 1 + 8 = 17
-#   <name>\manifest.json     → 1 + 13 = 14
-# 余裕を見て 24 を確保する。
+# 名前の後ろに付く分の見積り。実際に作られる最長は次のとおり（<name> からの追加分）:
+#   <name>_trimmed\1000.png  18  ページ番号は 999 を超えると 4 桁になる
+#   <name>_pages\1000.png    15  faithful + --embed-images (core/markdown_writer.py)
+#   <name>\manifest.json     14
+#   <name>\001.png.tmp       13  core/capture_engine.py の書き込み中の一時名
+#   <name>_12.md              6  split_words による分割出力
+# 最長 18 に余裕を足して 24 とする。
+#
+# ディレクトリの作成には CreateDirectory の別の上限（MAX_PATH - 12 = 248）が効く。
+# reserve を削るとここに先に当たるので、24 より小さくしないこと。
 _SUFFIX_RESERVE = 24
 
 # 切り詰めたことを示すハッシュの長さ（"_" + 8 桁）
@@ -58,7 +66,9 @@ def sanitize_folder_name(text):
     cleaned = "".join(_INVALID_NAME_CHARS.get(ch, ch) for ch in cleaned)
     # 末尾のピリオド・空白は Windows のフォルダ名として無効
     cleaned = cleaned.strip().rstrip(". \u3000")
-    if _RESERVED.match(cleaned):
+    # "NUL.txt" のように拡張子が付いていても予約名は予約名なので、
+    # ステム（最初のドットまで）で判定する
+    if _RESERVED.match(cleaned.split(".")[0]):
         cleaned = "_" + cleaned
     return cleaned
 

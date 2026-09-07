@@ -1091,3 +1091,49 @@ def test_output_folder_too_deep_is_rejected_up_front(tmp_path, monkeypatch):
     assert code == pipeline.EXIT_BAD_ARGS
     assert calls == []
     assert by_name(events, "error")
+
+
+def test_colliding_sanitized_names_are_rejected_up_front(tmp_path, monkeypatch):
+    """無害化で名前が重なると、2 冊目が黙って飛ばされるか 1 冊目を上書きする。"""
+    calls: list = []
+    monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
+    emit, events = collect_emit()
+
+    code = pipeline.run_batch(
+        [{"title": "同じ本", "asin": "B01"}, {"title": "同じ本. ", "asin": "B02"}],
+        output=str(tmp_path / "out"),
+        emit=emit,
+    )
+
+    assert code == pipeline.EXIT_BAD_ARGS
+    assert calls == []
+    assert "同じ本" in by_name(events, "error")[0]["message"]
+
+
+def test_markdown_heading_keeps_the_original_title(tmp_path, monkeypatch):
+    """見出しにファイル名の全角置換やハッシュを持ち込まない。"""
+    seen: dict = {}
+
+    def fake_convert(*args, **kwargs):
+        seen.update(kwargs)
+        return pipeline.EXIT_OK
+
+    from core import headless_capture
+
+    monkeypatch.setattr(pipeline, "run_convert", fake_convert)
+    # run_book は headless_capture を関数内で import するのでモジュール側を差し替える
+    monkeypatch.setattr(headless_capture, "run_headless_capture", lambda *a, **k: pipeline.EXIT_OK)
+    monkeypatch.setattr(pipeline, "run_trim", lambda *a, **k: pipeline.EXIT_OK)
+    monkeypatch.setattr(pipeline, "run_validate", lambda *a, **k: pipeline.EXIT_OK)
+
+    title = "Foo: Bar?"
+    pipeline.run_book(
+        title=title,
+        asin="B01",
+        output=str(tmp_path / "out"),
+        fmt="markdown",
+        emit=lambda *a, **k: None,
+    )
+
+    assert seen["display_title"] == title
+    assert ":" not in seen["name"]

@@ -42,6 +42,7 @@ sys.path.insert(0, _REPO_ROOT)
 # 出力ファイルの決め方とスキップ判定は batch 本体と同じものを使う
 # （生成側に書き写すと「batch はスキップするのにこちらは作り直す」というズレが出る）
 from core.pipeline import FORMATS, _batch_output_path, load_batch_file  # noqa: E402
+from core.safe_names import book_path_name  # noqa: E402
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -65,7 +66,9 @@ def plan(books, out, fmt):
     rows = []
     for book in books:
         title = book["title"]
-        trimmed = os.path.join(out, f"{title}_trimmed")
+        # run_book と同じ無害化を通す。生のタイトルで探すと、無効文字を含む本が
+        # 「トリミング画像がありません」という間違った理由で黙って飛ばされる (#52)
+        trimmed = os.path.join(out, f"{book_path_name(title, out)}_trimmed")
         output = _batch_output_path(out, title, fmt)
         if not os.path.isdir(trimmed):
             reason = (

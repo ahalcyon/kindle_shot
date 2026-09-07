@@ -631,6 +631,7 @@ def run_convert(
     fmt,
     *,
     name=None,
+    display_title=None,
     config=None,
     preprocess_opts=None,
     replacements_opts=None,
@@ -651,6 +652,9 @@ def run_convert(
         output_folder: 出力フォルダ
         fmt: "image_pdf" | "text_pdf" | "searchable_pdf" | "markdown"
         name: 出力ファイル名 (省略時は入力フォルダ名)
+        display_title: Markdown の見出し・フロントマターに使う表示名
+            (省略時は name から導く。name は Windows のために無害化されている
+            ことがあるので、元のタイトルを渡す)
         config: 設定 dict (None なら load_config())
         preprocess_opts: OCR 前処理パラメータ (None なら config から解決)
         replacements_opts: 置換辞書パラメータ (None なら config から解決)
@@ -771,7 +775,10 @@ def run_convert(
         else:  # markdown
             filename = _ensure_ext(filename, ".md")
             output_path = os.path.join(output_folder, filename)
-            book_title = os.path.splitext(os.path.basename(filename))[0]
+            # 見出しとフロントマターには元のタイトルを使う。ファイル名は
+            # Windows のために全角へ置換したり切り詰めたりしてあるので、
+            # そこから導くと本文の H1 が「Foo： Bar_83c9cdd4」になる (#52)
+            book_title = display_title or os.path.splitext(os.path.basename(filename))[0]
             if faithful:
                 # ページ忠実型（原画像へ戻る導線を残す従来出力）
                 reflow = bool(cfg.get("ocr", {}).get("reflow_paragraphs", True)) and not no_reflow
@@ -1051,6 +1058,7 @@ def run_book(
             out,
             fmt,
             name=path_name,
+            display_title=title,
             config=cfg,
             ocr_workers=ocr_workers,
             faithful=faithful,
@@ -1331,6 +1339,23 @@ def run_batch(
             f"出力先のパスが深すぎます（本の名前に使える文字数が {budget}）。"
             "浅いフォルダを指定してください",
         )
+        return EXIT_BAD_ARGS
+
+    # 無害化は単射ではない（末尾のピリオド・空白を落とす、制御文字を消す、
+    # 元から全角コロンの本と ASCII の本が同じになる）。衝突すると 2 冊目が
+    # 「出力済み」として黙って飛ばされるか、1 冊目を上書きする。どちらも
+    # 静かに間違うので、開始時に見つけて名前を挙げる (#52)
+    seen: dict = {}
+    for book in books:
+        seen.setdefault(book_path_name(book["title"], out), []).append(book["title"])
+    clashes = {name: titles for name, titles in seen.items() if len(titles) > 1}
+    if clashes:
+        for name, titles in clashes.items():
+            emit_error(
+                emit,
+                f"保存名が重なります（{name}）: " + " / ".join(titles) + "。"
+                "どちらかの title を books.json で変えてください",
+            )
         return EXIT_BAD_ARGS
 
     emit("batch_start", human=f"バッチ開始: {total} 冊 → {out}", total_books=total, output=out)

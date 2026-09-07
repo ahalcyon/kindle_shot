@@ -223,7 +223,7 @@ def run_capture(
     stopped_by_user = False
     prevent_sleep()
     try:
-        engine.start(save_folder, title)
+        engine.start(save_dir)
         while not done.wait(timeout=0.5):
             if stop_event.is_set():
                 stopped_by_user = True

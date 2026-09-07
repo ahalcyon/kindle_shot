@@ -8,7 +8,7 @@ import os
 
 from core import safe_names
 
-OUT = r"C:\\Users\\x\\out"
+OUT = r"C:\Users\x\out"
 
 
 def test_invalid_characters_become_full_width():
@@ -65,7 +65,10 @@ def test_deep_output_folder_is_detected_by_the_budget():
 
 
 def test_budget_is_positive_for_a_normal_output_folder():
-    assert safe_names.name_budget(OUT) > 100
+    """abspath は OS 依存なので、長さの主張は out の長さから素直に導く。"""
+    expected = safe_names.MAX_PATH - 1 - len(os.path.abspath(OUT)) - 1 - 24
+    assert safe_names.name_budget(OUT) == expected
+    assert expected > 100
 
 
 def test_short_title_is_left_alone():
