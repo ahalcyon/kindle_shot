@@ -86,24 +86,48 @@ class _OutlineLevels:
 
     章立ての推定を厳しくするのではなく、出す直前に詰める。推定を厳しくすると
     しおりが減るだけで、飛び方の組み合わせを網羅できない。
+
+    元レベルのスタックで持つ。「深すぎたら 1 段だけ浅くする」という詰め方だと、
+    同じ元レベルが違う深さに散る（節だけの本では 2 件目以降が 1 件目の子に
+    なり、#63 の本では 104 件が 1 件目にぶら下がった）。スタックなら
+    「先頭は 0 / 同じ元レベルは同じ深さ / 1 段ずつしか深くならない」が同時に成る。
+
+    状態は出力に成功したときだけ進める。失敗したのに進めると reportlab 側の
+    currentlevel とずれ、以後の全件が can't jump で落ち続ける。
+
+    doc.build を 2 回以上回す（multiBuild）場合は作り直すこと。同じ Flowable の
+    draw が再度呼ばれ、状態が持ち越される。
     """
 
     def __init__(self):
-        self._prev = -1
+        self._stack: list[int] = []
+        self.skipped = 0
 
-    def normalize(self, level):
-        wanted = max(0, level - 1)
-        allowed = min(wanted, self._prev + 1)
-        self._prev = allowed
-        return allowed
+    def depth_for(self, level):
+        """level を出すときの深さ。まだ状態は変えない。"""
+        n = len(self._stack)
+        while n and self._stack[n - 1] >= level:
+            n -= 1
+        return n
+
+    def commit(self, level, depth):
+        """出力に成功した項目を反映する。"""
+        del self._stack[depth:]
+        self._stack.append(level)
 
 
-def _emit_bookmark(c, key, title, level, levels=None):
+def _skipped_note(levels):
+    """出せなかったしおりの件数。無音で劣化させないための一言。"""
+    return f"（しおり {levels.skipped} 件をスキップ）" if levels.skipped else ""
+
+
+def _emit_bookmark(c, key, title, level, levels):
     """canvas に bookmark + outline entry を 1 件追加する。
 
     title が長すぎる場合 PDF ビューアで切り詰められるので 80 文字に制限する。
 
-    levels に _OutlineLevels を渡すと階層を詰める。渡さない場合は従来どおり。
+    levels は必須。既定を None にして「渡さなければ従来どおり」を残すと、
+    呼び出しを 1 つ足したときに #63 が黙って復活する。
 
     しおりの追加で落ちても本文は捨てない。しおりは付加情報であって本文ではなく、
     無人で数百冊を回す用途では「9 分かけた本が最後の 1 行で失われる」ほうが
@@ -111,18 +135,20 @@ def _emit_bookmark(c, key, title, level, levels=None):
     別の制約に当たる可能性まで潰せてはいない。
     """
     safe_title = title[:80] if title else "(untitled)"
-    depth = levels.normalize(level) if levels is not None else max(0, level - 1)
+    depth = levels.depth_for(level)
     try:
         c.bookmarkPage(key)
         c.addOutlineEntry(safe_title, key, level=depth, closed=False)
     except Exception:  # noqa: BLE001 - しおりの失敗で本文を捨てない
-        pass
+        levels.skipped += 1
+        return
+    levels.commit(level, depth)
 
 
 class _BookmarkFlowable(Flowable):
     """SimpleDocTemplate 用: 描画時に bookmark + outline を追加するゼロサイズ Flowable。"""
 
-    def __init__(self, key, title, level=1, levels=None):
+    def __init__(self, key, title, level, levels):
         super().__init__()
         self.key = key
         self.title = title
@@ -194,7 +220,7 @@ def images_to_pdf(folder_path, output_folder, output_filename, on_progress=None,
     except Exception as e:
         return False, f"PDF作成中にエラー: {e}"
 
-    return True, f"PDFファイルを作成しました: {output_pdf}"
+    return True, f"PDFファイルを作成しました: {output_pdf}{_skipped_note(outline_levels)}"
 
 
 def _descent_offset(font_name, size):
@@ -402,7 +428,7 @@ def images_to_searchable_pdf(image_folder, results, output_path, on_progress=Non
         if chapter_map:
             c.showOutline()
         c.save()
-        return True, f"検索可能PDFを作成しました: {output_path}"
+        return True, f"検索可能PDFを作成しました: {output_path}{_skipped_note(outline_levels)}"
 
     except Exception as e:
         return False, f"検索可能PDF生成エラー: {e}"
@@ -489,7 +515,7 @@ def text_to_pdf(results, output_path, on_progress=None, chapters=None):
                 on_progress(i, total, filename)
 
         doc.build(story, canvasmaker=canvasmaker)
-        return True, f"テキストPDFを作成しました: {output_path}"
+        return True, f"テキストPDFを作成しました: {output_path}{_skipped_note(outline_levels)}"
 
     except Exception as e:
         return False, f"テキストPDF生成エラー: {e}"

@@ -725,25 +725,50 @@ def test_searchable_pdf_page_without_coordinates_keeps_its_text(
 # ------------------------------------------------------------
 
 
+def _depths(seq):
+    levels = pdf_builder._OutlineLevels()
+    out = []
+    for n in seq:
+        d = levels.depth_for(n)
+        out.append(d)
+        levels.commit(n, d)
+    return out
+
+
 def test_outline_levels_start_at_zero():
     """reportlab はレベル 0 から始まることを要求する。
 
     章が検出されず節だけが拾われる本（洋書の 3.2 形式の見出し）では
     1 件目が節になり、内部状態 -1 からレベル 1 へ飛んで PDF 生成ごと落ちた。
     """
-    levels = pdf_builder._OutlineLevels()
-    assert levels.normalize(2) == 0
+    assert _depths([2]) == [0]
+
+
+def test_outline_levels_keep_siblings_at_the_same_depth():
+    """節だけの本で 2 件目以降が 1 件目の子になってはいけない。
+
+    「深すぎたら 1 段だけ浅くする」詰め方だと、#63 の本（見出しが全部 3.2 形式）で
+    104 件が 1 件目にぶら下がった。
+    """
+    assert _depths([2, 2, 2, 2, 2]) == [0, 0, 0, 0, 0]
 
 
 def test_outline_levels_never_jump_more_than_one():
-    levels = pdf_builder._OutlineLevels()
-    assert [levels.normalize(n) for n in (1, 3, 3, 2, 1)] == [0, 1, 2, 1, 0]
+    assert _depths([1, 3, 3, 2, 1]) == [0, 1, 1, 1, 0]
 
 
 def test_outline_levels_keep_a_normal_hierarchy():
     """章 -> 節 の素直な並びは詰めない。"""
+    assert _depths([1, 2, 2, 1, 2]) == [0, 1, 1, 0, 1]
+
+
+def test_outline_levels_do_not_advance_on_failure():
+    """出せなかった項目で状態を進めると、以後の全件が can't jump で落ちる。"""
     levels = pdf_builder._OutlineLevels()
-    assert [levels.normalize(n) for n in (1, 2, 2, 1, 2)] == [0, 1, 1, 0, 1]
+    d = levels.depth_for(2)
+    assert d == 0
+    # commit しない（＝失敗した扱い）
+    assert levels.depth_for(2) == 0
 
 
 def test_searchable_pdf_builds_when_the_first_heading_is_a_section(
@@ -797,3 +822,42 @@ def test_bookmark_failure_does_not_discard_the_book(
     )
     assert ok, msg
     assert SAMPLE_TEXT.split("\n")[0] in extract_text(out)
+
+
+def test_text_pdf_builds_when_the_first_heading_is_a_section(
+    font_cache_reset, japanese_font, tmp_path
+):
+    """SimpleDocTemplate 経由（_BookmarkFlowable）も同じ経路を通る。"""
+    from core.chapter_detector import Chapter
+
+    out = tmp_path / "sections_text.pdf"
+    ok, msg = pdf_builder.text_to_pdf(
+        [("001.png", SAMPLE_TEXT), ("002.png", SAMPLE_TEXT)],
+        str(out),
+        chapters=[
+            Chapter(page_index=0, filename="001.png", title="3.1 First", level=2),
+            Chapter(page_index=1, filename="002.png", title="3.2 Second", level=2),
+        ],
+    )
+    assert ok, msg
+    assert out.exists()
+
+
+def test_skipped_bookmarks_are_reported(
+    font_cache_reset, japanese_font, image_folder, tmp_path, monkeypatch
+):
+    """無音で劣化させない。出せなかった件数をメッセージに出す。"""
+    from core.chapter_detector import Chapter
+
+    def boom(*_a, **_k):
+        raise ValueError("nope")
+
+    monkeypatch.setattr(pdf_builder.canvas.Canvas, "addOutlineEntry", boom)
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(image_folder),
+        [("001.png", SAMPLE_TEXT)],
+        str(tmp_path / "skipped.pdf"),
+        chapters=[Chapter(page_index=0, filename="001.png", title="第1章", level=1)],
+    )
+    assert ok, msg
+    assert "しおり 1 件をスキップ" in msg
