@@ -15,11 +15,15 @@
 後段の trim / convert はそのまま使える。
 """
 
+import contextlib
 import datetime
 import hashlib
+import io
 import json
 import os
 import re
+
+from PIL import Image
 
 from core.pipeline import (
     EXIT_BAD_ARGS,
@@ -308,6 +312,8 @@ def build_manifest(
     page_turn_source=None,
     page_wait=None,
     shot_mode=None,
+    shot_padding=None,
+    shot_mode_changed=None,
 ):
     """run_capture が書くものと同じ形の manifest を組み立てる。"""
     return {
@@ -323,6 +329,13 @@ def build_manifest(
         # element: ページ画像の要素だけを撮った（UI も余白も入らない）
         # viewport: 要素が見つからずビューポート全体を撮った（要トリミング）
         "shot_mode": shot_mode,
+        # 要素の外側に戻した余白 (左, 上, ビューポート幅, 高さ)。#60 より前に
+        # 取った本は null になるので、撮り直すべき本をあとから洗い出せる
+        "shot_padding": list(shot_padding) if shot_padding else None,
+        # 途中で撮影方式が変わったページ番号。element の本で viewport に落ちると
+        # ヘッダーの写ったページが紛れ込むが、寸法が同じなので validate では
+        # 拾えない。ここだけが手がかりになる
+        "shot_mode_changed": shot_mode_changed or [],
         "total_pages": total,
         "save_dir": save_dir,
         "stopped_reason": stopped_reason,
@@ -364,20 +377,125 @@ def dismiss_dialogs(page):
     return closed
 
 
+# 縁の色を数えるときの間引き幅。1 画素ずつ見なくても地色は分かる
+_EDGE_STEP = 7
+
+# bounding_box の待ち時間。既定 (30 秒) のままだと、ページ送り直後に要素が
+# 一瞬 detach する本で 1 ページあたり 30 秒待つ。数百ページ x 342 冊で効く
+BBOX_TIMEOUT_MS = 1000
+
+
+def _strip_color(strip):
+    """細長い帯の最頻色。"""
+    colors = strip.convert("RGB").getcolors(maxcolors=strip.width * strip.height)
+    return max(colors)[1] if colors else (255, 255, 255)
+
+
+def edge_colors(image):
+    """四辺それぞれの地色 (左, 上, 右, 下)。
+
+    1 色で埋めると、見開きで左右の地色が違う本（片側が白・片側が黒ベタ）や、
+    裁ち落としの写真で、地色でない色の帯が付く。辺ごとに分けるとどちらも自然になる。
+    """
+    w, h = image.size
+    return (
+        _strip_color(image.crop((0, 0, 1, h))),
+        _strip_color(image.crop((0, 0, w, 1))),
+        _strip_color(image.crop((w - 1, 0, w, h))),
+        _strip_color(image.crop((0, h - 1, w, h))),
+    )
+
+
+def reader_padding(page, locator):
+    """リーダーがページ画像の外側に置いている余白 (左, 上, ビューポートの幅, 高さ)。
+
+    要素だけを撮ると、この余白が落ちる。縦書きの本ではページ画像そのものに
+    上下の余白が無く、画面で見えている上下の余白はここなので、落とすと本文が
+    上下端に接する（#60。197 ページ中 168 ページで発生していた）。
+
+    固定値にはしない。マンガの見開きのように要素がビューポートの高さいっぱいを
+    使う本では上下の余白が 0 になるなど、本によって変わる。
+
+    右下の余白は返さない。CSS 座標に端数があると切り捨てで 1px ずれ、同じ本の
+    中で 1600 と 1599 が混ざって validate の size_mismatch が出るうえ、
+    同一ページ判定のダイジェストも変わって end_of_book を取り逃す。
+    実際の画像の寸法から引き算して決めるほうが確実（pad_shot 側で行う）。
+    """
+    try:
+        box = locator.bounding_box(timeout=BBOX_TIMEOUT_MS)
+        view = page.viewport_size
+    except Exception:  # noqa: BLE001 - 測れないなら余白なしで撮る
+        return None
+    if not box or not view:
+        return None
+    left = round(box["x"])
+    top = round(box["y"])
+    if left < 0 or top < 0 or box["width"] > view["width"] or box["height"] > view["height"]:
+        # 要素がビューポートからはみ出している。足すべき余白が決まらない
+        return None
+    return left, top, view["width"], view["height"]
+
+
+def pad_shot(data, padding):
+    """スクリーンショットの外側を、ページの地色で埋める。
+
+    仕上がりは必ずビューポートと同じ寸法にする。左上の余白だけを CSS 座標から
+    取り、右下は実際の画像の寸法から引いて決めるので、端数や device_scale_factor
+    に左右されない。
+    """
+    if not padding:
+        return data
+    left, top, view_w, view_h = padding
+    with Image.open(io.BytesIO(data)) as image:
+        right = view_w - image.width - left
+        bottom = view_h - image.height - top
+        if min(left, top, right, bottom) < 0 or not any((left, top, right, bottom)):
+            return data
+        cl, ct, cr, cb = edge_colors(image)
+        canvas = Image.new("RGB", (view_w, view_h), ct)
+        if left:
+            canvas.paste(Image.new("RGB", (left, view_h), cl), (0, 0))
+        if right:
+            canvas.paste(Image.new("RGB", (right, view_h), cr), (view_w - right, 0))
+        if top:
+            canvas.paste(Image.new("RGB", (image.width, top), ct), (left, 0))
+        if bottom:
+            canvas.paste(Image.new("RGB", (image.width, bottom), cb), (left, view_h - bottom))
+        canvas.paste(image.convert("RGB"), (left, top))
+        buffer = io.BytesIO()
+        canvas.save(buffer, format="PNG")
+        canvas.close()
+        return buffer.getvalue()
+
+
 def page_shot(page, *, selector=PAGE_IMAGE_SELECTOR):
     """ページ画像の要素だけを撮り、(バイト列, 撮影方式) を返す。
 
     要素が見つからない・撮れない本（画像レンダラでない本、レイアウト変更）は
     従来どおりビューポート全体にフォールバックする。無人実行なので、撮れなく
     なった瞬間に落とすより、方式を記録して撮り続けるほうが被害が小さい。
+
+    撮ったあと、リーダーが要素の外側に置いている余白と同じ幅で外周を埋める。
+    ビューポートを広く撮ってから切り出す方法は使わない。hide_ui_css で
+    消しきれていないヘッダー（書名）が写り込むことを実測で確認している (#60)。
     """
+    element = None
+    shot = None
     try:
         locator = page.locator(selector)
         if locator.count():
-            return locator.first.screenshot(), SHOT_ELEMENT
+            element = locator.first
+            shot = element.screenshot()
     except Exception:  # noqa: BLE001 - 撮れない理由は問わずフォールバックする
-        pass
-    return page.screenshot(), SHOT_VIEWPORT
+        shot = None
+    if shot is None or element is None:
+        return page.screenshot(), SHOT_VIEWPORT
+    # 余白を足せなくても、撮れた本文は捨てない。ここで viewport に落ちると
+    # ヘッダーの写ったページが紛れ込むうえ、寸法が同じなので validate も
+    # 気づけない (#60)
+    with contextlib.suppress(Exception):
+        shot = pad_shot(shot, reader_padding(page, element))
+    return shot, SHOT_ELEMENT
 
 
 def alert_text(page, *, selector=ALERT_SELECTOR):
@@ -466,9 +584,14 @@ def capture_pages(
         no_change       1 ページも進めなかった（送りキーの向き違い・モーダル等）
         signin_required 途中でセッションが切れた
 
-    expect_mode を渡すと、途中で撮影方式が変わったページを警告する。方式が
-    変わるとページの寸法も変わるため、validate の size_mismatch でも拾えるが、
-    どのページで切り替わったかはここでしか分からない。
+    expect_mode を渡すと、途中で撮影方式が変わったページを警告し、そのページ
+    番号を返り値に含める。
+
+    **validate の size_mismatch では拾えない。** 要素撮影の余白を戻して以降
+    (#60)、element も viewport も同じビューポート寸法になったため、寸法では
+    区別が付かない。途中で viewport に落ちるとリーダーのヘッダーが写ったページが
+    紛れ込むが、要素撮影の本はトリミングも無効化されているので後段でも削れない。
+    気づく手段はここだけなので、manifest に残す。
     """
     prev = None
     total = 0
@@ -503,8 +626,10 @@ def capture_pages(
         total += 1
         filename = f"{total:03d}.png"
         if expect_mode is not None and mode != expect_mode:
+            # status ではなく専用のイベントにする。ログを grep するだけで
+            # 「ヘッダーが写ったページが紛れ込んだ本」を見つけられるように
             emit(
-                "status",
+                "shot_mode_changed",
                 human=f"{filename}: 撮影方式が {expect_mode} から {mode} に変わりました",
                 page=total,
                 shot_mode=mode,
@@ -647,6 +772,14 @@ def run_headless_capture(
     total = 0
     stopped_reason = "error"
     shot_mode = None
+    shot_padding = None
+    shot_mode_changed: list = []
+
+    def note(event, human=None, **fields):
+        """撮影方式が途中で変わったページを控えつつ、そのまま emit する。"""
+        if event == "shot_mode_changed" and "page" in fields:
+            shot_mode_changed.append(fields["page"])
+        emit(event, human=human, **fields)
 
     def write_manifest():
         """途中終了でもどこまで撮れたか分かるよう必ず書く。"""
@@ -663,6 +796,8 @@ def run_headless_capture(
             page_turn_source=turn_source,
             page_wait=page_wait,
             shot_mode=shot_mode,
+            shot_padding=shot_padding,
+            shot_mode_changed=shot_mode_changed,
         )
         path = os.path.join(save_dir, MANIFEST_NAME)
         with open(path, "w", encoding="utf-8") as f:
@@ -702,6 +837,9 @@ def run_headless_capture(
             # ページ画像の要素が撮れるなら UI も余白も最初から入らない。
             # 撮れない本のために従来のビューポート撮影も残してある。
             shot_mode = resolve_shot_mode(page)
+            if shot_mode == SHOT_ELEMENT:
+                # #60 より前に取った本と見分けるために残す
+                shot_padding = reader_padding(page, page.locator(PAGE_IMAGE_SELECTOR).first)
             emit(
                 "shot_mode",
                 human=(
@@ -751,7 +889,7 @@ def run_headless_capture(
                 max_pages=max_pages,
                 page_wait=page_wait,
                 expect_mode=shot_mode,
-                emit=emit,
+                emit=note,
             )
     except KeyboardInterrupt:
         stopped_reason = "user"
