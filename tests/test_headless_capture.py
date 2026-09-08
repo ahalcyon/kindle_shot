@@ -24,7 +24,7 @@ from core.headless_capture import (
     capture_pages,
     detect_turn_key,
     digest,
-    edge_color,
+    edge_colors,
     hide_ui_css,
     is_signed_in,
     pad_shot,
@@ -755,6 +755,7 @@ class FakeShotPage:
         self.viewport_size = {"width": view[0], "height": view[1]}
         self._color = color
         self._count = count
+        self.bbox_timeouts: list = []
         page = self
 
         class Loc:
@@ -765,12 +766,14 @@ class FakeShotPage:
             def first(self):
                 return self
 
-            def bounding_box(self):
+            def bounding_box(self, timeout=None):
+                page.bbox_timeouts.append(timeout)
                 x, y, w, h = page._box
                 return {"x": x, "y": y, "width": w, "height": h}
 
             def screenshot(self):
-                return _png((page._box[2], page._box[3]), page._color)
+                # Playwright は要素の実寸を画素に丸めた画像を返す
+                return _png((round(page._box[2]), round(page._box[3])), page._color)
 
         self._loc = Loc()
 
@@ -781,30 +784,57 @@ class FakeShotPage:
         return _png((self.viewport_size["width"], self.viewport_size["height"]), (9, 9, 9))
 
 
-def test_edge_color_uses_the_page_ground():
+def test_edge_colors_use_the_page_ground():
     """白で決め打ちすると、色の付いた表紙に白い額縁が付く。"""
     from PIL import Image
 
     with Image.open(io.BytesIO(_png((40, 30), (230, 245, 235)))) as im:
-        assert edge_color(im) == (230, 245, 235)
+        assert edge_colors(im) == ((230, 245, 235),) * 4
+
+
+def test_edge_colors_differ_per_side():
+    """見開きで左右の地色が違う本に、片側だけ異物の色の帯が付かないように。"""
+    from PIL import Image
+
+    im = Image.new("RGB", (40, 30), (255, 255, 255))
+    im.paste(Image.new("RGB", (20, 30), (0, 0, 0)), (20, 0))  # 右半分だけ黒
+    left, _top, right, _bottom = edge_colors(im)
+    assert left == (255, 255, 255)
+    assert right == (0, 0, 0)
 
 
 def test_reader_padding_is_measured_not_assumed():
     """本によって余白は変わる。固定値にしない。"""
     page = FakeShotPage((160, 60, 1280, 1050))
-    assert reader_padding(page, page.locator("x").first) == (160, 60, 160, 90)
-
-
-def test_reader_padding_is_zero_for_a_full_height_element():
-    """マンガの見開きは高さいっぱいを使う。上下の余白は 0。"""
-    page = FakeShotPage((160, 0, 1280, 1200))
-    assert reader_padding(page, page.locator("x").first) == (160, 0, 160, 0)
+    assert reader_padding(page, page.locator("x").first) == (160, 60, 1600, 1200)
 
 
 def test_reader_padding_gives_up_when_the_element_overflows():
     """はみ出していると足すべき余白が決まらない。無理に足さない。"""
     page = FakeShotPage((-10, 0, 1700, 1200))
     assert reader_padding(page, page.locator("x").first) is None
+
+
+def test_reader_padding_asks_for_a_short_timeout():
+    """既定の 30 秒待ちだと、要素が一瞬 detach する本で 1 ページ 30 秒かかる。"""
+    page = FakeShotPage((160, 60, 1280, 1050))
+    reader_padding(page, page.locator("x").first)
+    assert page.bbox_timeouts == [1000]
+
+
+def test_padded_size_matches_the_viewport_even_with_fractions():
+    """CSS 座標の端数で 1600 と 1599 が混ざると、size_mismatch も
+    ダイジェストによる end_of_book 判定も壊れる。"""
+    page = FakeShotPage((160.5, 60.4, 1279, 1050))
+    data, _mode = page_shot(page)
+    assert _size(data) == (1600, 1200)
+
+
+def test_full_height_element_gets_only_side_margins():
+    """マンガの見開きは高さいっぱいを使う。上下は足さない。"""
+    page = FakeShotPage((160, 0, 1280, 1200))
+    data, _mode = page_shot(page)
+    assert _size(data) == (1600, 1200)
 
 
 def test_page_shot_restores_the_reader_margins():
