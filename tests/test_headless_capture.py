@@ -9,6 +9,7 @@
 """
 
 import datetime
+import io
 import json
 import os
 
@@ -22,6 +23,10 @@ from core.headless_capture import (
     build_manifest,
     capture_pages,
     detect_turn_key,
+    edge_color,
+    pad_shot,
+    page_shot,
+    reader_padding,
     digest,
     hide_ui_css,
     is_signed_in,
@@ -721,3 +726,103 @@ def test_unrelated_dialog_is_not_reported_as_unsupported():
 def test_page_failure_does_not_declare_the_book_unsupported():
     """判定できないだけで「取得手段が無い」と断定すると本を取りこぼす。"""
     assert unsupported_reason(BrokenPage()) is None
+# ------------------------------------------------------------
+# 余白の復元 (#60)
+# ------------------------------------------------------------
+
+
+def _png(size, color):
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _size(data):
+    from PIL import Image
+
+    with Image.open(io.BytesIO(data)) as im:
+        return im.size
+
+
+class FakeShotPage:
+    """page_shot 用の代役。要素の箱とビューポートを持つ。"""
+
+    def __init__(self, box, view=(1600, 1200), color=(255, 255, 255), count=1):
+        self._box = box
+        self.viewport_size = {"width": view[0], "height": view[1]}
+        self._color = color
+        self._count = count
+        page = self
+
+        class Loc:
+            def count(self):
+                return page._count
+
+            @property
+            def first(self):
+                return self
+
+            def bounding_box(self):
+                x, y, w, h = page._box
+                return {"x": x, "y": y, "width": w, "height": h}
+
+            def screenshot(self):
+                return _png((page._box[2], page._box[3]), page._color)
+
+        self._loc = Loc()
+
+    def locator(self, _selector):
+        return self._loc
+
+    def screenshot(self):
+        return _png((self.viewport_size["width"], self.viewport_size["height"]), (9, 9, 9))
+
+
+def test_edge_color_uses_the_page_ground():
+    """白で決め打ちすると、色の付いた表紙に白い額縁が付く。"""
+    from PIL import Image
+
+    with Image.open(io.BytesIO(_png((40, 30), (230, 245, 235)))) as im:
+        assert edge_color(im) == (230, 245, 235)
+
+
+def test_reader_padding_is_measured_not_assumed():
+    """本によって余白は変わる。固定値にしない。"""
+    page = FakeShotPage((160, 60, 1280, 1050))
+    assert reader_padding(page, page.locator("x").first) == (160, 60, 160, 90)
+
+
+def test_reader_padding_is_zero_for_a_full_height_element():
+    """マンガの見開きは高さいっぱいを使う。上下の余白は 0。"""
+    page = FakeShotPage((160, 0, 1280, 1200))
+    assert reader_padding(page, page.locator("x").first) == (160, 0, 160, 0)
+
+
+def test_reader_padding_gives_up_when_the_element_overflows():
+    """はみ出していると足すべき余白が決まらない。無理に足さない。"""
+    page = FakeShotPage((-10, 0, 1700, 1200))
+    assert reader_padding(page, page.locator("x").first) is None
+
+
+def test_page_shot_restores_the_reader_margins():
+    """#60 の本体。縦書きで上下端に本文が接するのを防ぐ。"""
+    page = FakeShotPage((160, 60, 1280, 1050))
+    data, mode = page_shot(page)
+    assert mode == "element"
+    assert _size(data) == (1600, 1200)
+
+
+def test_page_shot_without_padding_is_unchanged():
+    data = _png((100, 80), (255, 255, 255))
+    assert pad_shot(data, None) is data
+    assert pad_shot(data, (0, 0, 0, 0)) is data
+
+
+def test_page_shot_falls_back_to_the_viewport():
+    """要素が無い本は従来どおりビューポート全体を撮る（余白は足さない）。"""
+    page = FakeShotPage((160, 60, 1280, 1050), count=0)
+    data, mode = page_shot(page)
+    assert mode == "viewport"
+    assert _size(data) == (1600, 1200)

@@ -15,11 +15,15 @@
 後段の trim / convert はそのまま使える。
 """
 
+import collections
 import datetime
 import hashlib
+import io
 import json
 import os
 import re
+
+from PIL import Image, ImageOps
 
 from core.pipeline import (
     EXIT_BAD_ARGS,
@@ -364,17 +368,81 @@ def dismiss_dialogs(page):
     return closed
 
 
+# 縁の色を数えるときの間引き幅。1 画素ずつ見なくても地色は分かる
+_EDGE_STEP = 7
+
+
+def edge_color(image):
+    """画像の縁で最も多い色。余白を埋めるのに使う。
+
+    白い本文ページは白、色の付いた表紙はその色で埋まる。決め打ちで白にすると
+    表紙に白い額縁が付く。
+    """
+    px = image.convert("RGB")
+    w, h = px.size
+    samples = (
+        [px.getpixel((x, 0)) for x in range(0, w, _EDGE_STEP)]
+        + [px.getpixel((x, h - 1)) for x in range(0, w, _EDGE_STEP)]
+        + [px.getpixel((0, y)) for y in range(0, h, _EDGE_STEP)]
+        + [px.getpixel((w - 1, y)) for y in range(0, h, _EDGE_STEP)]
+    )
+    return collections.Counter(samples).most_common(1)[0][0]
+
+
+def reader_padding(page, locator):
+    """リーダーがページ画像の外側に置いている余白 (左, 上, 右, 下)。
+
+    要素だけを撮ると、この余白が落ちる。縦書きの本ではページ画像そのものに
+    上下の余白が無く、画面で見えている上下の余白はここなので、落とすと本文が
+    上下端に接する（#60。197 ページ中 168 ページで発生していた）。
+
+    固定値にはしない。マンガの見開きのように要素がビューポートの高さいっぱいを
+    使う本では上下の余白が 0 になるなど、本によって変わる。
+    """
+    try:
+        box = locator.bounding_box()
+        view = page.viewport_size
+    except Exception:  # noqa: BLE001 - 測れないなら余白なしで撮る
+        return None
+    if not box or not view:
+        return None
+    left = int(box["x"])
+    top = int(box["y"])
+    right = int(view["width"] - box["x"] - box["width"])
+    bottom = int(view["height"] - box["y"] - box["height"])
+    if min(left, top, right, bottom) < 0:
+        # 要素がビューポートからはみ出している。足すべき余白が決まらない
+        return None
+    return left, top, right, bottom
+
+
+def pad_shot(data, padding):
+    """スクリーンショットの外側を、ページの地色で埋める。"""
+    if not padding or not any(padding):
+        return data
+    with Image.open(io.BytesIO(data)) as image:
+        padded = ImageOps.expand(image, border=padding, fill=edge_color(image))
+        buffer = io.BytesIO()
+        padded.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+
 def page_shot(page, *, selector=PAGE_IMAGE_SELECTOR):
     """ページ画像の要素だけを撮り、(バイト列, 撮影方式) を返す。
 
     要素が見つからない・撮れない本（画像レンダラでない本、レイアウト変更）は
     従来どおりビューポート全体にフォールバックする。無人実行なので、撮れなく
     なった瞬間に落とすより、方式を記録して撮り続けるほうが被害が小さい。
+
+    撮ったあと、リーダーが要素の外側に置いている余白と同じ幅で外周を埋める。
+    ビューポートを広く撮ってから切り出す方法は使わない。hide_ui_css で
+    消しきれていないヘッダー（書名）が写り込むことを実測で確認している (#60)。
     """
     try:
         locator = page.locator(selector)
         if locator.count():
-            return locator.first.screenshot(), SHOT_ELEMENT
+            first = locator.first
+            return pad_shot(first.screenshot(), reader_padding(page, first)), SHOT_ELEMENT
     except Exception:  # noqa: BLE001 - 撮れない理由は問わずフォールバックする
         pass
     return page.screenshot(), SHOT_VIEWPORT
