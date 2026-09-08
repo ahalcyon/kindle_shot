@@ -718,3 +718,82 @@ def test_searchable_pdf_page_without_coordinates_keeps_its_text(
     )
     assert ok, msg
     assert SAMPLE_TEXT.split("\n")[0] in extract_text(out)
+
+
+# ------------------------------------------------------------
+# しおりの階層 (#63)
+# ------------------------------------------------------------
+
+
+def test_outline_levels_start_at_zero():
+    """reportlab はレベル 0 から始まることを要求する。
+
+    章が検出されず節だけが拾われる本（洋書の 3.2 形式の見出し）では
+    1 件目が節になり、内部状態 -1 からレベル 1 へ飛んで PDF 生成ごと落ちた。
+    """
+    levels = pdf_builder._OutlineLevels()
+    assert levels.normalize(2) == 0
+
+
+def test_outline_levels_never_jump_more_than_one():
+    levels = pdf_builder._OutlineLevels()
+    assert [levels.normalize(n) for n in (1, 3, 3, 2, 1)] == [0, 1, 2, 1, 0]
+
+
+def test_outline_levels_keep_a_normal_hierarchy():
+    """章 -> 節 の素直な並びは詰めない。"""
+    levels = pdf_builder._OutlineLevels()
+    assert [levels.normalize(n) for n in (1, 2, 2, 1, 2)] == [0, 1, 1, 0, 1]
+
+
+def test_searchable_pdf_builds_when_the_first_heading_is_a_section(
+    font_cache_reset, japanese_font, image_folder, tmp_path
+):
+    """#63 の本体。節から始まる本でも PDF ができる。"""
+    from core.chapter_detector import Chapter
+
+    out = tmp_path / "sections.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(image_folder),
+        [("001.png", SAMPLE_TEXT)],
+        str(out),
+        chapters=[
+            Chapter(page_index=0, filename="001.png", title="3.2 Unrestricted Execution", level=2)
+        ],
+    )
+    assert ok, msg
+    assert out.exists()
+
+
+def test_image_pdf_builds_when_the_first_heading_is_a_section(image_folder, tmp_path):
+    """画像 PDF 側も同じ経路を通る。"""
+    from core.chapter_detector import Chapter
+
+    ok, msg = pdf_builder.images_to_pdf(
+        str(image_folder),
+        str(tmp_path),
+        "sections.pdf",
+        chapters=[Chapter(page_index=0, filename="001.png", title="3.2 Unrestricted", level=2)],
+    )
+    assert ok, msg
+
+
+def test_bookmark_failure_does_not_discard_the_book(
+    font_cache_reset, japanese_font, image_folder, tmp_path, monkeypatch
+):
+    """しおりが作れなくても PDF は作る。付加情報のために本文を捨てない。"""
+    from core.chapter_detector import Chapter
+
+    def boom(*_a, **_k):
+        raise ValueError("outline is broken in a way we did not foresee")
+
+    monkeypatch.setattr(pdf_builder.canvas.Canvas, "addOutlineEntry", boom)
+    out = tmp_path / "broken_outline.pdf"
+    ok, msg = pdf_builder.images_to_searchable_pdf(
+        str(image_folder),
+        [("001.png", SAMPLE_TEXT)],
+        str(out),
+        chapters=[Chapter(page_index=0, filename="001.png", title="第1章", level=1)],
+    )
+    assert ok, msg
+    assert SAMPLE_TEXT.split("\n")[0] in extract_text(out)

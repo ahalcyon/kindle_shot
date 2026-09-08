@@ -76,30 +76,64 @@ def register_japanese_font():
     return _registered_font_name
 
 
-def _emit_bookmark(c, key, title, level):
+class _OutlineLevels:
+    """しおりの階層を reportlab が受け付ける形に詰める。
+
+    addOutlineEntry は「レベル 0 から始まり、1 段ずつしか深くならない」ことを
+    要求する。章が検出されず節だけが拾われる本（洋書の技術書に多い 3.2 形式の
+    見出し）では 1 件目が節になり、内部状態 -1 からレベル 1 へ飛んで
+    ``can't jump from outline level -1 to level 1`` で PDF 生成ごと落ちる (#63)。
+
+    章立ての推定を厳しくするのではなく、出す直前に詰める。推定を厳しくすると
+    しおりが減るだけで、飛び方の組み合わせを網羅できない。
+    """
+
+    def __init__(self):
+        self._prev = -1
+
+    def normalize(self, level):
+        wanted = max(0, level - 1)
+        allowed = min(wanted, self._prev + 1)
+        self._prev = allowed
+        return allowed
+
+
+def _emit_bookmark(c, key, title, level, levels=None):
     """canvas に bookmark + outline entry を 1 件追加する。
 
     title が長すぎる場合 PDF ビューアで切り詰められるので 80 文字に制限する。
+
+    levels に _OutlineLevels を渡すと階層を詰める。渡さない場合は従来どおり。
+
+    しおりの追加で落ちても本文は捨てない。しおりは付加情報であって本文ではなく、
+    無人で数百冊を回す用途では「9 分かけた本が最後の 1 行で失われる」ほうが
+    被害が大きい (#63)。階層は _OutlineLevels で詰めてあるが、reportlab の
+    別の制約に当たる可能性まで潰せてはいない。
     """
     safe_title = title[:80] if title else "(untitled)"
-    c.bookmarkPage(key)
-    c.addOutlineEntry(safe_title, key, level=max(0, level - 1), closed=False)
+    depth = levels.normalize(level) if levels is not None else max(0, level - 1)
+    try:
+        c.bookmarkPage(key)
+        c.addOutlineEntry(safe_title, key, level=depth, closed=False)
+    except Exception:  # noqa: BLE001 - しおりの失敗で本文を捨てない
+        pass
 
 
 class _BookmarkFlowable(Flowable):
     """SimpleDocTemplate 用: 描画時に bookmark + outline を追加するゼロサイズ Flowable。"""
 
-    def __init__(self, key, title, level=1):
+    def __init__(self, key, title, level=1, levels=None):
         super().__init__()
         self.key = key
         self.title = title
         self.level = level
+        self.levels = levels
 
     def wrap(self, _aW, _aH):
         return (0, 0)
 
     def draw(self):
-        _emit_bookmark(self.canv, self.key, self.title, self.level)
+        _emit_bookmark(self.canv, self.key, self.title, self.level, self.levels)
 
 
 class _OutlineCanvas(canvas.Canvas):
@@ -135,6 +169,7 @@ def images_to_pdf(folder_path, output_folder, output_filename, on_progress=None,
     output_pdf = os.path.join(output_folder, output_filename)
 
     chapter_map = _chapters_by_filename(chapters)
+    outline_levels = _OutlineLevels()
     c = canvas.Canvas(output_pdf)
     total_files = len(image_files)
 
@@ -147,7 +182,7 @@ def images_to_pdf(folder_path, output_folder, output_filename, on_progress=None,
             c.drawImage(full_path, 0, 0, width, height)
             ch = chapter_map.get(image_file)
             if ch is not None:
-                _emit_bookmark(c, f"page_{i}", ch.title, ch.level)
+                _emit_bookmark(c, f"page_{i}", ch.title, ch.level, outline_levels)
             c.showPage()
 
             if on_progress:
@@ -327,6 +362,7 @@ def images_to_searchable_pdf(image_folder, results, output_path, on_progress=Non
         font_name = register_japanese_font()
 
         chapter_map = _chapters_by_filename(chapters)
+        outline_levels = _OutlineLevels()
         c = canvas.Canvas(output_path)
         total = len(results)
 
@@ -356,7 +392,7 @@ def images_to_searchable_pdf(image_folder, results, output_path, on_progress=Non
 
             ch = chapter_map.get(filename)
             if ch is not None:
-                _emit_bookmark(c, f"page_{i}", ch.title, ch.level)
+                _emit_bookmark(c, f"page_{i}", ch.title, ch.level, outline_levels)
 
             c.showPage()
 
@@ -414,6 +450,7 @@ def text_to_pdf(results, output_path, on_progress=None, chapters=None):
         )
 
         chapter_map = _chapters_by_filename(chapters)
+        outline_levels = _OutlineLevels()
         canvasmaker = _OutlineCanvas if chapter_map else canvas.Canvas
 
         doc = SimpleDocTemplate(
@@ -434,7 +471,7 @@ def text_to_pdf(results, output_path, on_progress=None, chapters=None):
 
             ch = chapter_map.get(filename)
             if ch is not None:
-                story.append(_BookmarkFlowable(f"page_{i}", ch.title, ch.level))
+                story.append(_BookmarkFlowable(f"page_{i}", ch.title, ch.level, outline_levels))
 
             # ページヘッダー（ファイル名）
             story.append(Paragraph(escape(filename), heading_style))
