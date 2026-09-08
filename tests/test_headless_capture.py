@@ -23,15 +23,14 @@ from core.headless_capture import (
     build_manifest,
     capture_pages,
     detect_turn_key,
-    edge_color,
-    pad_shot,
-    page_shot,
-    reader_padding,
     digest,
+    edge_color,
     hide_ui_css,
     is_signed_in,
+    pad_shot,
     page_shot,
     read_position,
+    reader_padding,
     resolve_shot_mode,
     reverse_of,
     rewind_to_start,
@@ -726,6 +725,8 @@ def test_unrelated_dialog_is_not_reported_as_unsupported():
 def test_page_failure_does_not_declare_the_book_unsupported():
     """判定できないだけで「取得手段が無い」と断定すると本を取りこぼす。"""
     assert unsupported_reason(BrokenPage()) is None
+
+
 # ------------------------------------------------------------
 # 余白の復元 (#60)
 # ------------------------------------------------------------
