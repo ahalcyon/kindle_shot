@@ -121,9 +121,19 @@ DEFAULT_MAX_REWIND = 1000
 # 先頭に着いたとみなせる位置の上限。実測 342 冊のバッチで巻き戻しが成功した
 # 227 冊は、位置 1 (73 冊) / 2 (153 冊) / 3 (1 冊) で終わっている。見開きの本が
 # 2 で止まるぶんの余裕を見て 10 にする (#69)。
+# **この 227 冊は「短い巻き戻し」の標本である**（押した回数の中央値 3）。
+# この上限が防ぎたいのは長い巻き戻しのほうで、そちらの実測は 18 冊しかない。
+# 位置 11 以上で正当に始まる本があれば、その本は撮れなくなる（--no-rewind は
+# 「止まった位置から撮る」なので逃げ道にならない）。次のバッチで
+# rewound の reason=stopped_short の件数と位置を必ず集計すること。
 MAX_START_POSITION = 10
-# 巻き戻し中に位置ラベルを読み落としたときの読み直し回数
+# 巻き戻し中に位置ラベルを読み落としたときの、1 押下あたりの読み直し回数
 REWIND_REREAD_ATTEMPTS = 3
+# 1 回の巻き戻し全体で許す読み直しの回数。読み直しは 1 押下あたり最大
+# 2.5 x (3 - 1) = 5 秒かかる。読めない回が成功のたびに帳消しになると累積の
+# 上限が無くなり、押すたびにちらつく本では 1 冊で 90 分を超えうる。
+# バッチは 1 冊あたりのタイムアウトを持っていないので、ここで止める。
+REWIND_REREAD_BUDGET = 20
 
 # 読書位置の表示。実測で 2 形式ある:
 #     "6/339ページ ● 1%"   (ページ表示)
@@ -187,8 +197,13 @@ TURN_PROBE_PRESSES = 3
 # 押した後に位置の変化を待つ回数。変化しないことの確認にも使う。
 TURN_WAIT_ATTEMPTS = 2
 
-# 位置を見に行く間隔。rewind_to_start は DEFAULT_REWIND_WAIT = 0.6 秒待って
-# 位置ラベルの更新を実機で観測できているので、250ms 刻みなら十分細かい。
+# 最初の 1 回を読むまでに待つ時間。**ここを短くしてはいけない。**
+# 押した直後のラベルは遷移中の値を返すことがあり、それが before より小さいと
+# `detect_turn_key` は向きを逆に判定する。逆向きのまま撮ると正常終了して
+# 逆順の部分本が完成扱いになる (#53)。実機で裏が取れているのは
+# rewind_to_start が使っている 0.6 秒までなので、それより早くは読まない。
+TURN_SETTLE_WAIT = DEFAULT_REWIND_WAIT
+# 落ち着いたあとに見に行く間隔
 TURN_POLL_INTERVAL = 0.25
 
 
@@ -198,16 +213,19 @@ def _wait_for_position_change(page, before, *, page_wait, attempts=TURN_WAIT_ATT
     「読めるまで待つ」(_settled_position) では足りない。押した直後は前の値が
     そのまま読めるので、1 回読んで同じなら動いていない、と決めると誤判定する。
 
-    **待つ上限は変えずに、刻んで見る。** 固定スリープだと実機が 0.5 秒で
-    反映しても page_wait（既定 2.5 秒）を必ず払う。#53 で向きごとに最大 3 回
-    押すようにしたため、動かない向きは 3 x 2 x 2.5 = 15 秒かかっていた。
-    候補の順は ("left", "right") 固定なので、先頭ページの横書き本は毎回
-    left で 15 秒を捨てる (#57)。上限（page_wait x attempts）は据え置くので、
-    「動かない」の判定は今までと同じだけ粘る。
+    **上限は変えずに、落ち着いてから刻んで見る。** 固定スリープだと実機が
+    0.6 秒で反映しても page_wait（既定 2.5 秒）を必ず払っていた (#57)。
+
+    速くなるのは**動く向きの検出だけ**で、1 押下あたり 2.5 秒が 0.6 秒になる。
+    動かない向きは上限（page_wait x attempts）まで粘るので今までと同じ時間が
+    かかる。#57 が挙げている「先頭ページの横書き本が left で 15 秒を捨てる」は
+    この変更では消えない。消すには候補の順を決め打ちにしているところ
+    （detect_turn_key の ("left", "right")）を変える必要がある。
     """
     budget = page_wait * attempts
-    interval = min(TURN_POLL_INTERVAL, budget)
     waited = 0.0
+    # 1 回目は遷移が落ち着くまで待つ。2 回目以降だけ刻む
+    interval = min(TURN_SETTLE_WAIT, budget)
     while True:
         page.wait_for_timeout(int(interval * 1000))
         waited += interval
@@ -217,6 +235,7 @@ def _wait_for_position_change(page, before, *, page_wait, attempts=TURN_WAIT_ATT
         # budget が 0 のとき（テスト）でも 1 回は読んでから抜ける
         if waited >= budget:
             return None
+        interval = min(TURN_POLL_INTERVAL, budget - waited)
 
 
 def _probe_turn(page, candidate, *, page_wait):
@@ -713,12 +732,24 @@ def rewind_to_start(
     back = turn_key(reverse_of(forward))
     before, total = read_position_pair(page)
     if before is None:
-        emit("status", human="読書位置を読めないため巻き戻せません")
+        # ここでも rewound を出す。出さないと、巻き戻しの結果を rewound で
+        # 追う運用（tests/e2e/test_amazon_e2e.py もそうしている）から
+        # この経路だけが落ちる
+        emit(
+            "rewound",
+            human="読書位置を読めないため巻き戻せません",
+            ok=False,
+            presses=0,
+            position=None,
+            total=None,
+            reason="no_position",
+        )
         return False, 0
 
     pressed = 0
     stuck = 0
     unreadable = 0
+    rereads = 0
     at_start = before <= 1
     while pressed < max_rewind and not at_start:
         page.keyboard.press(back)
@@ -734,6 +765,11 @@ def rewind_to_start(
             # 読み直しは巻き戻しの刻み (0.6 秒) ではなく通常の待ち時間で待つ。
             # 実測では合本の巻の境目でラベルが数秒消える。0.6 秒の刻みでは
             # 復帰を待ちきれず、読めないまま打ち切っていた (#69)
+            rereads += 1
+            # ダイアログが被っていると位置ラベルも読めない。巻き戻しの
+            # ループは今まで一度も閉じていなかった。実測で、横書きの本が
+            # 位置 148/336 で「読めない」まま打ち切られた (#69)
+            dismiss_dialogs(page)
             current, seen_total = _settled_position_pair(
                 page,
                 page_wait=max(page_wait, DEFAULT_PAGE_WAIT),
@@ -745,6 +781,10 @@ def rewind_to_start(
                 # どこにいるか分からない。先頭だと決めつけない
                 break
             continue
+        if rereads >= REWIND_REREAD_BUDGET:
+            # 読めたり読めなかったりを繰り返している。これ以上は時間を食うだけ
+            unreadable = max_retries
+            break
         unreadable = 0
         if seen_total is not None:
             total = seen_total
@@ -765,7 +805,7 @@ def rewind_to_start(
     # 巻き戻しはすべて位置 1 / 2 / 3 で終わっており、4 以上は 1 冊も無い。
     # 位置 1658 や 3344 で止まったものは、動かなくなっただけで先頭ではない (#69)。
     ok = at_start and before <= MAX_START_POSITION
-    where = f"位置 {before}" + (f"/{total}" if total else "")
+    where = f"位置 {before}" + (f"/{total}" if total is not None else "")
     if ok:
         human = f"先頭へ巻き戻しました（{pressed} 回、{where}）"
         reason = "ok"
