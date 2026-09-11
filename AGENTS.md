@@ -74,13 +74,84 @@ Refs #<issue番号>
 次のいずれかに触れる変更は、**push 前に実機で動作確認する**。
 自動テストも CI もこの層を一切カバーしていないため、ここだけは実機確認が要る。
 
-- `core/capture_engine.py` / `core/capture_runner.py` / `core/capture_profiles.py`
-- `core/headless_capture.py` / `core/headless_browser.py`
-  （`kindle_cloud` プロファイルの既定経路＝**本番のキャプチャ経路**）
-- `core/win32_utils.py` / `core/dpi.py` / `core/reader_navigator.py`
-- `core/boundary_detector.py` の境界検出（トリミングの純ロジックは対象外）
-- `cli.py` の `capture` / `open` / `run` / `batch` / `check` コマンド
-- `scripts/smoke_capture.py`（スモーク自身。壊れると全ての確認が無意味になる）
+**ゲートは headless だけで回す。** 以前は 1 本の一覧に画面キャプチャ経路の
+ファイルも入れて headless スモークで守っていたが、headless はそれらを
+1 行も実行しない。**緑になっても何も確かめていない**、という偽陰性そのものだった（#50）。
+
+**分け方の規準:**
+
+1. **CI やユニットテストで守れないこと。** 守れるものは入れない
+   （`core/trimmer.py` / `core/pdf_builder.py` / `core/validator.py` などは
+   スモークも通るが専用のテストがあるので入れない）
+2. **headless スモークが実際に実行すること。** 実行されないものは下の
+   「検証できないもの」へ回す。**「実行される」と「検証される」は違う**
+   （`core/dpi.py` は実行されるが、失敗を全部握り潰すので検証にならない）
+
+**pre-push が強制するもの**（`scripts/smoke_capture.py`。画面を占有しない）
+
+- `core/headless_capture.py` — `kindle_cloud` プロファイルの既定経路＝**本番のキャプチャ経路**
+- `core/headless_browser.py`
+- `core/capture_profiles.py`
+- `core/boundary_detector.py` — 検証範囲は `kindleshot.smokeAsin` に何を設定したかで変わる。
+  要素撮影の本では `margins=(0,0,0,0)` を渡すのでマージンの自動検出が走らない
+  （`folder_page_margins` と `clipped_pages_from` は走る）
+- `core/pipeline.py` — スモークが通るのは `run_book` の経路だけ。`run_batch` /
+  `load_batch_file` / ディスク残量ガードは通らない
+- `cli.py` — スモークが実行するのは `run` だけ。それ以外のサブコマンドは通らない
+- `scripts/smoke_capture.py` — スモーク自身。壊れると全ての確認が無意味になる
+- `core/win32_utils.py` — 通るのは import と `prevent_sleep` / `allow_sleep` だけ。
+  ウィンドウ探索・前面化・モニタ列挙・全画面判定は画面経路でしか通らない
+
+`core/win32_utils.py` は画面経路の顔をしているが、**ゲートに入れる。**
+パイプラインは headless 分岐に入る前に無条件で import し、
+`prevent_sleep(keep_display=not headless)` を本物として実行する
+（`dpi` と違って例外を握り潰さないので、壊れれば落ちる）。ユニットテストは
+これを monkeypatch で差し替えるため、シグネチャを変えても CI は捕まえない。
+捕まえられるのは headless スモークだけで、本番 227/227 冊が通る経路にあたる。
+
+**どちらのスモークでも検証できないもの**
+
+監視対象に足すと「検証できないのに push がブロックされる」だけになるので、
+あえて外してある。**外したこと自体は正しいが、書いておかないと穴が隠れる**ので
+ここに並べ、`tests/test_pre_push_hook.py` で固定している。
+
+- `core/capture_engine.py` — 画面キャプチャ経路
+- `core/capture_runner.py` — 画面キャプチャ経路
+- `core/reader_navigator.py` — 画面キャプチャ経路
+- `core/amazon_signin.py` — `reader_navigator` から呼ばれるが、**サインアウト
+  していないと通らない**
+- `core/dpi.py` — `cli.py` の起動時に呼ばれるので**実行はされる**が、中身が
+  `try/except Exception` と `contextlib.suppress` で全部握り潰されているため、
+  **どう壊してもスモークは緑のまま**
+- `core/page_turn_probe.py` — `ui/steps/capture_step.py` からしか呼ばれず、
+  `cli.py` は import すらしていない
+- `core/library.py` — `cli.py library` は実際の蔵書ページの DOM を読むが、
+  スモークは `cli.py run` しか実行しない
+
+### 画面キャプチャ経路をゲートにしない理由
+
+`scripts/smoke_capture.py --screen` で画面経路を通せる。**ただし pre-push では強制しない。**
+
+実機で通したのは 41f7b9e の時点（31 秒 / 3 ページ / PDF）。その後も `run_smoke` の
+戻り値と後始末を変えているので、**現行コードで流した記録は無い**。画面経路を触るときは、
+まず 1 本流して現状を確かめること。
+
+- **本番が通らない。** 342 冊のバッチは 227 冊すべて `capture: headless ブラウザで
+  キャプチャ` で、`open:`（画面経路）のステップは 1 度も実行されていない。
+  `HEADLESS_PROFILE = "kindle_cloud"` で、Kindle を撮る限り画面経路には入らない
+- **検証にデスクトップセッションが要る。** 画面そのものを撮る実装なので、
+  headless 化はできない。画面が消えていれば push できず、`--no-verify` が常態化する
+- **実測で 4 回に 1 回、ページが進まずに失敗する**（#74）
+
+画面経路（`capture_engine` / `capture_runner` / `reader_navigator`）を触ったときは、
+**手で流す**。
+
+```
+python scripts/smoke_capture.py --screen
+```
+
+デスクトップを占有する（ブラウザが全画面になり、マウスが別モニタへ退避する）。
+実測で 30 秒ほど。
 
 **Playwright などのブラウザ自動化は使えない。** このアプリはブラウザを操作していない。
 Win32 API でネイティブウィンドウを探し、`ImageGrab` で画面そのものを物理ピクセルで
@@ -124,13 +195,9 @@ self-hosted runner のワークフローから呼べば CI 化もできる
 （GitHub ホストのランナーは対話的なデスクトップが無いため不可）。
 
 **スモークが緑でも、画面キャプチャ経路は検証されていない。**
-`scripts/smoke_capture.py` は常に `--headless` を付けて `cli.py run` を呼ぶので、
-実際に通るのは `core/headless_capture.py` / `core/headless_browser.py` /
-`core/boundary_detector.py` / `cli.py` / `core/pipeline.py` だけ。
-`core/capture_engine.py` / `core/capture_runner.py` / `core/dpi.py` /
-`core/reader_navigator.py` を変更したときは、**その回帰を検出できないスモークの
-成功をもって push が許可される**。これらに触ったら `--no-headless` で
-`cli.py run` を手で流して確認すること。
+何が通って何が通らないかは上の 2 つの一覧が正典で、
+理由は「画面キャプチャ経路をゲートにしない理由」にある。
+**ここに一覧を書き写さないこと**（写すと必ずずれる）。
 
 #### 手順
 
@@ -177,7 +244,8 @@ self-hosted runner のワークフローから呼べば CI 化もできる
 
 - 先頭ページへの巻き戻しは Kindle の読書位置 (Whispersync) を動かす。
   本番の蔵書で試すときはそのつもりで
-- スモークは headless で走るので画面もセッションも不要。実行中も PC を使える
+- 既定（フックが走らせるもの）は headless なので画面もセッションも不要。
+  実行中も PC を使える。`--screen` は逆にデスクトップを占有する
 
 #### 結果の残し方
 
@@ -386,6 +454,25 @@ python3 scripts/audit_rules.py <出力フォルダ>
 
 スモークが実際に何を通るかは「5. 実機スモーク」に書いてある。
 通らない経路に触ったなら、その経路を手で流す。
+
+### 「確認した」の表示は、引数ではなく実際に走らせたものから導く
+
+**何をしたかの報告を、入力の値から組み立てない。** 配線が切れたとき、
+表示だけが生き残って嘘をつく。
+
+- 2026-09-12、`scripts/smoke_capture.py` が
+  `path = "画面キャプチャ" if args.screen else "headless"` と表示していた。
+  `main` から runner へ `screen=` を渡す 1 行を落とすと、**headless で走って
+  「画面キャプチャで確認しました」と出る**。テストは全部緑のままだった。
+  #50（機械が確認したと言うが実際はしていない）を、#50 を直すツールの中で
+  再現できる状態だった。実際に走らせた argv から導くように直した。
+
+守り方:
+
+- 表示・ログ・PR の記述は、**実行結果（argv・戻り値・manifest）を経由させる**。
+  引数やフラグを直接読んで書かない
+- 引数が末端まで届くことをテストで固定する。入口の単体テストだけでは、
+  途中で落ちても気付けない
 
 ### 待ち合わせを起動してからターンを終える
 

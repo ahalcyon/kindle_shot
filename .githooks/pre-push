@@ -75,9 +75,28 @@ if [ "$1" = "--check" ]; then
 fi
 
 # 実機確認が要るファイル。AGENTS.md の一覧と合わせること。
-# headless_* は kindle_cloud プロファイルの既定経路＝本番のキャプチャ経路なので、
-# 画面キャプチャ側 (capture_*) と同じく実機でしか壊れが分からない。
-WATCH_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/capture_profiles\.py|core/headless_capture\.py|core/headless_browser\.py|core/win32_utils\.py|core/dpi\.py|core/reader_navigator\.py|core/boundary_detector\.py|cli\.py|scripts/smoke_capture\.py)$'
+#
+# **ここに入れてよいのは、headless スモークが実際に実行するものだけ。**
+# 以前は画面キャプチャ経路のファイル (capture_engine / capture_runner /
+# reader_navigator) も入っていたが、スモークは --headless で
+# 走るのでそれらを 1 行も実行しない。緑になっても何も確かめていない、
+# という偽陰性そのものだった (#50)。
+#
+# 画面経路をゲートにすることは**しない**。
+#   - 本番が通らない。342 冊のバッチは 227 冊すべて headless で、
+#     open: のステップ（画面経路）は 1 度も実行されていない
+#   - 検証にデスクトップセッションが要る。画面が消えていれば push できず、
+#     --no-verify が常態化する
+#   - 実測で 4 回に 1 回、ページが進まずに失敗する (#74)
+# 画面経路を触ったときは scripts/smoke_capture.py --screen を手で流す。
+# 対象ファイルは AGENTS.md「どちらのスモークでも検証できないもの」にある。
+#
+# core/win32_utils.py は画面経路の顔をしているが**ゲートに入れる**。
+# core/pipeline.py は headless 分岐に入る前に無条件で import し、
+# prevent_sleep(keep_display=not headless) を本物として実行する。
+# ユニットテストはこれを monkeypatch で差し替えるので、シグネチャを変えても
+# CI は捕まえない。捕まえられるのは headless スモークだけ。
+WATCH_RE='^(core/headless_capture\.py|core/headless_browser\.py|core/capture_profiles\.py|core/boundary_detector\.py|core/pipeline\.py|core/win32_utils\.py|cli\.py|scripts/smoke_capture\.py)$'
 
 ZERO='0000000000000000000000000000000000000000'
 changed=''
@@ -139,8 +158,10 @@ if ! probe=$("$PY" -c "import sys" 2>&1 >/dev/null); then
     exit 1
 fi
 
-printf 'pre-push: 実機スモークを実行します（headless。画面は占有しません）\n'
-printf '          ASIN=%s python=%s\n' "$ASIN" "$PY"
+printf 'pre-push: ASIN=%s python=%s\n' "$ASIN" "$PY"
+echo ""
+
+printf 'pre-push: 実機スモーク（headless。画面は占有しません）\n'
 echo ""
 
 if "$PY" scripts/smoke_capture.py --asin "$ASIN"; then

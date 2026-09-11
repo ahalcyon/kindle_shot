@@ -122,21 +122,31 @@ def repo(tmp_path):
     return root
 
 
-def _commit_change(repo, relpath):
-    target = repo / relpath
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("changed\n", encoding="utf-8")
+def _commit_change(repo, *relpaths):
+    """1 つのコミットで複数のファイルを変える。
+
+    _push_input が HEAD~1 を base にするので、**2 回に分けてコミットすると
+    後ろの 1 つしかフックに見えない**。
+    """
+    for relpath in relpaths:
+        target = repo / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("changed\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "change")
 
 
 def _stub_python(repo, marker):
-    """引数を marker に書き出すだけの偽インタプリタ。"""
+    """引数を marker に書き足すだけの偽インタプリタ。
+
+    **上書きではなく追記する。** 1 回の push で headless と画面の 2 本を
+    走らせることがあるので、上書きだと後ろの 1 本しか観測できない。
+    """
     stub = repo / "stubpy"
     body = (
         "#!/bin/sh\n"
         'if [ "$1" = "-c" ]; then exit 0; fi\n'
-        'printf %s "$*" > "' + marker.as_posix() + '"\n'
+        'printf "%s\\n" "$*" >> "' + marker.as_posix() + '"\n'
     )
     stub.write_text(body, encoding="utf-8", newline="\n")
     os.chmod(stub, 0o755)
@@ -224,6 +234,12 @@ def test_headless_capture_is_watched(repo, tmp_path):
     code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
     assert code == 0, err or out
     assert marker.exists(), "headless_capture.py の変更でスモークが走っていない"
+    # **フックが強制するのは headless だけ** (#50)。--screen を付けると
+    # デスクトップを占有し、画面が消えている環境では push できなくなる。
+    # スクリプト名まで見るのは、起動行の typo を fail-closed 任せにしないため
+    ran = marker.read_text(encoding="utf-8")
+    assert "scripts/smoke_capture.py" in ran
+    assert "--screen" not in ran, "フックがデスクトップを占有するほうを走らせている"
 
 
 @needs_sh
@@ -272,13 +288,47 @@ def _watch_re_files():
     return {alt.replace("\\.", ".") for alt in m.group(1).split("|")}
 
 
-def _documented_files():
-    """AGENTS.md「実機スモーク」節が挙げているファイル名。"""
+# スモークで検証できないと AGENTS.md が明記している見出し。ここから下は
+# 「監視しないと決めたもの」なので、フックの一覧と突き合わせない
+_UNVERIFIABLE_HEADING = "**どちらのスモークでも検証できないもの**"
+
+
+def _section(start, end):
     with open(AGENTS, encoding="utf-8") as f:
         text = f.read()
-    section = text.split("### 5. 実機スモーク", 1)[1].split("#### 対象は Cloud Reader", 1)[0]
-    listed = [line for line in section.splitlines() if line.startswith("- ")]
-    return {t for line in listed for t in re.findall(r"`([\w/]+\.py)`", line)}
+    return text.split(start, 1)[1].split(end, 1)[0]
+
+
+def _files_in(chunk):
+    """箇条書きが主語にしているファイル名。
+
+    **1 行につき最初のパスだけを見る。** 2 つ目以降は「どこから呼ばれるか」の
+    説明で出てくるので、主語と混ぜると一覧が狂う。
+    """
+    names = set()
+    for line in chunk.splitlines():
+        if not line.startswith("- "):
+            continue
+        found = re.findall(r"`([\w/]+\.py)`", line)
+        if found:
+            names.add(found[0])
+    return names
+
+
+_WATCHED_HEADING = "**pre-push が強制するもの**"
+
+
+def _documented_files():
+    """AGENTS.md「実機スモーク」節が、監視対象として挙げているファイル名。"""
+    return _files_in(_section(_WATCHED_HEADING, _UNVERIFIABLE_HEADING))
+
+
+def _documented_unverifiable():
+    """検証できないと明記されているファイル名。"""
+    # 終端は直後の見出し。`#### 対象は Cloud Reader` まで伸ばすと
+    # 「ゲートにしない理由」節の箇条書きまで飲み込み、そこに 1 行足すだけで
+    # 「検証できないものとして明記済み」と誤判定できる
+    return _files_in(_section(_UNVERIFIABLE_HEADING, "### 画面キャプチャ経路"))
 
 
 def test_watch_list_matches_the_documentation():
@@ -288,3 +338,78 @@ def test_watch_list_matches_the_documentation():
     本番経路の headless_capture.py が実際に漏れていた（#47）。
     """
     assert _watch_re_files() == _documented_files()
+
+
+def test_the_unverifiable_files_are_documented_and_not_gated():
+    """検証できないファイルを、黙って監視対象に入れない (#50)。
+
+    core/amazon_signin.py は reader_navigator から呼ばれるが、サインアウト
+    していないと通らない。監視対象に足すと「検証できないのに push が
+    ブロックされる」だけになる。**外すこと自体は正しいが、外したことが
+    どこにも書かれていないと穴が隠れる**ので、AGENTS.md に明記して
+    ここで固定する。
+    """
+    unverifiable = _documented_unverifiable()
+    assert "core/amazon_signin.py" in unverifiable
+    assert unverifiable & _watch_re_files() == set()
+
+
+def _bullets(chunk):
+    """箇条書きを 1 件ずつ返す（継続行を畳む）。"""
+    items: list[str] = []
+    for line in chunk.splitlines():
+        if line.startswith("- "):
+            items.append(line)
+        elif items and line.startswith("  "):
+            items[-1] += " " + line.strip()
+    return items
+
+
+# 箇条書きの中で「どこから呼ばれるか」の説明として出てくるだけのパス。
+# 主語でも監視対象でもないので、下のテストの対象から外す。
+_CONTEXT_ONLY = {"ui/steps/capture_step.py", "tests/test_pre_push_hook.py"}
+
+
+def test_each_bullet_names_exactly_one_file():
+    """一覧は 1 行 1 ファイルで書く。
+
+    _files_in は 1 行の**最初の**パスだけを主語として拾う。そのため
+    「- `a.py` と `b.py`」と書くと b.py が黙って消え、**ドキュメントには
+    載っているのにフックは見ていない**状態が緑で通る。
+    """
+    # 「検証できないもの」の箇条書きは、なぜ検証できないかの説明で呼び出し元の
+    # ファイル名が出るので対象外。監視対象の一覧だけを見る
+    chunk = _section(_WATCHED_HEADING, _UNVERIFIABLE_HEADING)
+    for item in _bullets(chunk):
+        found = re.findall(r"`([\w/]+\.py)`", item)
+        assert len(found) == 1, f"監視対象の箇条書きが 1 ファイルでない: {item}"
+
+
+def test_every_path_in_the_lists_is_accounted_for():
+    """一覧に出てくる .py が、主語か・監視対象か・説明用かのどれかであること。"""
+    chunk = "\n".join(
+        (
+            _section(_WATCHED_HEADING, _UNVERIFIABLE_HEADING),
+            _section(_UNVERIFIABLE_HEADING, "### 画面キャプチャ経路"),
+        )
+    )
+    mentioned = set(re.findall(r"`([\w/]+\.py)`", chunk))
+    known = _documented_files() | _documented_unverifiable() | _watch_re_files() | _CONTEXT_ONLY
+    assert mentioned <= known, f"主語にも監視対象にもなっていないパス: {mentioned - known}"
+
+
+def test_the_screen_path_is_not_gated():
+    """画面キャプチャ経路のファイルを push のゲートにしないこと (#50)。
+
+    headless スモークはこれらを 1 行も実行しない。監視対象に入れたまま
+    headless だけで守ると「緑なのに何も確かめていない」偽陰性になる。
+    画面経路でしか確かめられない以上、**ゲートから外して外したと書く**
+    のが正しい。--screen は手で流す道具として残してある。
+    """
+    screen_only = {
+        "core/capture_engine.py",
+        "core/capture_runner.py",
+        "core/reader_navigator.py",
+    }
+    assert screen_only & _watch_re_files() == set()
+    assert screen_only <= _documented_unverifiable()
