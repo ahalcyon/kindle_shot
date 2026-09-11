@@ -6,7 +6,9 @@
 """
 
 import importlib.util
+import json
 import os
+import types
 
 import pytest
 
@@ -214,16 +216,56 @@ def test_the_previous_output_is_cleared_before_every_attempt(tmp_path, monkeypat
     assert seen == [[False, False, False], [False, False, False]]
 
 
-def test_a_timeout_manifest_is_marked_retryable():
-    """やり直すかどうかを manifest の値で決める。表示文言に依存しない。
-
-    以前は check_manifest が付ける説明の文字列と照合していた。文言を変えると
-    テストは緑のまま、やり直しだけが黙って死ぬ。
-    """
-    assert smoke_capture.RETRYABLE_REASON == "timeout"
-    problems = smoke_capture.check_manifest(
-        {"total_pages": 1, "stopped_reason": smoke_capture.RETRYABLE_REASON}, 3
+def _fake_run(manifest, tmp_path, monkeypatch):
+    """cli.py を起こさずに run_smoke を通す。manifest だけ置いて偽の成功を返す。"""
+    out = str(tmp_path)
+    os.makedirs(smoke_capture.capture_dir(out), exist_ok=True)
+    with open(
+        os.path.join(smoke_capture.capture_dir(out), "manifest.json"), "w", encoding="utf-8"
+    ) as f:
+        json.dump(manifest, f)
+    monkeypatch.setattr(
+        smoke_capture.subprocess,
+        "run",
+        lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
+    return smoke_capture.run_smoke("B0TEST", out, 3, echo=lambda *_: None)
+
+
+def test_run_smoke_reads_retryable_from_the_manifest(tmp_path, monkeypatch):
+    """やり直すかどうかを manifest の stopped_reason から決めていること。
+
+    **この配線を通すテストが要る。** 定数を assert するだけでは、
+    run_smoke が retryable = False を返すようにしても緑のまま通り、
+    やり直しが黙って死ぬ。表示文言との一致を見ていたときと同じ穴になる。
+    """
+    _, retryable = _fake_run(
+        {"total_pages": 1, "stopped_reason": "timeout", "duration_seconds": 1},
+        tmp_path,
+        monkeypatch,
+    )
+    assert retryable is True
+
+
+def test_run_smoke_does_not_mark_a_normal_stop_retryable(tmp_path, monkeypatch):
+    """逆向きも固定する。True を返しっぱなしにすると毎回 30 秒を捨てる。"""
+    _, retryable = _fake_run(
+        {"total_pages": 3, "stopped_reason": "max_pages", "duration_seconds": 1},
+        tmp_path,
+        monkeypatch,
+    )
+    assert retryable is False
+
+
+def test_run_smoke_without_a_manifest_is_not_retryable(tmp_path, monkeypatch):
+    """撮影が始まってすらいないなら、やり直しても同じ。"""
+    monkeypatch.setattr(
+        smoke_capture.subprocess,
+        "run",
+        lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    problems, retryable = smoke_capture.run_smoke("B0TEST", str(tmp_path), 3, echo=lambda *_: None)
+    assert retryable is False
     assert problems
 
 

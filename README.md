@@ -1212,8 +1212,8 @@ Cloud Reader で本を開くところから全自動で 3 ページ取得し、P
 #### 経路が 2 つある
 
 既定の headless は **`core/capture_engine.py` / `core/capture_runner.py` /
-`core/reader_navigator.py` を 1 行も実行しない**。この 3 つを通すには
-`--screen` を付ける。
+`core/reader_navigator.py` / `core/win32_utils.py` のウィンドウ操作を
+1 行も実行しない**。これらを通すには `--screen` を付ける。
 
 ```
 kindle_env\Scripts\python.exe scripts/smoke_capture.py --asin B0XXXXXXXX --screen
@@ -1234,11 +1234,17 @@ git config core.hooksPath .githooks
 git config kindleshot.smokeAsin B0XXXXXXXX
 ```
 
-フックは**触ったファイルに応じて必要なほうだけ**走らせる。画面側のファイルに
-触ったときだけデスクトップを占有する。**両方で検証できるファイルは両方の一覧に
-入れてある**（共有部分を headless 側だけに置くと、画面側でしか確かめられない部分が
-無検証のまま通るため）。対応表と、どちらのスモークでも検証できないファイルの一覧は
-[AGENTS.md](AGENTS.md)「実機スモーク」にある。
+**フックが強制するのは headless のスモークだけ**で、画面は占有しない。
+`--screen` は**手で流す道具**であってゲートではない。理由は 3 つ:
+
+- **本番が通らない。** 342 冊のバッチは 227 冊すべて headless で、画面経路の
+  `open:` ステップは 1 度も実行されていない
+- **検証にデスクトップセッションが要る。** 画面そのものを撮る実装なので
+  headless 化できない。画面が消えていれば push できず、`--no-verify` が常態化する
+- 実測で 4 回に 1 回、ページが進まずに失敗する（#74）
+
+画面経路のファイルは**ゲートから外したうえで、外したと明記**してある。
+一覧は [AGENTS.md](AGENTS.md)「実機スモーク」にある。
 
 ### テストの種類
 

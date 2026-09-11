@@ -74,48 +74,31 @@ Refs #<issue番号>
 次のいずれかに触れる変更は、**push 前に実機で動作確認する**。
 自動テストも CI もこの層を一切カバーしていないため、ここだけは実機確認が要る。
 
-**経路が 2 つあり、どちらのスモークが通るかでファイルが分かれる。** 以前は
-1 本の一覧を headless スモークだけで守っていたが、headless は
-`capture_engine` / `capture_runner` / `reader_navigator` を 1 行も実行しない。
-つまり「実機で確認した」という記録が実態を伴っていなかった（#50）。
+**ゲートは headless だけで回す。** 以前は 1 本の一覧に画面キャプチャ経路の
+ファイルも入れて headless スモークで守っていたが、headless はそれらを
+1 行も実行しない。**緑になっても何も確かめていない**、という偽陰性そのものだった（#50）。
 
-**分け方の規準は「どちらか一方に入れる」ではなく「検証できる経路すべてに入れる」。**
-共有部分を headless 側だけに置くと、画面側でしか確かめられない部分が
-無検証のまま通る。下の 3 つは両方に入っている。
+**分け方の規準:**
 
-**画面キャプチャ経路**（`scripts/smoke_capture.py --screen`。デスクトップを占有する）
+1. **CI やユニットテストで守れないこと。** 守れるものは入れない
+   （`core/trimmer.py` / `core/pdf_builder.py` / `core/validator.py` などは
+   スモークも通るが専用のテストがあるので入れない）
+2. **headless スモークが実際に実行すること。** 実行されないものは下の
+   「検証できないもの」へ回す。**「実行される」と「検証される」は違う**
+   （`core/dpi.py` は実行されるが、失敗を全部握り潰すので検証にならない）
 
-- `core/capture_engine.py`
-- `core/capture_runner.py`
-- `core/reader_navigator.py`
-- `core/win32_utils.py` — headless が呼ぶのは prevent_sleep / allow_sleep だけ。
-  ウィンドウ探索・前面化・モニタ列挙・全画面判定は画面経路でしか通らない。
-  その 2 つのために headless 側にも入れることはしていない。13 関数中 2 つでは
-  「確認した」と言える範囲が狭すぎる
-- `core/capture_profiles.py`（両方）— headless が使うのは get_profile と to_dict
-  だけ。timeout_seconds / settle_\* / click_position / window_title_keyword /
-  fullscreen_wait は画面経路でしか効かない
-- `core/boundary_detector.py`（両方）— **headless 側の検証範囲は
-  `kindleshot.smokeAsin` に何を設定したかで変わる。** 要素撮影の本では
-  `margins=(0,0,0,0)` を渡すので、マージンの自動検出（`aggregate_margins` /
-  `page_variation_margins` / `combine_margins`）が走らない（`folder_page_margins` と
-  `clipped_pages_from` は走る）。画面経路は必ず自動検出を通るので、
-  こちらのほうが検証範囲が広い
-- `cli.py`（両方）— run --no-headless の配線は --screen でしか通らない
-- `core/pipeline.py`（両方）— headless と画面の分岐そのものがここにある
-- `scripts/smoke_capture.py`（両方）— **--screen の配線（--no-headless を
-  組み立てる所）は画面スモークでしか通らない。** ここを headless 側だけで
-  守ると、--no-headless のタイプミスが緑のまま通る
-
-**headless 経路**（`scripts/smoke_capture.py`。画面を占有しない）
+**pre-push が強制するもの**（`scripts/smoke_capture.py`。画面を占有しない）
 
 - `core/headless_capture.py` — `kindle_cloud` プロファイルの既定経路＝**本番のキャプチャ経路**
 - `core/headless_browser.py`
-- `core/capture_profiles.py`（両方）
-- `core/boundary_detector.py`（両方）
-- `core/pipeline.py`（両方）
-- `cli.py`（両方）
-- `scripts/smoke_capture.py`（両方）— スモーク自身。壊れると全ての確認が無意味になる
+- `core/capture_profiles.py`
+- `core/boundary_detector.py` — 検証範囲は `kindleshot.smokeAsin` に何を設定したかで変わる。
+  要素撮影の本では `margins=(0,0,0,0)` を渡すのでマージンの自動検出が走らない
+  （`folder_page_margins` と `clipped_pages_from` は走る）
+- `core/pipeline.py` — スモークが通るのは `run_book` の経路だけ。`run_batch` /
+  `load_batch_file` / ディスク残量ガードは通らない
+- `cli.py` — スモークが実行するのは `run` だけ。それ以外のサブコマンドは通らない
+- `scripts/smoke_capture.py` — スモーク自身。壊れると全ての確認が無意味になる
 
 **どちらのスモークでも検証できないもの**
 
@@ -123,20 +106,42 @@ Refs #<issue番号>
 あえて外してある。**外したこと自体は正しいが、書いておかないと穴が隠れる**ので
 ここに並べ、`tests/test_pre_push_hook.py` で固定している。
 
-- `core/amazon_signin.py`（Win32 のログアウト検出、#15）。`reader_navigator` から
-  呼ばれるが、**サインアウトしていないと通らない**
-- `core/dpi.py`。`cli.py` の起動時に呼ばれるので**実行はされる**が、中身が
+- `core/capture_engine.py` — 画面キャプチャ経路
+- `core/capture_runner.py` — 画面キャプチャ経路
+- `core/reader_navigator.py` — 画面キャプチャ経路
+- `core/win32_utils.py` — headless が呼ぶのは prevent_sleep / allow_sleep だけ。
+  ウィンドウ探索・前面化・モニタ列挙・全画面判定は画面経路でしか通らない
+- `core/amazon_signin.py` — `reader_navigator` から呼ばれるが、**サインアウト
+  していないと通らない**
+- `core/dpi.py` — `cli.py` の起動時に呼ばれるので**実行はされる**が、中身が
   `try/except Exception` と `contextlib.suppress` で全部握り潰されているため、
-  **どう壊してもスモークは緑のまま**。守りたい失敗（DPI 認識を失って
-  `GetWindowRect` と `ImageGrab` の座標がずれる）も、ページ数と画像の相違しか
-  見ていないスモークでは捕まらない
-- `core/page_turn_probe.py`。`ui/steps/capture_step.py` からしか呼ばれず、
+  **どう壊してもスモークは緑のまま**
+- `core/page_turn_probe.py` — `ui/steps/capture_step.py` からしか呼ばれず、
   `cli.py` は import すらしていない
-- `core/library.py`。`cli.py library` は実際の蔵書ページの DOM を読むが、
+- `core/library.py` — `cli.py library` は実際の蔵書ページの DOM を読むが、
   スモークは `cli.py run` しか実行しない
 
-`cli.py` はファイルとしては両方の一覧に入っているが、**スモークが実行するのは
-`run` だけ**。それ以外のサブコマンドはどちらの経路でも実行されない。
+### 画面キャプチャ経路をゲートにしない理由
+
+`scripts/smoke_capture.py --screen` で画面経路を通せる（実装済み・実機で確認済み）。
+**ただし pre-push では強制しない。**
+
+- **本番が通らない。** 342 冊のバッチは 227 冊すべて `capture: headless ブラウザで
+  キャプチャ` で、`open:`（画面経路）のステップは 1 度も実行されていない。
+  `HEADLESS_PROFILE = "kindle_cloud"` で、Kindle を撮る限り画面経路には入らない
+- **検証にデスクトップセッションが要る。** 画面そのものを撮る実装なので、
+  headless 化はできない。画面が消えていれば push できず、`--no-verify` が常態化する
+- **実測で 4 回に 1 回、ページが進まずに失敗する**（#74）
+
+画面経路（`capture_engine` / `capture_runner` / `reader_navigator` / `win32_utils`）
+を触ったときは、**手で流す**。
+
+```
+python scripts/smoke_capture.py --screen
+```
+
+デスクトップを占有する（ブラウザが全画面になり、マウスが別モニタへ退避する）。
+実測で 30 秒ほど。
 
 **Playwright などのブラウザ自動化は使えない。** このアプリはブラウザを操作していない。
 Win32 API でネイティブウィンドウを探し、`ImageGrab` で画面そのものを物理ピクセルで

@@ -237,89 +237,6 @@ def test_headless_capture_is_watched(repo, tmp_path):
 
 
 @needs_sh
-def test_screen_only_change_runs_the_screen_smoke(repo, tmp_path):
-    """画面キャプチャ経路でしか動かないファイルは --screen で確認する (#50)。
-
-    headless スモークは capture_engine を 1 行も実行しない。ここが
-    headless だけで守られていたため、「実機で確認した」という記録が
-    実態を伴っていなかった。
-    """
-    marker = tmp_path / "ran.txt"
-    _git(repo, "config", "kindleshot.python", str(_stub_python(repo, marker)))
-    _commit_change(repo, "core/capture_engine.py")
-
-    code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
-    assert code == 0, err or out
-    calls = marker.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 1, calls
-    assert "--screen" in calls[0]
-
-
-@needs_sh
-def test_headless_only_change_does_not_occupy_the_desktop(repo, tmp_path):
-    """headless で確認できる変更で、画面を占有するスモークを走らせない。"""
-    marker = tmp_path / "ran.txt"
-    _git(repo, "config", "kindleshot.python", str(_stub_python(repo, marker)))
-    _commit_change(repo, "core/headless_capture.py")
-
-    code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
-    assert code == 0, err or out
-    calls = marker.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 1, calls
-    assert "--screen" not in calls[0]
-
-
-@needs_sh
-def test_touching_both_paths_runs_both_smokes(repo, tmp_path):
-    """両方に触ったら両方確認する。片方で済ませない。"""
-    marker = tmp_path / "ran.txt"
-    _git(repo, "config", "kindleshot.python", str(_stub_python(repo, marker)))
-    _commit_change(repo, "core/capture_engine.py", "core/headless_capture.py")
-
-    code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
-    assert code == 0, err or out
-    calls = marker.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 2, calls
-    assert sum("--screen" in c for c in calls) == 1
-
-
-@needs_sh
-def test_a_file_in_both_lists_runs_both_smokes(repo, tmp_path):
-    """両方の一覧に入っているファイル 1 つで、両方のスモークが走ること。
-
-    共有部分を片方だけで守ると、もう片方でしか確かめられない部分が
-    無検証のまま通る (#50)。
-    """
-    marker = tmp_path / "ran.txt"
-    _git(repo, "config", "kindleshot.python", str(_stub_python(repo, marker)))
-    _commit_change(repo, "cli.py")
-
-    code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
-    assert code == 0, err or out
-    calls = marker.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 2, calls
-    assert sum("--screen" in c for c in calls) == 1
-
-
-@needs_sh
-def test_the_smoke_script_itself_is_checked_on_both_paths(repo, tmp_path):
-    """スモーク自身を変えたら両方走ること。
-
-    --screen の配線（--no-headless を組み立てる所）は画面スモークでしか
-    通らない。headless 側だけで守ると、--no-headless のタイプミスが
-    緑のまま通る。
-    """
-    marker = tmp_path / "ran.txt"
-    _git(repo, "config", "kindleshot.python", str(_stub_python(repo, marker)))
-    _commit_change(repo, "scripts/smoke_capture.py")
-
-    code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
-    assert code == 0, err or out
-    calls = marker.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 2, calls
-
-
-@needs_sh
 def test_unwatched_change_does_not_run_smoke(repo, tmp_path):
     """キャプチャ経路に触らない変更は素通しする。"""
     marker = tmp_path / "ran.txt"
@@ -356,18 +273,13 @@ def test_branch_deletion_push_does_not_run_smoke(repo, tmp_path):
     assert not marker.exists()
 
 
-def _hook_files(name):
-    """フックの <name>_RE が列挙しているファイル名。"""
+def _watch_re_files():
+    """フックの WATCH_RE が列挙しているファイル名。"""
     with open(HOOK, encoding="utf-8") as f:
         text = f.read()
-    m = re.search(rf"^{name}_RE='\^\((.+)\)\$'$", text, re.MULTILINE)
-    assert m, f"{name}_RE を読み取れない"
+    m = re.search(r"^WATCH_RE='\^\((.+)\)\$'$", text, re.MULTILINE)
+    assert m, "WATCH_RE を読み取れない"
     return {alt.replace("\\.", ".") for alt in m.group(1).split("|")}
-
-
-def _watch_re_files():
-    """フックが監視しているファイル名（画面 + headless）。"""
-    return _hook_files("SCREEN") | _hook_files("HEADLESS")
 
 
 # スモークで検証できないと AGENTS.md が明記している見出し。ここから下は
@@ -397,21 +309,12 @@ def _files_in(chunk):
     return names
 
 
-_SCREEN_HEADING = "**画面キャプチャ経路**"
-_HEADLESS_HEADING = "**headless 経路**"
+_WATCHED_HEADING = "**pre-push が強制するもの**"
 
 
 def _documented_files():
     """AGENTS.md「実機スモーク」節が、監視対象として挙げているファイル名。"""
-    return _files_in(_section("### 5. 実機スモーク", _UNVERIFIABLE_HEADING))
-
-
-def _documented_screen_files():
-    return _files_in(_section(_SCREEN_HEADING, _HEADLESS_HEADING))
-
-
-def _documented_headless_files():
-    return _files_in(_section(_HEADLESS_HEADING, _UNVERIFIABLE_HEADING))
+    return _files_in(_section(_WATCHED_HEADING, _UNVERIFIABLE_HEADING))
 
 
 def _documented_unverifiable():
@@ -447,48 +350,63 @@ def test_the_unverifiable_files_are_documented_and_not_gated():
 _CONTEXT_ONLY = {"ui/steps/capture_step.py", "tests/test_pre_push_hook.py"}
 
 
-def test_every_path_in_the_documentation_is_accounted_for():
-    """節の中に出てくる .py が、主語か・監視対象か・説明用かのどれかであること。
+def _bullets(chunk):
+    """箇条書きを 1 件ずつ返す（継続行を畳む）。"""
+    items: list[str] = []
+    for line in chunk.splitlines():
+        if line.startswith("- "):
+            items.append(line)
+        elif items and line.startswith("  "):
+            items[-1] += " " + line.strip()
+    return items
+
+
+def test_each_bullet_names_exactly_one_file():
+    """一覧は 1 行 1 ファイルで書く。
 
     _files_in は 1 行の**最初の**パスだけを主語として拾う。そのため
     「- `a.py` と `b.py`」と書くと b.py が黙って消え、**ドキュメントには
-    載っているのにフックは見ていない**状態が緑で通る。1 行 1 ファイルという
-    書き方の規約を、ここで強制する。
+    載っているのにフックは見ていない**状態が緑で通る。
     """
-    chunk = _section("### 5. 実機スモーク", "#### 対象は Cloud Reader")
+    # 「検証できないもの」の箇条書きは、なぜ検証できないかの説明で呼び出し元の
+    # ファイル名が出るので対象外。監視対象の一覧だけを見る
+    chunk = _section(_WATCHED_HEADING, _UNVERIFIABLE_HEADING)
+    for item in _bullets(chunk):
+        found = re.findall(r"`([\w/]+\.py)`", item)
+        assert len(found) == 1, f"監視対象の箇条書きが 1 ファイルでない: {item}"
+
+
+def test_every_path_in_the_lists_is_accounted_for():
+    """一覧に出てくる .py が、主語か・監視対象か・説明用かのどれかであること。"""
+    chunk = "\n".join(
+        (
+            _section(_WATCHED_HEADING, _UNVERIFIABLE_HEADING),
+            _section(_UNVERIFIABLE_HEADING, "### 画面キャプチャ経路"),
+        )
+    )
     mentioned = set(re.findall(r"`([\w/]+\.py)`", chunk))
     known = _documented_files() | _documented_unverifiable() | _watch_re_files() | _CONTEXT_ONLY
     assert mentioned <= known, f"主語にも監視対象にもなっていないパス: {mentioned - known}"
 
 
-def test_each_list_matches_its_own_section_in_the_documentation():
-    """どちらの一覧にどのファイルが入っているかまで一致させる。
+def test_the_screen_path_is_not_gated(repo=None):
+    """画面キャプチャ経路のファイルを push のゲートにしないこと (#50)。
 
-    **合計だけ見ても足りない。** 2 つの一覧を入れ替えても合計は変わらない
-    ので、「どちらの経路で検証するか」というこの区別そのものが守られない。
+    headless スモークはこれらを 1 行も実行しない。監視対象に入れたまま
+    headless だけで守ると「緑なのに何も確かめていない」偽陰性になる。
+    画面経路でしか確かめられない以上、**ゲートから外して外したと書く**
+    のが正しい。--screen は手で流す道具として残してある。
     """
-    assert _hook_files("SCREEN") == _documented_screen_files()
-    assert _hook_files("HEADLESS") == _documented_headless_files()
-
-
-def test_the_screen_only_files_are_watched_by_the_screen_smoke():
-    """headless が 1 行も実行しない、あるいは一部しか実行しないファイル (#50)。
-
-    **重なりは禁止しない。** 規準は「どちらか一方に入れる」ではなく
-    「検証できる経路すべてに入れる」。共有部分を headless 側だけに置くと、
-    画面側でしか確かめられない部分が無検証のまま通る。
-    """
-    screen = _hook_files("SCREEN")
-    # headless が 1 行も実行しない
-    assert {
+    screen_only = {
         "core/capture_engine.py",
         "core/capture_runner.py",
         "core/reader_navigator.py",
-    } <= screen
-    # headless は prevent_sleep / allow_sleep しか呼ばない。ウィンドウ探索も
-    # 画面座標もモニタ列挙も画面経路でしか通らない
-    assert "core/win32_utils.py" in screen
-    # headless が使うのは get_profile / to_dict だけ
-    assert "core/capture_profiles.py" in screen
-    # run --no-headless の配線は --screen でしか通らない
-    assert "cli.py" in screen
+        "core/win32_utils.py",
+    }
+    assert screen_only & _watch_re_files() == set()
+    assert screen_only <= _documented_unverifiable()
+
+
+# 箇条書きの中で「どこから呼ばれるか」の説明として出てくるだけのパス。
+# 主語でも監視対象でもないので、下のテストの対象から外す。
+_CONTEXT_ONLY = {"ui/steps/capture_step.py", "tests/test_pre_push_hook.py"}

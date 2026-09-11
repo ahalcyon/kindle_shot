@@ -10,13 +10,25 @@
 2. **コミットメッセージ** — 件名に issue 番号を入れる（`<type>(#<番号>): <要約>`）。
    本文には「なぜそうしたか」を書き、末尾に `Refs #<番号>`。
    issue に紐づかない作業は `(#番号)` と `Refs` を省く。
-3. **キャプチャ経路に触ったら実機スモーク** — `core/capture_*` / `core/headless_*` /
-   `core/win32_utils.py` / `core/dpi.py` / `core/reader_navigator.py` / `cli.py` の
-   capture・open・run・batch を変更したら、
-   `python scripts/smoke_capture.py --asin <ASIN>` を実機で流す。CI はこの層を
-   一切カバーしない。Playwright は使えない（DOM ではなく画面を撮っているため）。
-   対象は Cloud Reader（PC アプリはプログラムから本を開けない）。
-   `git config core.hooksPath .githooks` を設定しておくと pre-push で強制される
+3. **キャプチャ経路に触ったら実機スモーク** — 対象ファイルと、どちらの経路で
+   確認するかは [AGENTS.md](AGENTS.md)「実機スモーク」の一覧が正典。
+   **ここに一覧を書き写さない**（写すとずれる）。
+
+   ```
+   python scripts/smoke_capture.py            # headless。画面を占有しない
+   python scripts/smoke_capture.py --screen   # 画面キャプチャ経路。デスクトップを占有する
+   ```
+
+   **フックが強制するのは headless だけ。** 画面キャプチャ経路
+   （`core/capture_engine.py` / `core/capture_runner.py` /
+   `core/reader_navigator.py` / `core/win32_utils.py`）はゲートに入っていないので、
+   触ったら `--screen` を**手で流す**。既定だけを流して「実機で確認した」と
+   書くと、記録が実態を伴わない（#50）。
+
+   CI はこの層を一切カバーしない。Playwright は使えない（DOM ではなく画面を
+   撮っているため）。対象は Cloud Reader（PC アプリはプログラムから本を開けない）。
+   `git config core.hooksPath .githooks` を設定しておくと pre-push が
+   **触ったファイルに応じて必要なほうだけ**強制する
    （使う Python は `.githooks/pre-push --check` で確認できる）。
 4. **push 前に検証とレビュー** — lint / format / type check / test を通し
    （テストは Windows が必要）、サブエージェントに `origin/master...HEAD` を
