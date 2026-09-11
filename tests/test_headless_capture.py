@@ -20,6 +20,7 @@ from core.headless_capture import (
     MAX_START_POSITION,
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
+    _still_at_start,
     _wait_for_position_change,
     alert_text,
     build_manifest,
@@ -659,6 +660,26 @@ def test_rewind_reports_when_it_cannot_read_the_position_at_all():
     rewound = [kw for name, kw in events if name == "rewound"]
     assert rewound and rewound[0]["reason"] == "no_position"
     assert rewound[0]["ok"] is False
+
+
+def test_still_at_start_accepts_the_first_pages():
+    """巻き戻した後の確認。先頭付近ならそのまま撮り始めてよい。"""
+    assert _still_at_start(FakeReader(position=1)) is True
+    assert _still_at_start(FakeReader(position=MAX_START_POSITION)) is True
+
+
+def test_still_at_start_refuses_a_far_position():
+    """巻き戻した後にダイアログで飛ばされたら撮り始めない。"""
+    events = []
+    page = FakeReader(position=1656)
+    ok = _still_at_start(page, emit=lambda name, **kw: events.append((name, kw)))
+    assert ok is False
+    assert any(name == "error" for name, _ in events)
+
+
+def test_still_at_start_does_not_block_a_book_without_a_position_label():
+    """位置が読めない本をここで止めない。巻き戻し本体が既に見ている。"""
+    assert _still_at_start(FakeReader(text="")) is True
 
 
 def test_rewind_uses_the_reverse_key():
