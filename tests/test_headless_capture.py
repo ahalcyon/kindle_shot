@@ -17,6 +17,8 @@ import pytest
 
 from core.headless_capture import (
     DEFAULT_TURN_KEY,
+    DISMISS_ALERTS_JS,
+    LEAVE_BUTTON_JS,
     MAX_START_POSITION,
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
@@ -61,6 +63,7 @@ class FakePage:
         element_frames=None,
         alert="",
         page_image_lost_at=None,
+        leave_button=False,
     ):
         self.frames = list(frames)
         # 要素撮影で返す内容。省略時は frames と同じ（方式を変えても中身は同じ）
@@ -75,7 +78,9 @@ class FakePage:
         self.alert = alert
         # この index 以降はページ画像の要素が消える（リーダーが落ちた形）
         self.page_image_lost_at = page_image_lost_at
-        self.dismiss_args: list = []
+        # 「ライブラリに戻る」しか無いダイアログが出ているか
+        self.leave_button = leave_button
+        self.dismissed = 0
         self.shots: list[str] = []
 
         page = self
@@ -122,9 +127,16 @@ class FakePage:
         """UI を隠す CSS の注入。撮影内容には影響しないので何もしない。"""
 
     def evaluate(self, js, arg=None):
-        """alert_text / dismiss_dialogs の代役。JS の中身で見分ける。"""
-        if "ion-alert" in js:  # DISMISS_ALERTS_JS
-            self.dismiss_args.append(arg)
+        """alert_text / dismiss_dialogs / ボタン判定の代役。
+
+        **本物の定数と突き合わせて見分ける。** 「JS に ion-alert が入っていたら
+        dismiss」のような中身の当て推量は、片方の JS にセレクタが
+        インライン化された瞬間に静かに嘘になる（テストは緑のまま）。
+        """
+        if js == LEAVE_BUTTON_JS:
+            return self.leave_button
+        if js == DISMISS_ALERTS_JS:
+            self.dismissed += 1
             return 0
         return self.alert
 
@@ -260,17 +272,68 @@ def test_an_unrelated_dialog_does_not_become_a_reader_error(tmp_path):
     assert (total, reason) == (2, "end_of_book")
 
 
-def test_the_reader_error_dialog_is_left_alone(tmp_path):
-    """エラーダイアログは閉じない。唯一のボタンが「ライブラリに戻る」で、
-    押すとリーダーから出てしまう (#76)。残せば capture_pages が読んで中断できる。
+def test_a_dialog_that_only_leaves_the_reader_is_not_dismissed(tmp_path):
+    """「ライブラリに戻る」しか無いダイアログは閉じない (#76)。
+
+    押すとリーダーから出てしまう。残しておけば capture_pages が読んで中断できる。
     """
-    page = FakePage([b"a", b"b"], alert="問題が発生しました")
+    page = FakePage([b"a", b"b"], leave_button=True)
     capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
-    assert page.dismiss_args, "dismiss_dialogs が呼ばれていない"
-    passed = page.dismiss_args[0]
-    assert passed is not None, "エラー文言の一覧を渡していない"
-    assert all(m == m.lower() for m in passed), "JS 側は小文字で比較する"
-    assert any("問題が発生しました" in m for m in passed)
+    assert page.dismissed == 0
+
+
+def test_an_ordinary_dialog_is_still_dismissed(tmp_path):
+    """普通のダイアログはこれまでどおり閉じる。
+
+    位置同期のモーダルはキー入力を吸うので、閉じないと全冊で送れなくなる。
+    **文言ではなくボタンで決める**のはこのため。「通信に問題が発生しました。
+    再試行してください」のような一時的なダイアログまで閉じなくなると、
+    これまで復帰できていた本が失敗する。
+    """
+    page = FakePage([b"a", b"b"], alert="通信に問題が発生しました。再試行してください")
+    capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert page.dismissed > 0
+
+
+def test_a_viewport_book_does_not_become_a_reader_error(tmp_path):
+    """ページ画像の要素を持たない本を「落ちた」と誤判定しない。
+
+    この条件から expect_mode のガードを外すと、viewport 撮影の本が
+    **全冊** reader_error になる。
+    """
+    page = FakePage([b"a", b"b"], page_image=False)
+    total, reason = capture_pages(
+        page, str(tmp_path), key="ArrowLeft", max_retries=2, expect_mode=SHOT_VIEWPORT
+    )
+    assert (total, reason) == (2, "end_of_book")
+
+
+def test_an_english_error_dialog_is_detected(tmp_path):
+    """英語のダイアログでも拾う。大文字小文字は問わない。"""
+    page = FakePage([b"a", b"b"], alert="Sorry, Something Went Wrong")
+    _, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert reason == "reader_error"
+
+
+def test_the_stop_position_is_always_recorded(tmp_path):
+    """止まった位置を必ずログに残す。
+
+    2 つの検出（文言・要素の消失）はどちらも取り逃しうる。取り逃したぶんを
+    あとから機械的に洗える手がかりは、止まった位置しかない。
+    """
+    events = []
+    page = FakePage([b"a", b"b"])
+    capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        max_retries=2,
+        emit=lambda name, **kw: events.append((name, kw)),
+    )
+    stopped = [kw for n, kw in events if n == "capture_stopped"]
+    assert len(stopped) == 1
+    assert stopped[0]["reason"] == "end_of_book"
+    assert "position" in stopped[0] and "book_total" in stopped[0]
 
 
 def test_no_change_when_nothing_advances(tmp_path):
@@ -543,10 +606,12 @@ class FakeReader:
     def evaluate(self, js, arg=None):
         """dismiss_dialogs / 目次を開く JS の代役。
 
-        **JS の中身で見分ける。** 引数の有無で分けていたが、dismiss 側も
-        エラー文言の一覧を渡すようになって区別できなくなった (#76)。
+        **本物の定数と突き合わせて見分ける。** JS の中身を当て推量すると、
+        似た JS が増えたときに静かに取り違える。
         """
-        if "ion-alert" not in js:  # TOC_OPEN_JS（目次ボタンをセレクタで押す）
+        if js == LEAVE_BUTTON_JS:
+            return False
+        if js != DISMISS_ALERTS_JS:  # TOC_OPEN_JS（目次ボタンをセレクタで押す）
             if self.toc_start is None and not self.toc_empty:
                 return False
             self.toc_opened = True
@@ -1561,8 +1626,50 @@ def test_a_reader_error_does_not_exit_zero(tmp_path, monkeypatch):
     0 で返すと batch は出力があるものとしてスキップし、途中までの本が
     そのまま確定する。合本 4 冊がこれで 439〜672 ページのまま ok になった。
     """
+    from core.pipeline import EXIT_ERROR
+
     code = _run_with_stop_reason("reader_error", tmp_path, monkeypatch)
-    assert code != 0
+    # 8 (EXIT_UNSUPPORTED_BOOK) だとバッチ集計で「非対応」に紛れ、失敗に出ない
+    assert code == EXIT_ERROR
+
+
+def test_a_book_that_opens_into_an_error_says_so(tmp_path, monkeypatch):
+    """開いた時点で落ちている本は、そう報告する。
+
+    ここで見ないと位置ラベルが読めないまま detect_turn_key まで進み、
+    「ページ送りの向きを判定できません（--page-turn で明示してください）」に
+    なる。**原因も対処も間違った案内**で、ログの原因別集計も汚れる。
+    #76 の 4 冊を撮り直すとまさにこの状態で開く。
+    """
+    import contextlib
+
+    from core import headless_browser
+    from core import headless_capture as hc
+    from core.capture_profiles import get_profile
+    from core.pipeline import EXIT_ERROR
+
+    page = FakePage([b"a", b"b"], alert="申し訳ありません。問題が発生しました")
+    events = []
+
+    @contextlib.contextmanager
+    def fake_open_reader(*a, **kw):
+        yield page
+
+    monkeypatch.setattr(headless_browser, "open_reader", fake_open_reader)
+    monkeypatch.setattr(
+        hc, "capture_pages", lambda *a, **kw: pytest.fail("撮影まで進んではいけない")
+    )
+    code = hc.run_headless_capture(
+        get_profile("kindle_cloud"),
+        "t",
+        str(tmp_path),
+        asin="B0TEST",
+        page_turn="left",
+        no_rewind=True,
+        emit=lambda name, **kw: events.append((name, kw)),
+    )
+    assert code == EXIT_ERROR
+    assert [n for n, _ in events if n == "reader_error"] != []
 
 
 def test_a_real_end_of_book_still_exits_zero(tmp_path, monkeypatch):

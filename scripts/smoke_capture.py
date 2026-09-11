@@ -124,6 +124,7 @@ def check_manifest(manifest, expected_pages):
         hint = {
             "timeout": "ページが変化しなかった（本が開けていない・ページ送りキーが違う）",
             "user": "実行中に中断された",
+            "reader_error": "リーダーが落ちた（最終ページではない）",
         }.get(reason, "")
         problems.append(
             f"stopped_reason が max_pages ではなく {reason}" + (f"（{hint}）" if hint else "")
