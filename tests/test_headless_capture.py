@@ -616,10 +616,20 @@ def test_rewind_stops_when_it_keeps_having_to_reread():
     """
     # 本ループの読み（偶数回目）だけが空。読み直し（奇数回目）では読める
     page = FakeReader(forward="ArrowLeft", position=500, blank_at=set(range(2, 400, 2)))
-    ok, presses = rewind_to_start(page, "left", page_wait=0, max_retries=3)
+    events = []
+    ok, presses = rewind_to_start(
+        page,
+        "left",
+        page_wait=0,
+        max_retries=3,
+        emit=lambda name, **kw: events.append((name, kw)),
+    )
     assert ok is False
     # 500 回押し切らずに打ち切る
     assert presses <= REWIND_REREAD_BUDGET + 1
+    # 「読めなくなった」とは別の状態として記録する
+    rewound = [kw for name, kw in events if name == "rewound"]
+    assert rewound and rewound[0]["reason"] == "reread_budget"
 
 
 def test_rewind_reports_when_it_cannot_read_the_position_at_all():

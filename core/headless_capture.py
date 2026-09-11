@@ -750,6 +750,7 @@ def rewind_to_start(
     stuck = 0
     unreadable = 0
     rereads = 0
+    over_budget = False
     at_start = before <= 1
     while pressed < max_rewind and not at_start:
         page.keyboard.press(back)
@@ -768,7 +769,11 @@ def rewind_to_start(
             rereads += 1
             # ダイアログが被っていると位置ラベルも読めない。巻き戻しの
             # ループは今まで一度も閉じていなかった。実測で、横書きの本が
-            # 位置 148/336 で「読めない」まま打ち切られた (#69)
+            # 位置 148/336 で「読めない」まま打ち切られた (#69)。
+            # 閉じた拍子に位置が飛ぶ本がある（Whispersync の「はい」を押した形）。
+            # 飛ぶと current >= before になって stuck が立つが、その場合
+            # before は先頭から遠いままなので ok は返らない。黙って部分本に
+            # なることはない
             dismiss_dialogs(page)
             current, seen_total = _settled_position_pair(
                 page,
@@ -783,7 +788,7 @@ def rewind_to_start(
             continue
         if rereads >= REWIND_REREAD_BUDGET:
             # 読めたり読めなかったりを繰り返している。これ以上は時間を食うだけ
-            unreadable = max_retries
+            over_budget = True
             break
         unreadable = 0
         if seen_total is not None:
@@ -812,6 +817,11 @@ def rewind_to_start(
     elif unreadable >= max_retries:
         human = f"読書位置を読めなくなりました（{pressed} 回、最後に読めたのは {where}）"
         reason = "unreadable"
+    elif over_budget:
+        human = (
+            f"位置を読み直してばかりで進みません（{pressed} 回、{where}、読み直し {rereads} 回）"
+        )
+        reason = "reread_budget"
     elif at_start:
         human = (
             f"{where} で動かなくなりましたが、先頭ではありません"
