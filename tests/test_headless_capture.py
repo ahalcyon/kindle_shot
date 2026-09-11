@@ -59,6 +59,8 @@ class FakePage:
         swallow=0,
         page_image=True,
         element_frames=None,
+        alert="",
+        page_image_lost_at=None,
     ):
         self.frames = list(frames)
         # 要素撮影で返す内容。省略時は frames と同じ（方式を変えても中身は同じ）
@@ -69,6 +71,11 @@ class FakePage:
         self.swallow = swallow
         # ページ画像の要素があるか（無い本はビューポート撮影にフォールバックする）
         self.page_image = page_image
+        # 表示されているダイアログの文言（リーダーが落ちた状態の再現）
+        self.alert = alert
+        # この index 以降はページ画像の要素が消える（リーダーが落ちた形）
+        self.page_image_lost_at = page_image_lost_at
+        self.dismiss_args: list = []
         self.shots: list[str] = []
 
         page = self
@@ -93,6 +100,8 @@ class FakePage:
 
         class Loc:
             def count(self):
+                if page.page_image_lost_at is not None and page.index >= page.page_image_lost_at:
+                    return 0
                 return 1 if page.page_image else 0
 
             @property
@@ -108,6 +117,16 @@ class FakePage:
 
     def wait_for_timeout(self, _ms):
         pass
+
+    def add_style_tag(self, **_kw):
+        """UI を隠す CSS の注入。撮影内容には影響しないので何もしない。"""
+
+    def evaluate(self, js, arg=None):
+        """alert_text / dismiss_dialogs の代役。JS の中身で見分ける。"""
+        if "ion-alert" in js:  # DISMISS_ALERTS_JS
+            self.dismiss_args.append(arg)
+            return 0
+        return self.alert
 
 
 # ------------------------------------------------------------
@@ -189,6 +208,69 @@ def test_consecutive_blank_pages_do_not_truncate(tmp_path):
     saved = [(tmp_path / n).read_bytes() for n in sorted(p.name for p in tmp_path.iterdir())]
     assert saved[-1] == b"c"
     assert saved == [b"a", b"b", b"x", b"c"]
+
+
+def test_a_reader_error_is_not_the_end_of_the_book(tmp_path):
+    """リーダーが落ちたら最終ページとみなさない (#76)。
+
+    エラー画面になるとページ画像が消え、静止した画面を撮り続けるので
+    ダイジェストは当然一致する。理由を見ずに end_of_book と呼ぶと、
+    途中までの本が ok で完成し、batch は出力があるとスキップするので
+    そのまま確定する。実際に合本 4 冊が 439〜672 ページでそうなった。
+    """
+    page = FakePage(
+        [b"a", b"b"],
+        alert="申し訳ありません。問題が発生しました\nライブラリからこの本をもう一度開いてみてください。",
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert reason == "reader_error"
+    assert total == 2
+
+
+def test_a_vanished_page_image_is_not_the_end_of_the_book(tmp_path):
+    """文言が変わってもページ画像が消えたことで拾う。
+
+    最終ページに達しただけなら、ページ画像の要素は残っている。
+    """
+    page = FakePage([b"a", b"b"], page_image_lost_at=1)
+    total, reason = capture_pages(
+        page, str(tmp_path), key="ArrowLeft", max_retries=2, expect_mode=SHOT_ELEMENT
+    )
+    assert reason == "reader_error"
+    assert total >= 1
+
+
+def test_a_normal_last_page_is_still_the_end_of_the_book(tmp_path):
+    """ダイアログもページ画像の消失も無ければ、これまでどおり最終ページ。"""
+    page = FakePage([b"a", b"b"], alert="")
+    total, reason = capture_pages(
+        page, str(tmp_path), key="ArrowLeft", max_retries=2, expect_mode=SHOT_ELEMENT
+    )
+    assert (total, reason) == (2, "end_of_book")
+
+
+def test_an_unrelated_dialog_does_not_become_a_reader_error(tmp_path):
+    """関係のないダイアログを「落ちた」と読み替えない。
+
+    位置同期のモーダルは普通に出る。これで中断すると、正常な本が
+    軒並み失敗になる。
+    """
+    page = FakePage([b"a", b"b"], alert="前回読んでいたページに移動しますか？")
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert (total, reason) == (2, "end_of_book")
+
+
+def test_the_reader_error_dialog_is_left_alone(tmp_path):
+    """エラーダイアログは閉じない。唯一のボタンが「ライブラリに戻る」で、
+    押すとリーダーから出てしまう (#76)。残せば capture_pages が読んで中断できる。
+    """
+    page = FakePage([b"a", b"b"], alert="問題が発生しました")
+    capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert page.dismiss_args, "dismiss_dialogs が呼ばれていない"
+    passed = page.dismiss_args[0]
+    assert passed is not None, "エラー文言の一覧を渡していない"
+    assert all(m == m.lower() for m in passed), "JS 側は小文字で比較する"
+    assert any("問題が発生しました" in m for m in passed)
 
 
 def test_no_change_when_nothing_advances(tmp_path):
@@ -459,8 +541,12 @@ class FakeReader:
         return object()
 
     def evaluate(self, js, arg=None):
-        """dismiss_dialogs / 目次を開く JS の代役。"""
-        if arg is not None:  # TOC_OPEN_JS（目次ボタンをセレクタで押す）
+        """dismiss_dialogs / 目次を開く JS の代役。
+
+        **JS の中身で見分ける。** 引数の有無で分けていたが、dismiss 側も
+        エラー文言の一覧を渡すようになって区別できなくなった (#76)。
+        """
+        if "ion-alert" not in js:  # TOC_OPEN_JS（目次ボタンをセレクタで押す）
             if self.toc_start is None and not self.toc_empty:
                 return False
             self.toc_opened = True
@@ -1431,3 +1517,55 @@ def test_page_shot_falls_back_to_the_viewport():
     data, mode = page_shot(page)
     assert mode == "viewport"
     assert _size(data) == (1600, 1200)
+
+
+# ------------------------------------------------------------
+# 停止理由から終了コードへの対応
+# ------------------------------------------------------------
+
+
+def _run_with_stop_reason(reason, tmp_path, monkeypatch, *, pages=3):
+    """run_headless_capture を通し、停止理由に対する終了コードを見る。
+
+    ここを間違えると batch が出力を見てスキップし、途中までの本が
+    そのまま確定する (#76)。detect / rewind は本筋でないので飛ばす。
+    """
+    import contextlib
+
+    from core import headless_browser
+    from core import headless_capture as hc
+
+    page = FakePage([b"a", b"b"])
+
+    @contextlib.contextmanager
+    def fake_open_reader(*a, **kw):
+        yield page
+
+    monkeypatch.setattr(headless_browser, "open_reader", fake_open_reader)
+    monkeypatch.setattr(hc, "capture_pages", lambda *a, **kw: (pages, reason))
+    from core.capture_profiles import get_profile
+
+    return hc.run_headless_capture(
+        get_profile("kindle_cloud"),
+        "t",
+        str(tmp_path),
+        asin="B0TEST",
+        page_turn="left",
+        no_rewind=True,
+    )
+
+
+def test_a_reader_error_does_not_exit_zero(tmp_path, monkeypatch):
+    """リーダーが落ちた本を完成扱いにしない。
+
+    0 で返すと batch は出力があるものとしてスキップし、途中までの本が
+    そのまま確定する。合本 4 冊がこれで 439〜672 ページのまま ok になった。
+    """
+    code = _run_with_stop_reason("reader_error", tmp_path, monkeypatch)
+    assert code != 0
+
+
+def test_a_real_end_of_book_still_exits_zero(tmp_path, monkeypatch):
+    """最終ページまで撮れた本はこれまでどおり成功。"""
+    code = _run_with_stop_reason("end_of_book", tmp_path, monkeypatch)
+    assert code == 0

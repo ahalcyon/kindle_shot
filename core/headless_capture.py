@@ -69,6 +69,19 @@ UNSUPPORTED_MARKERS = (
     "この本は現在読むことができません",
 )
 
+# リーダー自身が落ちたときのダイアログ。**「最終ページ」と区別するために要る。**
+# エラー画面になるとページ画像が消え、静止した画面を撮り続けるのでダイジェストが
+# 一致し、`end_of_book` として正常終了してしまう（#76。合本 4 冊が 439〜672 ページで
+# そうなった）。batch は出力があるとスキップするので、途中までの本が確定する。
+#
+# 非対応 (UNSUPPORTED_MARKERS) とは別に持つ。あちらは「この本は開けない」で
+# 終了コード 8、こちらは「開けたが途中で落ちた」で中断。意味も対処も違う。
+READER_ERROR_MARKERS = (
+    "問題が発生しました",
+    "something went wrong",
+    "ライブラリからこの本をもう一度",
+)
+
 # 非対応の本が出すダイアログ。ion-alert の id は連番で変わるのでクラスで拾う。
 ALERT_SELECTOR = "ion-alert, .alert-wrapper"
 
@@ -417,10 +430,15 @@ def turn_key(name):
 # 「前回読んでいたページ」の位置同期モーダル。全画面のバックドロップを伴い、
 # 出ている間はクリックもキー入力も一切通らない（実測）。
 # 先頭から撮りたいので「いいえ」を選んで現在位置に留まる。
-DISMISS_ALERTS_JS = """() => {
+DISMISS_ALERTS_JS = """(errorMarkers) => {
   let closed = 0;
   document.querySelectorAll('ion-alert').forEach(alert => {
     if (getComputedStyle(alert).display === 'none') return;
+    // リーダーが落ちたときのダイアログには触らない。唯一のボタンが
+    // 「ライブラリに戻る」で、押すとリーダーから出てしまう (#76)。
+    // 残しておけば capture_pages が読んで中断できる
+    const text = (alert.innerText || '').toLowerCase();
+    if (errorMarkers.some(m => text.includes(m))) return;
     const buttons = Array.from(alert.querySelectorAll('button'));
     const keep = buttons.find(b => /いいえ|No|キャンセル|Cancel/.test(b.innerText));
     const target = keep || buttons[0];
@@ -433,7 +451,7 @@ DISMISS_ALERTS_JS = """() => {
 def dismiss_dialogs(page):
     """開いているダイアログを閉じる。閉じた数を返す。"""
     try:
-        closed = page.evaluate(DISMISS_ALERTS_JS)
+        closed = page.evaluate(DISMISS_ALERTS_JS, [m.lower() for m in READER_ERROR_MARKERS])
     except Exception:
         return 0
     if closed:
@@ -591,6 +609,17 @@ def alert_text(page, *, selector=ALERT_SELECTOR):
         return ""
 
 
+def reader_error_text(page, *, markers=READER_ERROR_MARKERS):
+    """リーダーが落ちていればその文言を返す。落ちていなければ空文字。
+
+    「ページが変わらなくなった」の**理由**を確かめるために使う。理由を見ずに
+    最終ページとみなしていたのが #76。
+    """
+    text = alert_text(page)
+    lowered = text.lower()
+    return text.strip() if any(m in lowered for m in markers) else ""
+
+
 def unsupported_reason(page, *, markers=UNSUPPORTED_MARKERS):
     """Cloud Reader 非対応の本なら理由を返す。開けているなら None。
 
@@ -646,6 +675,7 @@ def capture_pages(
         max_pages       上限に達した
         end_of_book     送っても変わらなくなった（最終ページ到達とみなす）
         no_change       1 ページも進めなかった（送りキーの向き違い・モーダル等）
+        reader_error    リーダーが落ちた。最終ページではないので完成扱いにしない
         signin_required 途中でセッションが切れた
 
     expect_mode を渡すと、途中で撮影方式が変わったページを警告し、そのページ
@@ -684,6 +714,24 @@ def capture_pages(
                 shot, mode = page_shot(page)
                 current = digest(shot)
             if current == prev:
+                # **「変わらない」の理由を確かめてから最終ページと呼ぶ。**
+                # リーダーが落ちるとページ画像が消え、静止したエラー画面を
+                # 撮り続けるのでダイジェストは当然一致する (#76)
+                trouble = reader_error_text(page)
+                if not trouble and expect_mode == SHOT_ELEMENT and mode != SHOT_ELEMENT:
+                    # 文言が変わっていてもこれで拾える。最終ページに達しただけなら
+                    # ページ画像の要素は残っている
+                    trouble = "ページ画像の要素が消えました"
+                if trouble:
+                    emit(
+                        "reader_error",
+                        human=f"{total} ページでリーダーが応答しなくなりました: {trouble}"[
+                            :REASON_MAX_CHARS
+                        ],
+                        page=total,
+                        message=trouble[:REASON_MAX_CHARS],
+                    )
+                    return total, "reader_error"
                 # 1 枚も進めていないなら最終ページではなく送りに失敗している
                 return total, "end_of_book" if total > 1 else "no_change"
 
@@ -1276,6 +1324,15 @@ def run_headless_capture(
         return EXIT_ERROR
     if stopped_reason == "signin_required":
         emit_error(emit, f"{total} ページでセッションが切れたため中断しました")
+        return EXIT_ERROR
+    if stopped_reason == "reader_error":
+        # **完成扱いにしない。** 0 で返すと batch が出力を見てスキップし、
+        # 途中までの本がそのまま確定する (#76)
+        emit_error(
+            emit,
+            f"{total} ページでリーダーが落ちたため中断しました。"
+            "最終ページではないので、この本は撮り直しが要ります",
+        )
         return EXIT_ERROR
 
     emit(
