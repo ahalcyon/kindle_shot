@@ -24,7 +24,7 @@ def runs(text):
 def test_a_rule_that_breaks_a_correct_word_is_reported():
     text = "アップロードした。アップロードする。アップロードが終わる。"
     found = audit_rules.suspicious(runs(text), Replacer({"プロード": "ブロード"}), min_count=3)
-    assert [(c, b, a) for c, b, a in found] == [(3, "アップロード", "アッブロード")]
+    assert found == [(3, "アップロード", "アッブロード")]
 
 
 def test_an_ordinary_misread_fix_is_not_reported():
@@ -37,6 +37,24 @@ def test_an_ordinary_misread_fix_is_not_reported():
 def test_rare_runs_are_skipped():
     text = "アップロードした。"
     assert audit_rules.suspicious(runs(text), Replacer({"プロード": "ブロード"}), min_count=3) == []
+
+
+def test_a_run_keeps_the_dots_and_dashes_that_hold_a_name_together():
+    """中黒と長音符は連続に含める。人名を 1 つのまとまりとして見るため。
+
+    含めないと エドウイン・ボーチャード が エドウイン と ボーチャード に
+    割れ、「ボーチャード という正しい語を壊している」ことに気づけない。
+    """
+    assert audit_rules.katakana_runs("エドウイン・ボーチャード教授") == {
+        "エドウイン・ボーチャード": 1
+    }
+
+
+def test_rule_detail_ignores_min_count():
+    """1 件しか出ない語こそ、規則を入れるか外すかの判断材料になる。"""
+    text = "プロードバンド。アップロードする。"
+    rows = audit_rules.rule_detail(runs(text), Replacer({"プロード": "ブロード"}), "プロード")
+    assert len(rows) == 2
 
 
 def test_rule_detail_lists_every_run_that_contains_the_key():

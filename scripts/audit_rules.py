@@ -3,7 +3,7 @@
 辞書のテスト (tests/test_replacements_dictionary.py) は辞書を辞書自身に照らす
 だけなので、**誤読形を部分文字列として含む正しい語**を壊す規則を見つけられない。
 
-    プロード -> ブロード    アップロード を 165 箇所壊す
+    プロード -> ブロード    アップロード を 135 箇所壊す
     バツカー -> ハッカー    ヒューレット・パッカード を壊す
     ナツツ   -> ナッツ      ナツツバキ(夏椿) を壊す
 
@@ -14,6 +14,17 @@
 直した形が同じ本の別の場所に正しく出ている (クロープ(ホール) の隣に
 クローブ(ホール) が 51 件)。出てこないなら、その形は日本語として存在しない
 可能性がある。存在する語もあるので (固有名詞や複合語)、最後は人が見る。
+
+**取りこぼしを拾う道具であって、ゲートではない。** 見えないものが 3 つある。
+
+1. **regex 規則の lookaround**。判定はカタカナの連続 1 つずつに当てるので、
+   その外を見る条件 (``ボーター(?!帽子)``) が効かない。`ボーター帽子` は
+   本番では守られるのに、この点検では「置換される」と出る
+2. **行またぎで切れた語**。`アッ` と `プロード` は別々の連続として数える
+3. **少数の壊れ**。既定の ``--min-count 3`` では 1〜2 件の壊れは挙がらない
+
+読み込みの際、改行以外の空白を落とす (mine_misreads.load_corpus)。そのぶん
+空白で区切られたカタカナが 1 連続に融着するので、文字数は本番と一致しない。
 
 使い方:
     python scripts\\audit_rules.py C:\\...\\library
@@ -34,7 +45,7 @@ sys.path.insert(0, os.path.dirname(_HERE))
 
 from mine_misreads import load_corpus  # noqa: E402
 
-from core.text_replacements import load_replacer  # noqa: E402
+from core.text_replacements import default_path, load_replacer  # noqa: E402
 
 KATAKANA_RUN = re.compile(r"[\u30a0-\u30ff\u31f0-\u31ff\u3099-\u309c]+")
 
@@ -63,7 +74,11 @@ def suspicious(runs, replacer, *, min_count):
 
 
 def rule_detail(runs, replacer, key):
-    """左辺 key を含むカタカナ連続を、多い順に返す。"""
+    """左辺 key を含むカタカナ連続を、多い順に返す。
+
+    ここでは ``--min-count`` を無視する。1 件しか出ない語こそ、その規則を
+    入れるか外すかの判断材料になるため。
+    """
     rows = [(count, run, replacer.apply(run)) for run, count in runs.items() if key in run]
     rows.sort(reverse=True)
     return rows
@@ -76,7 +91,7 @@ def main(argv=None):
     p.add_argument(
         "--min-count", type=int, default=3, help="この回数以上出るものだけ見る (既定: 3)"
     )
-    p.add_argument("--rule", help="この左辺を含む連続の内訳だけを出す")
+    p.add_argument("--rule", help="この左辺を含む連続の内訳だけを出す（--min-count は無視する）")
     p.add_argument("--json", dest="as_json", action="store_true", help="JSON で出す")
     args = p.parse_args(argv)
 
@@ -96,6 +111,13 @@ def main(argv=None):
     print(f"{files} ファイル / {len(text)} 文字 / カタカナ {len(runs)} 種", file=sys.stderr)
 
     if args.rule:
+        with open(args.rules or default_path(), encoding="utf-8") as f:
+            doc = json.load(f)
+        known = args.rule in doc.get("literal", {}) or any(
+            args.rule in e.get("pattern", "") for e in doc.get("regex", [])
+        )
+        if not known:
+            print(f"（{args.rule} は辞書のどの規則にも出てきません）", file=sys.stderr)
         rows = rule_detail(runs, replacer, args.rule)
         if args.as_json:
             json.dump(
