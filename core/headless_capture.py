@@ -69,6 +69,24 @@ UNSUPPORTED_MARKERS = (
     "この本は現在読むことができません",
 )
 
+# リーダー自身が落ちたときのダイアログ。**「最終ページ」と区別するために要る。**
+# 静止した画面を撮り続けるとダイジェストが一致し、`end_of_book` として正常終了して
+# しまう（#76。合本 4 冊が 439〜672 ページでそうなった）。batch は出力があると
+# スキップするので、途中までの本が確定する。
+#
+# **停滞中の画面がエラー画面だったかは未確認。** 観測したのは「撮り終えた直後に
+# 開き直すとこのダイアログが出ていて、ページ画像の要素も消えていた」こと。
+# 停滞中の画面は保存されない（変化したページしか保存しない）ので後から見られない。
+# だから文言だけに頼らず、ページ画像の消失と停止位置も併せて残している。
+#
+# 非対応 (UNSUPPORTED_MARKERS) とは別に持つ。あちらは「この本は開けない」で
+# 終了コード 8、こちらは「開けたが途中で落ちた」で中断。意味も対処も違う。
+READER_ERROR_MARKERS = (
+    "問題が発生しました",
+    "something went wrong",
+    "ライブラリからこの本をもう一度",
+)
+
 # 非対応の本が出すダイアログ。ion-alert の id は連番で変わるのでクラスで拾う。
 ALERT_SELECTOR = "ion-alert, .alert-wrapper"
 
@@ -417,6 +435,37 @@ def turn_key(name):
 # 「前回読んでいたページ」の位置同期モーダル。全画面のバックドロップを伴い、
 # 出ている間はクリックもキー入力も一切通らない（実測）。
 # 先頭から撮りたいので「いいえ」を選んで現在位置に留まる。
+# 押すとリーダーから出てしまうボタン。これしか無いダイアログは閉じない (#76)。
+#
+# **文言ではなくボタンで決める。** 文言で決めると
+# 「通信に問題が発生しました。再試行してください」のような再試行ボタン付きの
+# 一時的なダイアログまで閉じなくなり、これまで復帰できていた本が失敗する。
+# 「出る」ボタンしか無いダイアログだけが、閉じてはいけないもの。
+LEAVE_READER_BUTTONS = ("ライブラリに戻る", "back to library")
+
+LEAVE_BUTTON_JS = """(labels) => {
+  return Array.from(document.querySelectorAll('ion-alert'))
+    .filter(a => getComputedStyle(a).display !== 'none')
+    .some(a => {
+      const btns = Array.from(a.querySelectorAll('button'));
+      return btns.length > 0 && btns.every(
+        b => labels.some(l => (b.innerText || '').toLowerCase().includes(l)));
+    });
+}"""
+
+
+def has_leave_reader_button(page, *, labels=LEAVE_READER_BUTTONS):
+    """開いているダイアログのボタンが「リーダーから出る」ものだけか。
+
+    そういうダイアログは閉じようとしてはいけない。どのボタンを押しても
+    リーダーから出てしまう (#76)。
+    """
+    try:
+        return bool(page.evaluate(LEAVE_BUTTON_JS, [label.lower() for label in labels]))
+    except Exception:  # noqa: BLE001 - 読めないなら普通のダイアログとして扱う
+        return False
+
+
 DISMISS_ALERTS_JS = """() => {
   let closed = 0;
   document.querySelectorAll('ion-alert').forEach(alert => {
@@ -431,7 +480,13 @@ DISMISS_ALERTS_JS = """() => {
 
 
 def dismiss_dialogs(page):
-    """開いているダイアログを閉じる。閉じた数を返す。"""
+    """開いているダイアログを閉じる。閉じた数を返す。
+
+    **「リーダーから出る」ボタンしか無いダイアログには触らない** (#76)。
+    残しておけば capture_pages が読んで中断できる。
+    """
+    if has_leave_reader_button(page):
+        return 0
     try:
         closed = page.evaluate(DISMISS_ALERTS_JS)
     except Exception:
@@ -591,6 +646,21 @@ def alert_text(page, *, selector=ALERT_SELECTOR):
         return ""
 
 
+def reader_error_text(page, *, markers=READER_ERROR_MARKERS):
+    """リーダーが落ちていればその文言を返す。落ちていなければ空文字。
+
+    「ページが変わらなくなった」の**理由**を確かめるために使う。理由を見ずに
+    最終ページとみなしていたのが #76。
+    """
+    text = alert_text(page)
+    lowered = text.lower()
+    if not any(m in lowered for m in markers):
+        return ""
+    # unsupported_reason と同じ正規化。実機の文言は改行を含むので、
+    # そのまま人間向けに出すと 1 行のはずの報告が 3 行に割れる
+    return " ".join(text.split())[:REASON_MAX_CHARS]
+
+
 def unsupported_reason(page, *, markers=UNSUPPORTED_MARKERS):
     """Cloud Reader 非対応の本なら理由を返す。開けているなら None。
 
@@ -646,6 +716,7 @@ def capture_pages(
         max_pages       上限に達した
         end_of_book     送っても変わらなくなった（最終ページ到達とみなす）
         no_change       1 ページも進めなかった（送りキーの向き違い・モーダル等）
+        reader_error    リーダーが落ちた。最終ページではないので完成扱いにしない
         signin_required 途中でセッションが切れた
 
     expect_mode を渡すと、途中で撮影方式が変わったページを警告し、そのページ
@@ -684,8 +755,40 @@ def capture_pages(
                 shot, mode = page_shot(page)
                 current = digest(shot)
             if current == prev:
+                # **「変わらない」の理由を確かめてから最終ページと呼ぶ。**
+                # リーダーが落ちるとページ画像が消え、静止した画面を撮り続けるので
+                # ダイジェストは当然一致する (#76)
+                trouble = reader_error_text(page)
+                if not trouble and expect_mode == SHOT_ELEMENT and mode != SHOT_ELEMENT:
+                    # 文言が変わっていてもこれで拾える。最終ページに達しただけなら
+                    # ページ画像の要素は残っている
+                    trouble = "ページ画像の要素が消えました"
+                reason = (
+                    "reader_error" if trouble else ("end_of_book" if total > 1 else "no_change")
+                )
+                # **止まった位置を必ず残す。** これが唯一、あとから機械的に
+                # 「途中で切れた本」を洗える手がかりになる。最終ページまで
+                # 行った本は position が total の近くにあり、途中で止まった本は
+                # 大きく手前にある。上の 2 つの検出はどちらも取り逃しうる
+                # （viewport 撮影の本でダイアログが読めない場合など）ので、
+                # 検出できなかったぶんはログから拾い直すしかない
+                position, book_total = read_position_pair(page)
+                emit(
+                    "capture_stopped",
+                    human=f"{total} ページで停止しました（{reason}、位置 {position}/{book_total}）",
+                    page=total,
+                    reason=reason,
+                    position=position,
+                    book_total=book_total,
+                    message=trouble or "",
+                )
+                if trouble:
+                    emit_error(
+                        emit,
+                        f"{total} ページでリーダーが応答しなくなりました: {trouble}",
+                    )
                 # 1 枚も進めていないなら最終ページではなく送りに失敗している
-                return total, "end_of_book" if total > 1 else "no_change"
+                return total, reason
 
         total += 1
         filename = f"{total:03d}.png"
@@ -1185,6 +1288,28 @@ def run_headless_capture(
                 write_manifest()
                 return EXIT_UNSUPPORTED_BOOK
 
+            # 開いた時点でリーダーが落ちている本。#76 の 4 冊を撮り直すと
+            # まさにこの状態で開く。ここで見ないと、位置ラベルが読めないまま
+            # detect_turn_key まで進んで「ページ送りの向きを判定できません
+            # （--page-turn で明示してください）」になり、**原因も対処も
+            # 間違った案内**になる。ログの原因別集計も汚れる
+            broken = reader_error_text(page)
+            if broken:
+                emit(
+                    "reader_error",
+                    human=f"リーダーがエラーを出しています: {broken}",
+                    asin=asin,
+                    message=broken,
+                )
+                emit_error(
+                    emit,
+                    f"開いた時点でリーダーがエラーを出しています（{broken}）。"
+                    "本の問題ではなくリーダー側の状態なので、時間をおいて撮り直してください",
+                )
+                stopped_reason = "reader_error"
+                write_manifest()
+                return EXIT_ERROR
+
             dismiss_dialogs(page)
             page.add_style_tag(content=hide_ui_css())
             emit("status", human="ビューアの UI を隠しました", message="ビューアの UI を隠しました")
@@ -1276,6 +1401,15 @@ def run_headless_capture(
         return EXIT_ERROR
     if stopped_reason == "signin_required":
         emit_error(emit, f"{total} ページでセッションが切れたため中断しました")
+        return EXIT_ERROR
+    if stopped_reason == "reader_error":
+        # **完成扱いにしない。** 0 で返すと batch が出力を見てスキップし、
+        # 途中までの本がそのまま確定する (#76)
+        emit_error(
+            emit,
+            f"{total} ページでリーダーが落ちたため中断しました。"
+            "最終ページではないので、この本は撮り直しが要ります",
+        )
         return EXIT_ERROR
 
     emit(
