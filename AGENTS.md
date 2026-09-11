@@ -74,13 +74,32 @@ Refs #<issue番号>
 次のいずれかに触れる変更は、**push 前に実機で動作確認する**。
 自動テストも CI もこの層を一切カバーしていないため、ここだけは実機確認が要る。
 
-- `core/capture_engine.py` / `core/capture_runner.py` / `core/capture_profiles.py`
+**経路が 2 つあり、どちらのスモークが通るかでファイルが分かれる。** 以前は
+1 本の一覧を headless スモークだけで守っていたが、headless は
+`capture_engine` / `capture_runner` / `reader_navigator` を 1 行も実行しない。
+つまり「実機で確認した」という記録が実態を伴っていなかった（#50）。
+
+**画面キャプチャ経路**（`scripts/smoke_capture.py --screen`。デスクトップを占有する）
+
+- `core/capture_engine.py` / `core/capture_runner.py` / `core/reader_navigator.py`
+
+**headless 経路**（`scripts/smoke_capture.py`。画面を占有しない）
+
 - `core/headless_capture.py` / `core/headless_browser.py`
   （`kindle_cloud` プロファイルの既定経路＝**本番のキャプチャ経路**）
-- `core/win32_utils.py` / `core/dpi.py` / `core/reader_navigator.py`
+- `core/capture_profiles.py`
+- `core/win32_utils.py`（`prevent_sleep` は両経路で走る）
+- `core/dpi.py`（`cli.py` の起動時に `enable_per_monitor_dpi_awareness` が呼ばれる）
 - `core/boundary_detector.py` の境界検出（トリミングの純ロジックは対象外）
 - `cli.py` の `capture` / `open` / `run` / `batch` / `check` コマンド
 - `scripts/smoke_capture.py`（スモーク自身。壊れると全ての確認が無意味になる）
+
+**どちらのスモークでも検証できないもの**
+
+- `core/amazon_signin.py`（Win32 のログアウト検出、#15）。`reader_navigator` から
+  呼ばれるが、**サインアウトしていないと通らない**。監視対象に足すと
+  「検証できないのに push がブロックされる」だけになるので、あえて外してある。
+  ここを触ったときは手でサインアウトして確認するしかない
 
 **Playwright などのブラウザ自動化は使えない。** このアプリはブラウザを操作していない。
 Win32 API でネイティブウィンドウを探し、`ImageGrab` で画面そのものを物理ピクセルで

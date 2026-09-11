@@ -10,11 +10,22 @@ cli.py run を JSON Lines で起動し、結果を機械的に検証する:
 - 取得画像が全て別物（同じページが並んでいない = ページ送りが効いている）
 - 出力 PDF が存在し、ページ数が合っている
 
-headless で走るので、画面もデスクトップセッションも要らない。実行中に PC を
-使えるため、push のたびに走っても作業の邪魔にならない。
+**経路が 2 つあり、既定の headless は片方しか通らない。**
+
+    headless  core/headless_capture.py / core/headless_browser.py
+    画面      core/capture_engine.py / core/capture_runner.py /
+              core/reader_navigator.py
+
+既定は headless。画面もデスクトップセッションも要らないので、実行中に PC を
+使えて、push のたびに走っても作業の邪魔にならない。
+
+`--screen` を付けると画面キャプチャ経路を通す。**デスクトップを占有する**
+（ブラウザを全画面にし、マウスを別モニタへ退避し、画面を撮る）ので、
+pre-push は画面側のファイルに触ったときだけ要求する。
 
 使い方:
     python scripts/smoke_capture.py --asin B0XXXXXXXX
+    python scripts/smoke_capture.py --asin B0XXXXXXXX --screen
     python scripts/smoke_capture.py --asin B0XXXXXXXX --pages 5 --keep
 
 注意: 先頭ページへの巻き戻しは Kindle の読書位置 (Whispersync) を動かす。
@@ -128,11 +139,15 @@ def check_pages_differ(image_paths):
     return problems
 
 
-def build_run_argv(python, asin, out, pages, fmt="image_pdf"):
+def build_run_argv(python, asin, out, pages, fmt="image_pdf", screen=False):
     """cli.py run の argv を組み立てる。
 
-    必ず headless で走らせる。画面もデスクトップセッションも要らないので、
+    screen=False なら headless。画面もデスクトップセッションも要らないので、
     実行中に PC を使えて、push のたびに走っても邪魔にならない。
+
+    screen=True なら画面キャプチャ経路。デスクトップを占有する代わりに、
+    headless では 1 行も動かない capture_engine / capture_runner /
+    reader_navigator を通す (#50)。
     """
     argv = [
         python,
@@ -149,8 +164,12 @@ def build_run_argv(python, asin, out, pages, fmt="image_pdf"):
         "--max-pages",
         str(pages),
     ]
-    # 読み込み待ちの既定 45 秒は画面キャプチャ経路向けの値
-    argv += ["--headless", "--load-wait", "12", "--json"]
+    if screen:
+        # 読み込み待ちは既定 (45 秒) のまま。画面経路はブラウザの描画を待つ
+        argv += ["--no-headless", "--json"]
+    else:
+        # 読み込み待ちの既定 45 秒は画面キャプチャ経路向けの値
+        argv += ["--headless", "--load-wait", "12", "--json"]
     # 検証で manifest.json とキャプチャ画像を読むので消させない
     argv += ["--keep-images"]
     return argv
@@ -182,10 +201,10 @@ def list_pngs(folder):
     ]
 
 
-def run_smoke(asin, out, pages, python=None, echo=print):
+def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
     """スモークを 1 本実行し、問題の一覧を返す。空なら合格。"""
     python = python or sys.executable
-    argv = build_run_argv(python, asin, out, pages)
+    argv = build_run_argv(python, asin, out, pages, screen=screen)
     echo("実行: " + " ".join(argv))
 
     proc = subprocess.run(
@@ -237,6 +256,36 @@ def run_smoke(asin, out, pages, python=None, echo=print):
     return problems
 
 
+# 画面キャプチャ経路は実測で 4 回に 1 回ほど、1 ページ目から先へ送れずに
+# 止まる（stopped_reason=timeout）。ブラウザが前面に来る前にキーを送って
+# いるものと思われる。**失敗を 1 回で確定させると push のゲートとして
+# 使えない**ので、1 度だけやり直す。headless では観測していないが、
+# 経路で分けるほどの根拠が無いので両方に効かせる。
+SMOKE_ATTEMPTS = 2
+
+
+def run_smoke_with_retry(asin, out, pages, python=None, echo=print, screen=False):
+    """スモークを実行する。失敗したら 1 度だけやり直す。
+
+    やり直しは出力先を作り直してから行う。前回の画像や manifest が残って
+    いると、2 回目が「前回の結果」を検証してしまう。
+    """
+    problems = []
+    for attempt in range(1, SMOKE_ATTEMPTS + 1):
+        if attempt > 1:
+            echo(f"\n失敗したのでやり直します（{attempt}/{SMOKE_ATTEMPTS}）")
+            shutil.rmtree(capture_dir(out), ignore_errors=True)
+            shutil.rmtree(trimmed_dir(out), ignore_errors=True)
+            if os.path.exists(output_pdf(out)):
+                os.remove(output_pdf(out))
+        problems = run_smoke(asin, out, pages, python=python, echo=echo, screen=screen)
+        if not problems:
+            return []
+        for p in problems:
+            echo(f"  - {p}")
+    return problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="smoke_capture",
@@ -251,6 +300,13 @@ def main(argv=None):
     parser.add_argument("--out", help="出力先（省略時は一時フォルダを作って最後に消す）")
     parser.add_argument("--keep", action="store_true", help="一時フォルダを消さずに残す")
     parser.add_argument("--python", help="cli.py を動かす Python（省略時は自分と同じ）")
+    parser.add_argument(
+        "--screen",
+        action="store_true",
+        help="画面キャプチャ経路で走らせる（デスクトップを占有する）。"
+        "headless では 1 行も動かない capture_engine / capture_runner / "
+        "reader_navigator を通す",
+    )
     args = parser.parse_args(argv)
 
     if not args.asin:
@@ -270,7 +326,9 @@ def main(argv=None):
     out = args.out or tempfile.mkdtemp(prefix="kindle_shot_smoke_")
     created_tmp = args.out is None
     try:
-        problems = run_smoke(args.asin, out, args.pages, python=args.python)
+        problems = run_smoke_with_retry(
+            args.asin, out, args.pages, python=args.python, screen=args.screen
+        )
     finally:
         if created_tmp and not args.keep:
             shutil.rmtree(out, ignore_errors=True)
@@ -283,7 +341,8 @@ def main(argv=None):
             print(f"  - {p}", file=sys.stderr)
         return EXIT_FAILED
 
-    print(f"\n実機スモーク: OK（headless / {args.pages} ページ取得・PDF 生成まで確認）")
+    path = "画面キャプチャ" if args.screen else "headless"
+    print(f"\n実機スモーク: OK（{path} / {args.pages} ページ取得・PDF 生成まで確認）")
     return EXIT_OK
 
 

@@ -122,21 +122,31 @@ def repo(tmp_path):
     return root
 
 
-def _commit_change(repo, relpath):
-    target = repo / relpath
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("changed\n", encoding="utf-8")
+def _commit_change(repo, *relpaths):
+    """1 つのコミットで複数のファイルを変える。
+
+    _push_input が HEAD~1 を base にするので、**2 回に分けてコミットすると
+    後ろの 1 つしかフックに見えない**。
+    """
+    for relpath in relpaths:
+        target = repo / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("changed\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "change")
 
 
 def _stub_python(repo, marker):
-    """引数を marker に書き出すだけの偽インタプリタ。"""
+    """引数を marker に書き足すだけの偽インタプリタ。
+
+    **上書きではなく追記する。** 1 回の push で headless と画面の 2 本を
+    走らせることがあるので、上書きだと後ろの 1 本しか観測できない。
+    """
     stub = repo / "stubpy"
     body = (
         "#!/bin/sh\n"
         'if [ "$1" = "-c" ]; then exit 0; fi\n'
-        'printf %s "$*" > "' + marker.as_posix() + '"\n'
+        'printf "%s\\n" "$*" >> "' + marker.as_posix() + '"\n'
     )
     stub.write_text(body, encoding="utf-8", newline="\n")
     os.chmod(stub, 0o755)
@@ -227,6 +237,53 @@ def test_headless_capture_is_watched(repo, tmp_path):
 
 
 @needs_sh
+def test_screen_only_change_runs_the_screen_smoke(repo, tmp_path):
+    """画面キャプチャ経路でしか動かないファイルは --screen で確認する (#50)。
+
+    headless スモークは capture_engine を 1 行も実行しない。ここが
+    headless だけで守られていたため、「実機で確認した」という記録が
+    実態を伴っていなかった。
+    """
+    marker = tmp_path / "ran.txt"
+    _git(repo, "config", "kindleshot.python", str(_stub_python(repo, marker)))
+    _commit_change(repo, "core/capture_engine.py")
+
+    code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
+    assert code == 0, err or out
+    calls = marker.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1, calls
+    assert "--screen" in calls[0]
+
+
+@needs_sh
+def test_headless_only_change_does_not_occupy_the_desktop(repo, tmp_path):
+    """headless で確認できる変更で、画面を占有するスモークを走らせない。"""
+    marker = tmp_path / "ran.txt"
+    _git(repo, "config", "kindleshot.python", str(_stub_python(repo, marker)))
+    _commit_change(repo, "core/headless_capture.py")
+
+    code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
+    assert code == 0, err or out
+    calls = marker.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1, calls
+    assert "--screen" not in calls[0]
+
+
+@needs_sh
+def test_touching_both_paths_runs_both_smokes(repo, tmp_path):
+    """両方に触ったら両方確認する。片方で済ませない。"""
+    marker = tmp_path / "ran.txt"
+    _git(repo, "config", "kindleshot.python", str(_stub_python(repo, marker)))
+    _commit_change(repo, "core/capture_engine.py", "core/headless_capture.py")
+
+    code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
+    assert code == 0, err or out
+    calls = marker.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 2, calls
+    assert sum("--screen" in c for c in calls) == 1
+
+
+@needs_sh
 def test_unwatched_change_does_not_run_smoke(repo, tmp_path):
     """キャプチャ経路に触らない変更は素通しする。"""
     marker = tmp_path / "ran.txt"
@@ -263,22 +320,44 @@ def test_branch_deletion_push_does_not_run_smoke(repo, tmp_path):
     assert not marker.exists()
 
 
-def _watch_re_files():
-    """フックの WATCH_RE が列挙しているファイル名。"""
+def _hook_files(name):
+    """フックの <name>_RE が列挙しているファイル名。"""
     with open(HOOK, encoding="utf-8") as f:
         text = f.read()
-    m = re.search(r"^WATCH_RE='\^\((.+)\)\$'$", text, re.MULTILINE)
-    assert m, "WATCH_RE を読み取れない"
+    m = re.search(rf"^{name}_RE='\^\((.+)\)\$'$", text, re.MULTILINE)
+    assert m, f"{name}_RE を読み取れない"
     return {alt.replace("\\.", ".") for alt in m.group(1).split("|")}
 
 
-def _documented_files():
-    """AGENTS.md「実機スモーク」節が挙げているファイル名。"""
+def _watch_re_files():
+    """フックが監視しているファイル名（画面 + headless）。"""
+    return _hook_files("SCREEN") | _hook_files("HEADLESS")
+
+
+# スモークで検証できないと AGENTS.md が明記している見出し。ここから下は
+# 「監視しないと決めたもの」なので、フックの一覧と突き合わせない
+_UNVERIFIABLE_HEADING = "**どちらのスモークでも検証できないもの**"
+
+
+def _section(start, end):
     with open(AGENTS, encoding="utf-8") as f:
         text = f.read()
-    section = text.split("### 5. 実機スモーク", 1)[1].split("#### 対象は Cloud Reader", 1)[0]
-    listed = [line for line in section.splitlines() if line.startswith("- ")]
+    return text.split(start, 1)[1].split(end, 1)[0]
+
+
+def _files_in(chunk):
+    listed = [line for line in chunk.splitlines() if line.startswith("- ")]
     return {t for line in listed for t in re.findall(r"`([\w/]+\.py)`", line)}
+
+
+def _documented_files():
+    """AGENTS.md「実機スモーク」節が、監視対象として挙げているファイル名。"""
+    return _files_in(_section("### 5. 実機スモーク", _UNVERIFIABLE_HEADING))
+
+
+def _documented_unverifiable():
+    """検証できないと明記されているファイル名。"""
+    return _files_in(_section(_UNVERIFIABLE_HEADING, "#### 対象は Cloud Reader"))
 
 
 def test_watch_list_matches_the_documentation():
@@ -288,3 +367,35 @@ def test_watch_list_matches_the_documentation():
     本番経路の headless_capture.py が実際に漏れていた（#47）。
     """
     assert _watch_re_files() == _documented_files()
+
+
+def test_the_unverifiable_files_are_documented_and_not_gated():
+    """検証できないファイルを、黙って監視対象に入れない (#50)。
+
+    core/amazon_signin.py は reader_navigator から呼ばれるが、サインアウト
+    していないと通らない。監視対象に足すと「検証できないのに push が
+    ブロックされる」だけになる。**外すこと自体は正しいが、外したことが
+    どこにも書かれていないと穴が隠れる**ので、AGENTS.md に明記して
+    ここで固定する。
+    """
+    unverifiable = _documented_unverifiable()
+    assert "core/amazon_signin.py" in unverifiable
+    assert unverifiable & _watch_re_files() == set()
+
+
+def test_the_two_lists_do_not_overlap():
+    """同じファイルを両方に入れない。
+
+    入れると 1 回の push で画面スモークと headless スモークの両方が走る。
+    共有部分は headless 側に置く（画面を占有しないほうで確認できる）。
+    """
+    assert _hook_files("SCREEN") & _hook_files("HEADLESS") == set()
+
+
+def test_the_screen_only_files_are_watched_by_the_screen_smoke():
+    """headless が 1 行も実行しないファイルは、画面スモーク側にあること (#50)。"""
+    assert _hook_files("SCREEN") == {
+        "core/capture_engine.py",
+        "core/capture_runner.py",
+        "core/reader_navigator.py",
+    }

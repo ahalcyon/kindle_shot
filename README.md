@@ -1209,12 +1209,33 @@ Cloud Reader で本を開くところから全自動で 3 ページ取得し、P
 **headless で走るので画面もセッションも不要**で、実行中も PC を使える。
 先頭ページへの巻き戻しで Kindle の読書位置 (Whispersync) が動く点だけ注意。
 
+#### 経路が 2 つある
+
+既定の headless は **`core/capture_engine.py` / `core/capture_runner.py` /
+`core/reader_navigator.py` を 1 行も実行しない**。この 3 つを通すには
+`--screen` を付ける。
+
+```
+kindle_env\Scripts\python.exe scripts/smoke_capture.py --screen
+```
+
+`--screen` は**デスクトップを占有する**（ブラウザを全画面にし、マウスを別モニタへ
+退避し、画面そのものを撮る）。終わるまで PC を触らないこと。実測で 30 秒ほど。
+
+画面キャプチャ経路は **4 回に 1 回ほど、1 ページ目から先へ送れずに止まる**
+（`stopped_reason=timeout`）。ブラウザが前面に来る前にキーを送っているものと
+思われる。スモークは失敗したら 1 度だけやり直す。
+
 キャプチャ経路のファイルを変更した push を pre-push フックでブロックできる:
 
 ```
 git config core.hooksPath .githooks
 git config kindleshot.smokeAsin B0XXXXXXXX
 ```
+
+フックは**触ったファイルに応じて必要なほうだけ**走らせる。画面側のファイルに
+触ったときだけデスクトップを占有する。対応表は
+[AGENTS.md](AGENTS.md)「実機スモーク」にある。
 
 ### テストの種類
 

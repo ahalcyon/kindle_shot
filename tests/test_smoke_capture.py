@@ -118,6 +118,74 @@ def test_build_run_argv():
     assert "--keep-images" in argv
 
 
+def test_build_run_argv_for_the_screen_path():
+    """--screen は画面キャプチャ経路で走らせる (#50)。
+
+    headless は core/capture_engine.py / core/capture_runner.py /
+    core/reader_navigator.py を 1 行も実行しない。この 3 つの回帰を
+    捕まえられるのはこちらの経路だけ。
+    """
+    argv = smoke_capture.build_run_argv("py.exe", "B0TEST", "/out", 3, screen=True)
+    assert "--no-headless" in argv
+    assert "--headless" not in argv
+    # 読み込み待ちは既定 (45 秒) のまま。12 秒は headless 向けの値
+    assert "--load-wait" not in argv
+    assert "--json" in argv
+    assert "--keep-images" in argv
+
+
+def test_retry_runs_again_after_a_failure(tmp_path, monkeypatch):
+    """1 回の失敗で確定させない。
+
+    画面キャプチャ経路は実測で 4 回に 1 回ほど、1 ページ目から先へ送れずに
+    止まる。失敗を 1 回で確定させると push のゲートとして使えない。
+    """
+    calls = []
+
+    def fake(asin, out, pages, python=None, echo=print, screen=False):
+        calls.append(screen)
+        return ["こわれた"] if len(calls) == 1 else []
+
+    monkeypatch.setattr(smoke_capture, "run_smoke", fake)
+    problems = smoke_capture.run_smoke_with_retry(
+        "B0TEST", str(tmp_path), 3, echo=lambda *_: None, screen=True
+    )
+    assert problems == []
+    assert calls == [True, True]
+
+
+def test_retry_gives_up_after_the_second_failure(tmp_path, monkeypatch):
+    """やり直しても駄目なら失敗として返す。握りつぶさない。"""
+    monkeypatch.setattr(
+        smoke_capture,
+        "run_smoke",
+        lambda *a, **kw: ["こわれたまま"],
+    )
+    problems = smoke_capture.run_smoke_with_retry("B0TEST", str(tmp_path), 3, echo=lambda *_: None)
+    assert problems == ["こわれたまま"]
+
+
+def test_retry_clears_the_previous_output(tmp_path, monkeypatch):
+    """やり直す前に前回の出力を消す。
+
+    消さないと、2 回目が前回の manifest や画像を検証して通ってしまう。
+    """
+    out = str(tmp_path)
+    os.makedirs(smoke_capture.capture_dir(out))
+    with open(os.path.join(smoke_capture.capture_dir(out), "manifest.json"), "w") as f:
+        f.write("{}")
+    seen = []
+
+    def fake(asin, out_, pages, python=None, echo=print, screen=False):
+        seen.append(os.path.exists(smoke_capture.capture_dir(out_)))
+        return ["だめ"] if len(seen) == 1 else []
+
+    monkeypatch.setattr(smoke_capture, "run_smoke", fake)
+    smoke_capture.run_smoke_with_retry("B0TEST", out, 3, echo=lambda *_: None)
+    # 1 回目は残っていて、2 回目の直前に消えている
+    assert seen == [True, False]
+
+
 def test_paths_follow_run_book_layout():
     """run_book が <out>/<title> と <out>/<title>_trimmed を使う構成に合わせる。"""
     assert smoke_capture.capture_dir("/out") == os.path.join("/out", "smoke")
@@ -148,7 +216,7 @@ def test_asin_comes_from_git_config(monkeypatch):
     monkeypatch.setattr(smoke_capture, "smoke_asin_from_git_config", lambda: "B0FROMGIT")
     captured = {}
 
-    def fake_run_smoke(asin, out, pages, python=None):
+    def fake_run_smoke(asin, out, pages, python=None, echo=print, screen=False):
         captured["asin"] = asin
         return []
 

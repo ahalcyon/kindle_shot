@@ -75,9 +75,18 @@ if [ "$1" = "--check" ]; then
 fi
 
 # 実機確認が要るファイル。AGENTS.md の一覧と合わせること。
-# headless_* は kindle_cloud プロファイルの既定経路＝本番のキャプチャ経路なので、
-# 画面キャプチャ側 (capture_*) と同じく実機でしか壊れが分からない。
-WATCH_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/capture_profiles\.py|core/headless_capture\.py|core/headless_browser\.py|core/win32_utils\.py|core/dpi\.py|core/reader_navigator\.py|core/boundary_detector\.py|cli\.py|scripts/smoke_capture\.py)$'
+#
+# **どちらのスモークが通るかでファイルを分ける。** 以前は 1 本の一覧を
+# headless スモークだけで守っていたが、headless は capture_engine /
+# capture_runner / reader_navigator を 1 行も実行しない。つまり
+# 「実機で確認した」という記録が実態を伴っていなかった (#50)。
+#
+# SCREEN_RE: 画面キャプチャ経路でしか動かない。--screen が要る（デスクトップを占有）
+SCREEN_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/reader_navigator\.py)$'
+# HEADLESS_RE: headless で動く。両方の経路が通る共有部分もここに入れる
+#   capture_profiles / cli / boundary_detector(trim) / win32_utils(prevent_sleep) /
+#   dpi(cli.py の起動時に呼ばれる) は headless でも実行される
+HEADLESS_RE='^(core/headless_capture\.py|core/headless_browser\.py|core/capture_profiles\.py|core/win32_utils\.py|core/dpi\.py|core/boundary_detector\.py|cli\.py|scripts/smoke_capture\.py)$'
 
 ZERO='0000000000000000000000000000000000000000'
 changed=''
@@ -102,14 +111,16 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
     fi
 done
 
-hits=$(printf '%s' "$changed" | grep -E "$WATCH_RE" | sort -u || true)
+screen_hits=$(printf '%s' "$changed" | grep -E "$SCREEN_RE" | sort -u || true)
+headless_hits=$(printf '%s' "$changed" | grep -E "$HEADLESS_RE" | sort -u || true)
 
-if [ -z "$hits" ]; then
+if [ -z "$screen_hits" ] && [ -z "$headless_hits" ]; then
     exit 0
 fi
 
 echo "pre-push: キャプチャ経路の変更を検出しました:"
-printf '  %s\n' $hits
+[ -n "$headless_hits" ] && printf '  [headless] %s\n' $headless_hits
+[ -n "$screen_hits" ] && printf '  [画面]     %s\n' $screen_hits
 echo ""
 
 ASIN=$(git config kindleshot.smokeAsin || true)
@@ -139,17 +150,29 @@ if ! probe=$("$PY" -c "import sys" 2>&1 >/dev/null); then
     exit 1
 fi
 
-printf 'pre-push: 実機スモークを実行します（headless。画面は占有しません）\n'
 printf '          ASIN=%s python=%s\n' "$ASIN" "$PY"
 echo ""
 
-if "$PY" scripts/smoke_capture.py --asin "$ASIN"; then
-    echo ""
-    echo "pre-push: 実機スモーク OK。push を続行します。"
-    exit 0
+fail() {
+    echo "" >&2
+    printf 'pre-push: %s のスモークに失敗したため push を中止しました。\n' "$1" >&2
+    echo "迂回するには git push --no-verify を使い、PR に理由を書いてください。" >&2
+    exit 1
+}
+
+if [ -n "$headless_hits" ]; then
+    printf 'pre-push: 実機スモーク（headless。画面は占有しません）\n'
+    "$PY" scripts/smoke_capture.py --asin "$ASIN" || fail headless
 fi
 
-echo "" >&2
-echo "pre-push: 実機スモークに失敗したため push を中止しました。" >&2
-echo "迂回するには git push --no-verify を使い、PR に理由を書いてください。" >&2
-exit 1
+if [ -n "$screen_hits" ]; then
+    echo ""
+    printf 'pre-push: 実機スモーク（画面キャプチャ。**デスクトップを占有します**）\n'
+    printf '          ブラウザが全画面になり、マウスが別モニタへ退避します。\n'
+    printf '          終わるまで触らないでください。\n'
+    "$PY" scripts/smoke_capture.py --asin "$ASIN" --screen || fail 画面キャプチャ
+fi
+
+echo ""
+echo "pre-push: 実機スモーク OK。push を続行します。"
+exit 0
