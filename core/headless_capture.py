@@ -129,11 +129,13 @@ DEFAULT_MAX_REWIND = 1000
 MAX_START_POSITION = 10
 # 巻き戻し中に位置ラベルを読み落としたときの、1 押下あたりの読み直し回数
 REWIND_REREAD_ATTEMPTS = 3
-# 1 回の巻き戻し全体で許す読み直しの回数。読み直しは 1 押下あたり最大
-# 2.5 x (3 - 1) = 5 秒かかる。読めない回が成功のたびに帳消しになると累積の
-# 上限が無くなり、押すたびにちらつく本では 1 冊で 90 分を超えうる。
-# バッチは 1 冊あたりのタイムアウトを持っていないので、ここで止める。
-REWIND_REREAD_BUDGET = 20
+# 読み直しの回数で打ち切る仕組みは入れていない。一度入れたが、**進んでいる
+# 本を殺す**ことが分かったので外した。押すたびにラベルの描画が遅れる本は、
+# 読み直しては正しく戻っているのに回数だけが積み上がる。上限を「進んだら
+# 0 に戻す」形にすると、今度は stuck (3 回) が先に効くので到達しない。
+# 時間の上限は max_rewind (1000 押下) が持つ。最悪は 1 押下あたり
+# 0.6 + 5 + 1.5 = 7.1 秒 x 1000 = 約 2 時間で、1 冊としては長いが有限。
+# そこまで掛かる本が実在したら rewound の presses に出るので、数字を見てから決める。
 
 # 読書位置の表示。実測で 2 形式ある:
 #     "6/339ページ ● 1%"   (ページ表示)
@@ -201,8 +203,11 @@ TURN_WAIT_ATTEMPTS = 2
 # 押した直後のラベルは遷移中の値を返すことがあり、それが before より小さいと
 # `detect_turn_key` は向きを逆に判定する。逆向きのまま撮ると正常終了して
 # 逆順の部分本が完成扱いになる (#53)。実機で裏が取れているのは
-# rewind_to_start が使っている 0.6 秒までなので、それより早くは読まない。
-TURN_SETTLE_WAIT = DEFAULT_REWIND_WAIT
+# rewind_to_start が使っている 0.6 秒（DEFAULT_REWIND_WAIT と同じ値だが、
+# あちらを速くしてもここは動かさない）までなので、それより早くは読まない。
+# ただし page_wait x attempts がこれより短いときはそちらが優先される
+# （--page-wait 0.2 なら 0.4 秒で読む）。下限は設けていない。
+TURN_SETTLE_WAIT = 0.6
 # 落ち着いたあとに見に行く間隔
 TURN_POLL_INTERVAL = 0.25
 
@@ -749,8 +754,6 @@ def rewind_to_start(
     pressed = 0
     stuck = 0
     unreadable = 0
-    rereads = 0
-    over_budget = False
     at_start = before <= 1
     while pressed < max_rewind and not at_start:
         page.keyboard.press(back)
@@ -766,30 +769,35 @@ def rewind_to_start(
             # 読み直しは巻き戻しの刻み (0.6 秒) ではなく通常の待ち時間で待つ。
             # 実測では合本の巻の境目でラベルが数秒消える。0.6 秒の刻みでは
             # 復帰を待ちきれず、読めないまま打ち切っていた (#69)
-            rereads += 1
             # ダイアログが被っていると位置ラベルも読めない。巻き戻しの
             # ループは今まで一度も閉じていなかった。実測で、横書きの本が
-            # 位置 148/336 で「読めない」まま打ち切られた (#69)。
-            # 閉じた拍子に位置が飛ぶ本がある（Whispersync の「はい」を押した形）。
-            # 飛ぶと current >= before になって stuck が立つが、その場合
-            # before は先頭から遠いままなので ok は返らない。黙って部分本に
-            # なることはない
-            dismiss_dialogs(page)
+            # 位置 148/336 で「読めない」まま打ち切られた (#69)
+            closed = dismiss_dialogs(page)
             current, seen_total = _settled_position_pair(
                 page,
                 page_wait=max(page_wait, DEFAULT_PAGE_WAIT),
                 attempts=REWIND_REREAD_ATTEMPTS,
             )
+            if closed and current is not None:
+                # **閉じた拍子に位置が飛ぶ本がある**（Whispersync の
+                # 「最後に読んでいたページへ移動しますか」に「はい」を押した形）。
+                # before はそれまでの最小値であって今の位置ではないので、
+                # 飛んだあとにこれと比べると 3 回で stuck が立ち、
+                # 「位置 3 で先頭に着いた」と報告しながら実際は 1654 にいる、
+                # という事故になる（この PR が防ごうとしているものそのもの）。
+                # 飛んだら基準を取り直す
+                before = current
+                stuck = 0
+                if seen_total is not None:
+                    total = seen_total
+                at_start = before <= 1
+                continue
         if current is None:
             unreadable += 1
             if unreadable >= max_retries:
                 # どこにいるか分からない。先頭だと決めつけない
                 break
             continue
-        if rereads >= REWIND_REREAD_BUDGET:
-            # 読めたり読めなかったりを繰り返している。これ以上は時間を食うだけ
-            over_budget = True
-            break
         unreadable = 0
         if seen_total is not None:
             total = seen_total
@@ -817,11 +825,6 @@ def rewind_to_start(
     elif unreadable >= max_retries:
         human = f"読書位置を読めなくなりました（{pressed} 回、最後に読めたのは {where}）"
         reason = "unreadable"
-    elif over_budget:
-        human = (
-            f"位置を読み直してばかりで進みません（{pressed} 回、{where}、読み直し {rereads} 回）"
-        )
-        reason = "reread_budget"
     elif at_start:
         human = (
             f"{where} で動かなくなりましたが、先頭ではありません"
@@ -841,6 +844,26 @@ def rewind_to_start(
         reason=reason,
     )
     return ok, pressed
+
+
+def _still_at_start(page, *, emit=null_emit):
+    """巻き戻した後もまだ先頭にいるか。読めなければ先頭とみなす。
+
+    ダイアログを閉じた拍子に位置が飛ぶ本があるため、巻き戻しの成功だけでは
+    撮り始めてよいことにならない (#69)。位置が読めない場合にここで止めると、
+    位置ラベルを持たない本が撮れなくなる。巻き戻し本体が既に
+    「読めないなら失敗」を見ているので、ここは分かったときだけ止める。
+    """
+    position, total = read_position_pair(page)
+    if position is None or position <= MAX_START_POSITION:
+        return True
+    where = f"位置 {position}" + (f"/{total}" if total is not None else "")
+    emit_error(
+        emit,
+        f"巻き戻したあとにダイアログで {where} まで飛ばされました。"
+        "途中から撮ると本の一部だけが完成扱いになるため中止します",
+    )
+    return False
 
 
 def run_headless_capture(
@@ -1014,7 +1037,13 @@ def run_headless_capture(
                     )
                     stopped_reason = "rewind_failed"
                     return EXIT_ERROR
-                dismiss_dialogs(page)
+                # ここで閉じるダイアログも位置を飛ばしうる（Whispersync の
+                # 「最後に読んでいたページへ移動しますか」）。巻き戻しが
+                # 成功したあとに飛ばされると、そのまま途中から撮り始める。
+                # 閉じたときだけ位置を見直す
+                if dismiss_dialogs(page) and not _still_at_start(page, emit=emit):
+                    stopped_reason = "rewind_failed"
+                    return EXIT_ERROR
             total, stopped_reason = capture_pages(
                 page,
                 save_dir,
