@@ -234,6 +234,12 @@ def test_headless_capture_is_watched(repo, tmp_path):
     code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
     assert code == 0, err or out
     assert marker.exists(), "headless_capture.py の変更でスモークが走っていない"
+    # **フックが強制するのは headless だけ** (#50)。--screen を付けると
+    # デスクトップを占有し、画面が消えている環境では push できなくなる。
+    # スクリプト名まで見るのは、起動行の typo を fail-closed 任せにしないため
+    ran = marker.read_text(encoding="utf-8")
+    assert "scripts/smoke_capture.py" in ran
+    assert "--screen" not in ran, "フックがデスクトップを占有するほうを走らせている"
 
 
 @needs_sh
@@ -319,7 +325,10 @@ def _documented_files():
 
 def _documented_unverifiable():
     """検証できないと明記されているファイル名。"""
-    return _files_in(_section(_UNVERIFIABLE_HEADING, "#### 対象は Cloud Reader"))
+    # 終端は直後の見出し。`#### 対象は Cloud Reader` まで伸ばすと
+    # 「ゲートにしない理由」節の箇条書きまで飲み込み、そこに 1 行足すだけで
+    # 「検証できないものとして明記済み」と誤判定できる
+    return _files_in(_section(_UNVERIFIABLE_HEADING, "### 画面キャプチャ経路"))
 
 
 def test_watch_list_matches_the_documentation():
@@ -345,11 +354,6 @@ def test_the_unverifiable_files_are_documented_and_not_gated():
     assert unverifiable & _watch_re_files() == set()
 
 
-# 箇条書きの中で「どこから呼ばれるか」の説明として出てくるだけのパス。
-# 主語でも監視対象でもないので、下のテストの対象から外す。
-_CONTEXT_ONLY = {"ui/steps/capture_step.py", "tests/test_pre_push_hook.py"}
-
-
 def _bullets(chunk):
     """箇条書きを 1 件ずつ返す（継続行を畳む）。"""
     items: list[str] = []
@@ -359,6 +363,11 @@ def _bullets(chunk):
         elif items and line.startswith("  "):
             items[-1] += " " + line.strip()
     return items
+
+
+# 箇条書きの中で「どこから呼ばれるか」の説明として出てくるだけのパス。
+# 主語でも監視対象でもないので、下のテストの対象から外す。
+_CONTEXT_ONLY = {"ui/steps/capture_step.py", "tests/test_pre_push_hook.py"}
 
 
 def test_each_bullet_names_exactly_one_file():
@@ -389,7 +398,7 @@ def test_every_path_in_the_lists_is_accounted_for():
     assert mentioned <= known, f"主語にも監視対象にもなっていないパス: {mentioned - known}"
 
 
-def test_the_screen_path_is_not_gated(repo=None):
+def test_the_screen_path_is_not_gated():
     """画面キャプチャ経路のファイルを push のゲートにしないこと (#50)。
 
     headless スモークはこれらを 1 行も実行しない。監視対象に入れたまま
@@ -401,12 +410,6 @@ def test_the_screen_path_is_not_gated(repo=None):
         "core/capture_engine.py",
         "core/capture_runner.py",
         "core/reader_navigator.py",
-        "core/win32_utils.py",
     }
     assert screen_only & _watch_re_files() == set()
     assert screen_only <= _documented_unverifiable()
-
-
-# 箇条書きの中で「どこから呼ばれるか」の説明として出てくるだけのパス。
-# 主語でも監視対象でもないので、下のテストの対象から外す。
-_CONTEXT_ONLY = {"ui/steps/capture_step.py", "tests/test_pre_push_hook.py"}

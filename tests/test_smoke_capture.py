@@ -146,10 +146,10 @@ def test_retry_runs_again_after_a_page_turn_failure(tmp_path, monkeypatch):
 
     def fake(asin, out, pages, python=None, echo=print, screen=False):
         calls.append(screen)
-        return (["ページが進まなかった"], True) if len(calls) == 1 else ([], False)
+        return (["ページが進まなかった"], True, []) if len(calls) == 1 else ([], False, [])
 
     monkeypatch.setattr(smoke_capture, "run_smoke", fake)
-    problems = smoke_capture.run_smoke_with_retry(
+    problems, _ = smoke_capture.run_smoke_with_retry(
         "B0TEST", str(tmp_path), 3, echo=lambda *_: None, screen=True
     )
     assert problems == []
@@ -166,10 +166,14 @@ def test_a_deterministic_failure_is_not_retried(tmp_path, monkeypatch):
 
     def fake(asin, out, pages, python=None, echo=print, screen=False):
         calls.append(1)
-        return ["cli.py run が終了コード 2 で失敗"], False
+        return ["cli.py run が終了コード 2 で失敗"], False, []
 
     monkeypatch.setattr(smoke_capture, "run_smoke", fake)
-    problems = smoke_capture.run_smoke_with_retry("B0TEST", str(tmp_path), 3, echo=lambda *_: None)
+    # screen=True で確かめる。headless はそもそも 1 回しか走らないので、
+    # やり直しの判定を壊してもこのテストは通ってしまう
+    problems, _ = smoke_capture.run_smoke_with_retry(
+        "B0TEST", str(tmp_path), 3, echo=lambda *_: None, screen=True
+    )
     assert problems == ["cli.py run が終了コード 2 で失敗"]
     assert len(calls) == 1
 
@@ -177,9 +181,33 @@ def test_a_deterministic_failure_is_not_retried(tmp_path, monkeypatch):
 def test_retry_gives_up_after_the_second_failure(tmp_path, monkeypatch):
     """やり直しても駄目なら失敗として返す。握りつぶさない。"""
     msg = "stopped_reason が max_pages ではなく timeout"
-    monkeypatch.setattr(smoke_capture, "run_smoke", lambda *a, **kw: ([msg], True))
-    problems = smoke_capture.run_smoke_with_retry("B0TEST", str(tmp_path), 3, echo=lambda *_: None)
+    monkeypatch.setattr(smoke_capture, "run_smoke", lambda *a, **kw: ([msg], True, []))
+    problems, _ = smoke_capture.run_smoke_with_retry(
+        "B0TEST", str(tmp_path), 3, echo=lambda *_: None, screen=True
+    )
     assert problems == [msg]
+
+
+def test_headless_does_not_retry(tmp_path, monkeypatch):
+    """headless ではやり直さない。
+
+    ゲートが headless 専用になった今 (#50)、stopped_reason=timeout は
+    「ページが送れていない」退行そのものの症状。ここでやり直すと、間欠的な
+    退行が push を通る率が 50% から 75% に上がる。4 回に 1 回の不安定さは
+    画面経路の性質であって、headless のものではない。
+    """
+    calls = []
+
+    def fake(asin, out, pages, python=None, echo=print, screen=False):
+        calls.append(screen)
+        return ["ページが進まなかった"], True, []
+
+    monkeypatch.setattr(smoke_capture, "run_smoke", fake)
+    problems, _ = smoke_capture.run_smoke_with_retry(
+        "B0TEST", str(tmp_path), 3, echo=lambda *_: None
+    )
+    assert problems == ["ページが進まなかった"]
+    assert calls == [False]
 
 
 def test_the_previous_output_is_cleared_before_every_attempt(tmp_path, monkeypatch):
@@ -209,10 +237,10 @@ def test_the_previous_output_is_cleared_before_every_attempt(tmp_path, monkeypat
                 os.path.exists(smoke_capture.output_pdf(out_)),
             ]
         )
-        return (["ページが進まなかった"], True) if len(seen) == 1 else ([], False)
+        return (["ページが進まなかった"], True, []) if len(seen) == 1 else ([], False, [])
 
     monkeypatch.setattr(smoke_capture, "run_smoke", fake)
-    smoke_capture.run_smoke_with_retry("B0TEST", out, 3, echo=lambda *_: None)
+    smoke_capture.run_smoke_with_retry("B0TEST", out, 3, echo=lambda *_: None, screen=True)
     assert seen == [[False, False, False], [False, False, False]]
 
 
@@ -239,7 +267,7 @@ def test_run_smoke_reads_retryable_from_the_manifest(tmp_path, monkeypatch):
     run_smoke が retryable = False を返すようにしても緑のまま通り、
     やり直しが黙って死ぬ。表示文言との一致を見ていたときと同じ穴になる。
     """
-    _, retryable = _fake_run(
+    _, retryable, _argv = _fake_run(
         {"total_pages": 1, "stopped_reason": "timeout", "duration_seconds": 1},
         tmp_path,
         monkeypatch,
@@ -249,7 +277,7 @@ def test_run_smoke_reads_retryable_from_the_manifest(tmp_path, monkeypatch):
 
 def test_run_smoke_does_not_mark_a_normal_stop_retryable(tmp_path, monkeypatch):
     """逆向きも固定する。True を返しっぱなしにすると毎回 30 秒を捨てる。"""
-    _, retryable = _fake_run(
+    _, retryable, _argv = _fake_run(
         {"total_pages": 3, "stopped_reason": "max_pages", "duration_seconds": 1},
         tmp_path,
         monkeypatch,
@@ -264,7 +292,9 @@ def test_run_smoke_without_a_manifest_is_not_retryable(tmp_path, monkeypatch):
         "run",
         lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
-    problems, retryable = smoke_capture.run_smoke("B0TEST", str(tmp_path), 3, echo=lambda *_: None)
+    problems, retryable, _argv = smoke_capture.run_smoke(
+        "B0TEST", str(tmp_path), 3, echo=lambda *_: None
+    )
     assert retryable is False
     assert problems
 
@@ -279,7 +309,9 @@ def test_a_cleanup_that_fails_is_reported(tmp_path, monkeypatch):
     monkeypatch.setattr(
         smoke_capture, "run_smoke", lambda *a, **kw: pytest.fail("走らせてはいけない")
     )
-    problems = smoke_capture.run_smoke_with_retry("B0TEST", str(tmp_path), 3, echo=lambda *_: None)
+    problems, _ = smoke_capture.run_smoke_with_retry(
+        "B0TEST", str(tmp_path), 3, echo=lambda *_: None
+    )
     assert problems and "消せませんでした" in problems[0]
 
 
@@ -315,7 +347,7 @@ def test_asin_comes_from_git_config(monkeypatch):
 
     def fake_run_smoke(asin, out, pages, python=None, echo=print, screen=False):
         captured["asin"] = asin
-        return [], False
+        return [], False, []
 
     monkeypatch.setattr(smoke_capture, "run_smoke", fake_run_smoke)
     assert smoke_capture.main([]) == smoke_capture.EXIT_OK
@@ -326,3 +358,38 @@ def test_main_rejects_single_page(capsys):
     """1 ページではページ送りを確認できないので受け付けない。"""
     assert smoke_capture.main(["--asin", "B0TEST", "--pages", "1"]) == smoke_capture.EXIT_BAD_ARGS
     assert "--pages" in capsys.readouterr().err
+
+
+def test_main_passes_screen_through(monkeypatch):
+    """--screen が runner まで届く。
+
+    配線を落としても build_run_argv 単体のテストは緑のままで、--screen が
+    黙って headless で走る。そのうえ「画面キャプチャで確認」と表示できる。
+    #50 そのものなので、届くことを固定する。
+    """
+    captured = {}
+
+    def fake(asin, out, pages, python=None, echo=print, screen=False):
+        captured["screen"] = screen
+        return [], False, []
+
+    monkeypatch.setattr(smoke_capture, "run_smoke", fake)
+    assert smoke_capture.main(["--asin", "B0TEST", "--screen"]) == smoke_capture.EXIT_OK
+    assert captured["screen"] is True
+
+
+def test_the_reported_path_comes_from_the_argv_not_the_flag(monkeypatch, capsys):
+    """どちらの経路で確認したかは、実際に走らせた argv から名乗る。
+
+    --screen を指定しても headless の argv で走ったなら headless と表示する。
+    引数を見て表示していると、配線が切れたときに嘘の合格を名乗る。
+    """
+    monkeypatch.setattr(
+        smoke_capture,
+        "run_smoke_with_retry",
+        lambda *a, **kw: ([], ["python", "cli.py", "run", "--headless"]),
+    )
+    assert smoke_capture.main(["--asin", "B0TEST", "--screen"]) == smoke_capture.EXIT_OK
+    out = capsys.readouterr().out
+    assert "headless" in out
+    assert "画面キャプチャ" not in out

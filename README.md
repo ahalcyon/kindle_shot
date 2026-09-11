@@ -1211,9 +1211,10 @@ Cloud Reader で本を開くところから全自動で 3 ページ取得し、P
 
 #### 経路が 2 つある
 
-既定の headless は **`core/capture_engine.py` / `core/capture_runner.py` /
-`core/reader_navigator.py` / `core/win32_utils.py` のウィンドウ操作を
-1 行も実行しない**。これらを通すには `--screen` を付ける。
+既定の headless は**画面キャプチャ経路（ウィンドウ検出・前面化・画面の撮影・
+キーストローク送出）を 1 行も実行しない**。そちらを通すには `--screen` を付ける。
+どのファイルがどちらの経路かは AGENTS.md「実機スモーク」の一覧が正典
+（ここに書き写すとずれる）。
 
 ```
 kindle_env\Scripts\python.exe scripts/smoke_capture.py --asin B0XXXXXXXX --screen
@@ -1223,9 +1224,14 @@ kindle_env\Scripts\python.exe scripts/smoke_capture.py --asin B0XXXXXXXX --scree
 退避し、画面そのものを撮る）。終わるまで PC を触らないこと。実測で 30 秒ほど。
 
 画面キャプチャ経路は **4 回に 1 回ほど、1 ページ目から先へ送れずに止まる**
-（`stopped_reason=timeout`）。**原因は未調査**（#74）。スモークはこの形の失敗に
-限って 1 度だけやり直す。引数の誤りや異常終了はやり直さない（2 回目も同じように
-落ちるだけで、発覚が遅れる）。
+（`stopped_reason=timeout`）。**原因は未調査**（#74）。`--screen` のときだけ、
+この形の失敗に限って 1 度だけやり直す。引数の誤りや異常終了はやり直さない
+（2 回目も同じように落ちるだけで、発覚が遅れる）。
+
+**headless ではやり直さない。** 4 回に 1 回の不安定さは画面経路の性質であって、
+headless のものではない。ゲートが headless 専用である以上、そこで
+`stopped_reason=timeout` が出たら「ページが送れていない」退行そのもの。
+やり直すと、間欠的な退行が push を通る率が上がるだけになる。
 
 キャプチャ経路のファイルを変更した push を pre-push フックでブロックできる:
 

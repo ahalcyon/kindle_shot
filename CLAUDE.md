@@ -19,10 +19,9 @@
    python scripts/smoke_capture.py --screen   # 画面キャプチャ経路。デスクトップを占有する
    ```
 
-   **フックが強制するのは headless だけ。** 画面キャプチャ経路
-   （`core/capture_engine.py` / `core/capture_runner.py` /
-   `core/reader_navigator.py` / `core/win32_utils.py`）はゲートに入っていないので、
-   触ったら `--screen` を**手で流す**。既定だけを流して「実機で確認した」と
+   **フックが強制するのは headless だけ。** 画面キャプチャ経路はゲートに
+   入っていないので、触ったら `--screen` を**手で流す**。どのファイルが
+   どちらかは AGENTS.md の一覧を見ること。既定だけを流して「実機で確認した」と
    書くと、記録が実態を伴わない（#50）。
 
    CI はこの層を一切カバーしない。Playwright は使えない（DOM ではなく画面を

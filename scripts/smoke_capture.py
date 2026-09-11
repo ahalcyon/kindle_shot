@@ -20,8 +20,12 @@ cli.py run を JSON Lines で起動し、結果を機械的に検証する:
 使えて、push のたびに走っても作業の邪魔にならない。
 
 `--screen` を付けると画面キャプチャ経路を通す。**デスクトップを占有する**
-（ブラウザを全画面にし、マウスを別モニタへ退避し、画面を撮る）ので、
-pre-push は画面側のファイルに触ったときだけ要求する。
+（ブラウザを全画面にし、マウスを別モニタへ退避し、画面を撮る）。
+
+**pre-push が走らせるのは headless だけで、`--screen` は要求しない** (#50)。
+画面経路は本番が通らない（`kindle_cloud` は headless 固定）うえ、検証に
+デスクトップセッションが要るのでゲートにすると `--no-verify` が常態化する。
+画面経路に触ったときに手で流す道具。
 
 使い方:
     python scripts/smoke_capture.py --asin B0XXXXXXXX
@@ -214,10 +218,14 @@ def list_pngs(folder):
 
 
 def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
-    """スモークを 1 本実行し、(問題の一覧, やり直す価値があるか) を返す。
+    """スモークを 1 本実行し、(問題の一覧, やり直す価値があるか, 実行した argv) を返す。
 
     problems が空なら合格。retryable は manifest の stopped_reason が
     RETRYABLE_REASON だったかどうかで、表示文言には依存しない。
+
+    argv を返すのは、**どちらの経路を通ったかを呼び出し側が引数から推測しないため**。
+    引数から「画面キャプチャで確認しました」と表示していたことがあり、配線を
+    落とすと headless で走って画面経路の合格を名乗れた。#50 そのものだった。
     """
     python = python or sys.executable
     argv = build_run_argv(python, asin, out, pages, screen=screen)
@@ -271,12 +279,14 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
         count = pdf_page_count(pdf)
         if count is not None and count != pages:
             problems.append(f"PDF のページ数が {pages} ではなく {count}")
-    return problems, retryable
+    return problems, retryable, argv
 
 
 # 画面キャプチャ経路は実測で 4 回に 1 回ほど、1 ページ目から先へ送れずに
 # 止まる（stopped_reason=timeout）。原因は未調査 (#74)。**失敗を 1 回で
 # 確定させると push のゲートとして使えない**ので、1 度だけやり直す。
+#
+# headless では使わない（run_smoke_with_retry を参照）。
 SMOKE_ATTEMPTS = 2
 
 
@@ -296,26 +306,39 @@ def clear_output(out):
 
 
 def run_smoke_with_retry(asin, out, pages, python=None, echo=print, screen=False):
-    """スモークを実行する。やり直す価値のある失敗なら 1 度だけやり直す。"""
+    """スモークを実行し、(問題の一覧, 実行した argv) を返す。
+
+    やり直すのは**画面経路のときだけ**。headless は 4 回に 1 回の不安定さを
+    持たないうえ、ゲートが headless 専用になった今 (#50)、
+    `stopped_reason=timeout` は「本が開けていないか、ページが送れていない」
+    退行そのものの症状（AGENTS.md「manifest の読み方」）。ここでやり直すと、
+    間欠的な退行が push を通る率が 50% から 75% に上がる。
+    """
+    attempts = SMOKE_ATTEMPTS if screen else 1
     problems: list[str] = []
-    for attempt in range(1, SMOKE_ATTEMPTS + 1):
+    argv: list[str] = []
+    for attempt in range(1, attempts + 1):
         # 1 回目の前にも消す。--out に前回の出力が残っていると 1 回目が
         # 必ず落ち、やり直しの 1 回をそこで使い切ってしまう
         if not clear_output(out):
             # 元の失敗を落とさない。掃除の失敗だけを返すと、なぜ
             # やり直すことになったのかが分からなくなる
-            return [*problems, f"前回の出力を消せませんでした: {out}"]
+            return [*problems, f"前回の出力を消せませんでした: {out}"], argv
         if attempt > 1:
-            echo(f"\nやり直します（{attempt}/{SMOKE_ATTEMPTS}）")
-        problems, retryable = run_smoke(asin, out, pages, python=python, echo=echo, screen=screen)
+            echo(f"\nやり直します（{attempt}/{attempts}）")
+        problems, retryable, argv = run_smoke(
+            asin, out, pages, python=python, echo=echo, screen=screen
+        )
         if not problems:
-            return []
+            return [], argv
         for p in problems:
             echo(f"  - {p}")
+        if attempt >= attempts:
+            return problems, argv
         if not retryable:
             echo("やり直しません（2 回目も同じように落ちる失敗です）")
-            return problems
-    return problems
+            return problems, argv
+    return problems, argv
 
 
 def main(argv=None):
@@ -358,7 +381,7 @@ def main(argv=None):
     out = args.out or tempfile.mkdtemp(prefix="kindle_shot_smoke_")
     created_tmp = args.out is None
     try:
-        problems = run_smoke_with_retry(
+        problems, ran_argv = run_smoke_with_retry(
             args.asin, out, args.pages, python=args.python, screen=args.screen
         )
     finally:
@@ -373,7 +396,9 @@ def main(argv=None):
             print(f"  - {p}", file=sys.stderr)
         return EXIT_FAILED
 
-    path = "画面キャプチャ" if args.screen else "headless"
+    # **args.screen ではなく実際に走らせた argv から導く。** 引数を見て表示すると、
+    # 配線を落としたときに headless で走って「画面キャプチャで確認」と言える
+    path = "画面キャプチャ" if "--no-headless" in ran_argv else "headless"
     print(f"\n実機スモーク: OK（{path} / {args.pages} ページ取得・PDF 生成まで確認）")
     return EXIT_OK
 
