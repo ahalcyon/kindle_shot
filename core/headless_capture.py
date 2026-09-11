@@ -710,6 +710,143 @@ def capture_pages(
         page.wait_for_timeout(int(page_wait * 1000))
 
 
+# 目次パネル。合本はここからでないと巻の先頭を越えられない (#70)。
+#
+# aria-label はロケール決め打ちにしない。同じファイルの UNSUPPORTED_MARKERS に
+# 「ロケールが ja-JP でもこの文言は英語で出た」という実測が残っている。
+TOC_BUTTON_SELECTOR = 'ion-button[aria-label="目次"], ion-button[aria-label="Table of Contents"]'
+TOC_ITEM_SELECTOR = "ion-menu.side-menu ion-item"
+# 目次が無い本で 30 秒 x 342 冊を待たないための上限
+TOC_CLICK_TIMEOUT_MS = 5000
+# 目次項目が描画されるまでの待ち。実機の合本は 220 項目あるので、固定待ちで
+# 1 回だけ数えると重い本を「目次なし」と取り違える
+TOC_ITEM_TIMEOUT_MS = 8000
+# キーの生存確認で押す回数。閉じた直後の 1 回目は飲まれる（実測）
+KEY_PROBE_ATTEMPTS = 3
+TOC_OPEN_JS = """(selector) => {
+  const b = document.querySelector(selector);
+  if (!b) return false;
+  b.click();
+  return true;
+}"""
+
+
+def _close_toc(page, *, page_wait=DEFAULT_REWIND_WAIT):
+    """目次パネルを閉じ、キー入力を受け取れる状態に戻す。
+
+    **順序が効く。** Escape で閉じてから描画領域をクリックする。
+    """
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(int(page_wait * 1000))
+    size = page.viewport_size
+    if size is None:
+        # 寸法を推測して外れると、実ビューポートの外を叩いて何も起きない。
+        # キーが死んだままかどうかは _keys_respond が確かめるので、
+        # ここで当て推量しない
+        return
+    page.mouse.click(size["width"] // 2, size["height"] // 2)
+    page.wait_for_timeout(int(page_wait * 1000))
+
+
+def jump_to_start_via_toc(page, *, page_wait=DEFAULT_REWIND_WAIT, emit=null_emit):
+    """目次の先頭項目へ飛ぶ。飛べたら True。
+
+    合本（全 7 巻など）はページ送りキーで巻の境界を越えられず、キーだけでは
+    本の先頭に戻せない（#70。位置 3216 付近で下がらなくなる）。目次からなら
+    巻を越えて一度で飛べる（実測: 位置 2594 → 1）。
+
+    **飛んだあとキー入力が効かなくなる。** 実測で 8 回押しても位置が動かず、
+    一方「次のページ」ボタンは効いた（1→2→3→4→5）のでリーダー自体は生きている。
+    パネルを Escape で閉じ、さらに**描画領域を実際にクリック**すると戻る。
+    JS の focus() では戻らなかった（activeElement は #kr-renderer になるのに
+    キーは死んだまま）。閉じずに返すと、後続のページ送りが全部飲まれて
+    「動かなくなった」と誤判定される（#72 と同じ形）。
+
+    **開いたら必ず閉じる。** 途中で失敗した出口から閉じずに抜けると、
+    まさにその誤判定が起きる。分岐ごとに手で閉じると必ずどれかが抜けるので
+    finally に寄せてある。
+    """
+    opened = False
+    try:
+        # **JS でクリックする。** この時点で hide_ui_css が効いていて、目次ボタンは
+        # .top-chrome__button として display:none になっている。Playwright の
+        # click() は要素が操作可能になるのを待つので、既定では 30 秒待って
+        # 落ちるだけだった（実測。巻き戻しがキーだけで走り #70 が直らなかった）
+        if not page.evaluate(TOC_OPEN_JS, TOC_BUTTON_SELECTOR):
+            return False
+        opened = True
+        # 項目が出るまで待つ。出なければ目次を持たない本として諦める
+        page.wait_for_selector(TOC_ITEM_SELECTOR, timeout=TOC_ITEM_TIMEOUT_MS)
+        # 項目のほうは実クリック。パネルは UI_SELECTORS に入っていないので見えている
+        page.locator(TOC_ITEM_SELECTOR).first.click(timeout=TOC_CLICK_TIMEOUT_MS)
+        page.wait_for_timeout(int(max(page_wait, DEFAULT_PAGE_WAIT) * 1000))
+    except Exception as exc:  # 目次が無い・構造が変わった等。キーでの巻き戻しに委ねる
+        emit("toc_jump_failed", human=f"目次から先頭へ飛べませんでした: {exc}"[:REASON_MAX_CHARS])
+        return False
+    finally:
+        if opened:
+            _close_toc(page, page_wait=page_wait)
+    return True
+
+
+def _keys_respond(page, forward, *, page_wait):
+    """ページ送りキーが効いているか。効けば True、効かなければ False。
+
+    判断できなければ None（位置が読めない本）。確かめたら位置は元へ戻す。
+
+    目次から飛んだあとに要る。飛んだ先が位置 2〜10 に着地し、かつパネルを
+    閉じてもキーが戻っていなかった場合、巻き戻しのループは 3 回押して
+    動かないので `stuck` から **at_start = True** とみなす。着地点は
+    MAX_START_POSITION の枠内なので `ok` になり、**冒頭数ページが欠けた本が
+    完成扱いで確定する**（batch は出力があるとスキップする）。
+
+    この変更以前は、同じ故障が位置 1200 のような遠い場所で起きて必ず
+    大声で落ちていた。目次ジャンプは着地点を枠の内側に持ち込むので、
+    ここで「キーが生きている」ことを別途証明しないと、loud failure が
+    silent partial book に化ける。
+
+    「一度も下がらなかったら失敗」という判定は使えない。見開き表示の本は
+    位置 2 で止まるので、それだと軒並み落ちる。前進させて確かめるのが、
+    見開き本と死んだキーを区別できる唯一の形。
+
+    **1 回で決めない。** パネルを閉じた直後の 1 回目は飲まれる。実測:
+
+        jumped=True pos=1
+          press1: 1   ← 飲まれた
+          press2: 2
+          press3: 3
+
+    ダイアログを閉じた直後に入力が飲まれるのは #53 で既に分かっていた挙動で、
+    目次パネルでも同じだった。1 回で決めると、生きているキーを死んだと誤判定して
+    **全部の本が巻き戻せなくなる**（実機で踏んだ）。
+    """
+    before = read_position(page)
+    if before is None:
+        return None
+    wait = max(page_wait, DEFAULT_PAGE_WAIT)
+    forward_presses = 0
+    moved = None
+    for _ in range(KEY_PROBE_ATTEMPTS):
+        page.keyboard.press(turn_key(forward))
+        forward_presses += 1
+        moved = _wait_for_position_change(page, before, page_wait=wait)
+        if moved is not None:
+            break
+    if moved is None:
+        return False
+    # **押した回数だけ戻す。位置の数値が戻ったかでは判断しない。**
+    # 位置はページより粗く、表紙と扉が同じ「位置 1」になる本がある。
+    # 数値が戻ったことを条件にすると、見た目は戻ったのに 1 ページ進んだままになり、
+    # **表紙が落ちる**。実機で踏んだ: 探りを入れた回の 1 ページ目が、入れなかった回の
+    # 2 ページ目とバイト単位で一致した。
+    # 先頭で余分に戻しても何も起きないので、飲まれる 1 回ぶん多めに押す。
+    back = turn_key(reverse_of(forward))
+    for _ in range(forward_presses + 1):
+        page.keyboard.press(back)
+        page.wait_for_timeout(int(wait * 1000))
+    return True
+
+
 def rewind_to_start(
     page,
     forward,
@@ -750,6 +887,53 @@ def rewind_to_start(
             reason="no_position",
         )
         return False, 0
+
+    # まず目次から飛ぶ。合本はキーでは巻の境界を越えられない (#70)。
+    # 普通の本でも、数百回のキー送り（再撮影の実測で中央値 178 回）が 1 回で済む。
+    # 飛べたあとも下のループは回す。目次の先頭項目が本当の先頭より後ろにある本
+    # （表紙や前付けを目次に持たない本）では、残りをキーで詰める必要がある。
+    via_toc = False
+    if before > MAX_START_POSITION and jump_to_start_via_toc(page, page_wait=page_wait, emit=emit):
+        via_toc = True
+        jumped, jumped_total = _settled_position_pair(
+            page, page_wait=max(page_wait, DEFAULT_PAGE_WAIT)
+        )
+        # 読めなくても必ず出す。出さないと、目次を通った本とキーだけの本を
+        # ログから切り分けられない（#69 以降、原因別の集計で運用している）
+        emit(
+            "toc_jump",
+            human=f"目次から先頭へ飛びました: 位置 {before} → {jumped}",
+            before=before,
+            after=jumped,
+        )
+        # 読めたら必ず採用する。「下がったときだけ」にすると、飛んで動いたのに
+        # before だけ古い値のまま残り、実際の位置と食い違う。飛んだ先が後ろでも、
+        # 下のループが読み直して詰めるので嘘を持ち回るより良い
+        if jumped is not None:
+            before = jumped
+            if jumped_total is not None:
+                total = jumped_total
+
+        # **キーが生きていることを証明してからループに入る。** 詳細は
+        # _keys_respond。証明せずに進むと、着地点が MAX_START_POSITION の枠内
+        # だったときに「押しても下がらない」＝先頭、と読み違えて部分本が
+        # 完成扱いになる
+        if _keys_respond(page, forward, page_wait=page_wait) is False:
+            where = f"位置 {before}" + (f"/{total}" if total is not None else "")
+            emit(
+                "rewound",
+                human=(
+                    f"目次から飛んだあとページ送りが効きません（{where}）。"
+                    "先頭に見えても途中の可能性があるため中止します"
+                ),
+                ok=False,
+                presses=0,
+                position=before,
+                total=total,
+                reason="keys_dead",
+                via_toc=True,
+            )
+            return False, 0
 
     pressed = 0
     stuck = 0
@@ -852,6 +1036,8 @@ def rewind_to_start(
         position=before,
         total=total,
         reason=reason,
+        # 目次を通った本とキーだけの本を、ログから切り分けるための主キー
+        via_toc=via_toc,
     )
     return ok, pressed
 

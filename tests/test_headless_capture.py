@@ -20,6 +20,8 @@ from core.headless_capture import (
     MAX_START_POSITION,
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
+    TOC_ITEM_SELECTOR,
+    _keys_respond,
     _still_at_start,
     _wait_for_position_change,
     alert_text,
@@ -309,6 +311,10 @@ class FakeReader:
         total=339,
         transient=None,
         transient_ms=0,
+        toc_start=None,
+        toc_empty=False,
+        toc_raises=False,
+        keys_die_after_toc=False,
     ):
         self.forward = forward
         self.position = position
@@ -338,14 +344,40 @@ class FakeReader:
         self.waits: list[int] = []
         self.url = "https://read.amazon.co.jp/?asin=B0X"
         self.presses: list[str] = []
+        # 目次の先頭項目へ飛んだときに落ち着く位置。None なら目次を持たない本
+        self.toc_start = toc_start
+        # 目次ボタンはあるが項目が出てこない本 / 項目のクリックが落ちる本
+        self.toc_empty = toc_empty
+        self.toc_raises = toc_raises
+        # 目次から飛ぶとキーが死に、パネルを閉じても戻らない本。
+        # これが silent partial book の種になる (#70 のレビュー指摘)
+        self.keys_die_after_toc = keys_die_after_toc
+        self.keys_dead = False
+        self.toc_opened = False
+        self.closed_with: list[str] = []
+        self.mouse_clicks: list[tuple[int, int]] = []
+        self.viewport_size = {"width": 1600, "height": 1200}
 
         page = self
 
         class Keyboard:
             def press(self, key):
                 page.presses.append(key)
+                # Escape は目次パネルを閉じるだけ。ページは動かない。
+                # 「前進キー以外は全部後退」にすると、閉じた拍子に 1 ページ
+                # 戻ったことになり、飛んだ先の報告が 1 ずれる
+                if key == "Escape":
+                    page.closed_with.append("escape")
+                    return
+                if page.keys_dead:
+                    return
                 page.pressed_at = page.clock
-                moves = key == page.forward or page.position > page.min_position
+                # 巻の境界（min_position）は**上から**越えられない壁。目次で
+                # 下へ飛んだあとは、その巻の中を 1 まで自由に戻れる。
+                # 「位置は min_position を下回らない」と書くと、飛んだ先で
+                # 戻れなくなり実機と食い違う
+                floor = page.min_position if page.position >= page.min_position else 1
+                moves = key == page.forward or page.position > floor
                 # 動けない押下（先頭で戻ろうとする等）は「飲まれた 1 回」を
                 # 消費しない。実測ではそうなっている（#53 のログ）
                 if page.swallow > 0 and moves:
@@ -353,13 +385,39 @@ class FakeReader:
                     return
                 if key == page.forward:
                     page.position += 1
-                elif page.position > page.min_position:
+                elif page.position > floor:
                     page.position -= 1
 
         self.keyboard = Keyboard()
 
-    def locator(self, _selector):
+        class Mouse:
+            def click(self, x, y):
+                page.mouse_clicks.append((x, y))
+                page.closed_with.append("click")
+
+        self.mouse = Mouse()
+
+    def locator(self, selector):
         page = self
+
+        if selector == TOC_ITEM_SELECTOR:
+
+            class TocLoc:
+                def count(self):
+                    return 1 if page.toc_opened and page.toc_start is not None else 0
+
+                @property
+                def first(self):
+                    return self
+
+                def click(self, timeout=None):
+                    if page.toc_raises:
+                        raise RuntimeError("目次の項目を押せませんでした")
+                    page.position = page.toc_start
+                    if page.keys_die_after_toc:
+                        page.keys_dead = True
+
+            return TocLoc()
 
         class Loc:
             def count(self):
@@ -394,8 +452,19 @@ class FakeReader:
         self.waits.append(ms)
         self.clock += ms
 
-    def evaluate(self, _js):
-        """dismiss_dialogs の代役。閉じた拍子に位置が飛ぶ本を再現する。"""
+    def wait_for_selector(self, _selector, timeout=None):
+        """目次項目の描画待ちの代役。出てこない本では Playwright と同じく落ちる。"""
+        if self.toc_empty or self.toc_start is None:
+            raise RuntimeError("目次の項目が出ませんでした")
+        return object()
+
+    def evaluate(self, js, arg=None):
+        """dismiss_dialogs / 目次を開く JS の代役。"""
+        if arg is not None:  # TOC_OPEN_JS（目次ボタンをセレクタで押す）
+            if self.toc_start is None and not self.toc_empty:
+                return False
+            self.toc_opened = True
+            return True
         if not self.dismiss_jumps:
             return 0
         jump = self.dismiss_jumps.pop(0)
@@ -529,6 +598,284 @@ def test_detection_gives_up_when_nothing_moves():
 # ------------------------------------------------------------
 # 先頭ページへの巻き戻し
 # ------------------------------------------------------------
+
+
+def test_the_toc_jump_crosses_a_volume_boundary():
+    """合本はキーでは巻の境界を越えられない。目次からなら越えられる (#70)。
+
+    実機のハリー・ポッター全 7 巻は位置 3216 付近から先へ戻れず、
+    397 回押しても 3634 で止まった。目次からは 1 回で位置 1 まで飛ぶ。
+    """
+    page = FakeReader(forward="ArrowLeft", position=4512, min_position=3216, toc_start=1)
+    ok, presses = rewind_to_start(page, "left", page_wait=0)
+    assert ok is True
+    assert page.position == 1
+    assert presses == 0
+
+
+def test_an_omnibus_without_a_toc_still_fails_loudly():
+    """目次が無ければ従来どおり失敗する。黙って部分本を作らない。
+
+    この壁は #69 以前なら「先頭に戻した」と成功扱いになり、半分の本が
+    完成扱いで確定していた。
+    """
+    page = FakeReader(forward="ArrowLeft", position=4512, min_position=3216)
+    ok, _ = rewind_to_start(page, "left", page_wait=0, max_rewind=50)
+    assert ok is False
+
+
+def test_the_toc_panel_is_closed_and_the_reader_is_clicked():
+    """飛んだあとパネルを閉じ、描画領域を実際にクリックする。
+
+    実測では、飛んだ直後はキーが一切効かない（8 回押しても位置が動かず、
+    「次のページ」ボタンだけは効いた）。Escape で閉じたうえで実クリック
+    しないと戻らない。閉じずに返すと後続のページ送りが全部飲まれ、
+    「動かなくなった」と誤判定される（#72 と同じ形）。
+    """
+    page = FakeReader(forward="ArrowLeft", position=300, toc_start=1)
+    rewind_to_start(page, "left", page_wait=0)
+    assert "Escape" in page.presses
+    assert page.mouse_clicks == [(800, 600)]
+
+
+def test_a_book_without_a_toc_falls_back_to_keys():
+    """目次を持たない本は、これまでどおりキーで戻す。"""
+    page = FakeReader(forward="ArrowLeft", position=27)
+    events = []
+    ok, presses = rewind_to_start(
+        page, "left", page_wait=0, emit=lambda name, **kw: events.append((name, kw))
+    )
+    assert ok is True
+    assert presses > 0
+    assert [n for n, _ in events if n == "toc_jump"] == []
+
+
+def test_the_toc_jump_is_skipped_when_already_at_the_start():
+    """先頭付近で開いた本の目次は触らない。読書位置を無駄に動かさない。"""
+    page = FakeReader(forward="ArrowLeft", position=3, toc_start=1)
+    rewind_to_start(page, "left", page_wait=0)
+    assert page.toc_opened is False
+    assert page.mouse_clicks == []
+
+
+def test_the_toc_jump_reports_where_it_actually_landed():
+    """報告する位置は、飛んだ先を読み直した値。1 と決めつけない。
+
+    目次の先頭項目が本当の先頭とは限らない（表紙や前付けを目次に
+    載せない本がある）。決めつけると、残りをキーで詰める判断が狂う。
+    """
+    page = FakeReader(forward="ArrowLeft", position=300, toc_start=4)
+    events = []
+    rewind_to_start(page, "left", page_wait=0, emit=lambda name, **kw: events.append((name, kw)))
+    jumps = [kw for n, kw in events if n == "toc_jump"]
+    assert jumps == [{"human": jumps[0]["human"], "before": 300, "after": 4}]
+    assert page.position == 1  # 残りはキーで詰める
+
+
+def test_dead_keys_after_a_jump_fail_loudly_instead_of_finishing_a_partial_book():
+    """目次から飛んだあとキーが効かないなら、先頭に見えても失敗にする。
+
+    これがこの変更で一番危ない経路。着地が位置 2〜10 で、パネルを閉じても
+    キーが戻っていないと、ループは 3 回押して動かないので stuck から
+    at_start = True になる。着地点は MAX_START_POSITION の枠内なので
+    ok = True になり、**冒頭数ページが欠けた本が完成扱いで確定する**
+    （batch は出力があるとスキップする）。
+
+    この変更以前は、同じ故障が位置 1200 のような遠い場所で起きて必ず
+    大声で落ちていた。目次ジャンプは着地点を枠の内側へ持ち込むので、
+    loud failure が silent partial book に化ける。
+    """
+    page = FakeReader(forward="ArrowLeft", position=1200, toc_start=6, keys_die_after_toc=True)
+    events = []
+    ok, _ = rewind_to_start(
+        page, "left", page_wait=0, emit=lambda name, **kw: events.append((name, kw))
+    )
+    assert ok is False
+    rewound = [kw for n, kw in events if n == "rewound"]
+    assert [kw["reason"] for kw in rewound] == ["keys_dead"]
+
+
+class CoarsePositionReader:
+    """位置の数値がページより粗いリーダー。2 ページで位置が 1 進む。
+
+    実機の合本がこれ。表紙と扉がどちらも「位置 1」で、位置の数値だけを見ると
+    ページが進んだことが分からない。
+    """
+
+    def __init__(self, *, swallow=0):
+        self.page_index = 0
+        self.swallow = swallow
+        self.waits: list[int] = []
+        self.presses: list[str] = []
+        reader = self
+
+        class Keyboard:
+            def press(self, key):
+                reader.presses.append(key)
+                if reader.swallow > 0:
+                    reader.swallow -= 1
+                    return
+                if key == "ArrowLeft":
+                    reader.page_index += 1
+                else:
+                    reader.page_index = max(0, reader.page_index - 1)
+
+        self.keyboard = Keyboard()
+
+    @property
+    def position(self):
+        return 1 + self.page_index // 2
+
+    def wait_for_timeout(self, ms):
+        self.waits.append(ms)
+
+    def locator(self, _selector):
+        reader = self
+
+        class Loc:
+            def count(self):
+                return 1
+
+            @property
+            def first(self):
+                return self
+
+            def text_content(self):
+                return f"{reader.position}/6002ページ"
+
+        return Loc()
+
+
+def test_the_key_probe_puts_the_page_back_and_does_not_drop_the_cover():
+    """探りを入れたぶんは、押した回数で戻す。位置の数値で判断しない。
+
+    位置はページより粗く、表紙と扉が同じ「位置 1」になる本がある。
+    「数値が戻ったら復帰」にすると、見た目は戻ったのに 1 ページ進んだままになり、
+    **表紙が落ちる**。実機で踏んだ: 探りを入れた回の 1 ページ目が、入れなかった
+    回の 2 ページ目とバイト単位で一致した。
+    """
+    page = CoarsePositionReader(swallow=1)
+    assert _keys_respond(page, "left", page_wait=0) is True
+    assert page.page_index == 0, "探りのぶんページが進んだまま＝表紙が落ちる"
+
+
+def test_the_key_probe_over_presses_backwards_rather_than_under():
+    """戻しは多めに押す。先頭で余分に押しても何も起きない。"""
+    page = CoarsePositionReader()
+    _keys_respond(page, "left", page_wait=0)
+    assert page.presses.count("ArrowRight") > page.presses.count("ArrowLeft")
+
+
+def test_a_swallowed_first_press_is_not_mistaken_for_dead_keys():
+    """パネルを閉じた直後の 1 回目は飲まれる。1 回で「死んでいる」と決めない。
+
+    実測（合本、目次から位置 1 へ飛んだ直後）:
+
+        press1: 1   ← 飲まれた
+        press2: 2
+        press3: 3
+
+    1 回で決めると、生きているキーを死んだと誤判定して**全部の本が
+    巻き戻せなくなる**（実機で踏んだ）。ダイアログ直後に入力が飲まれるのは
+    #53 で既に分かっていた挙動で、目次パネルでも同じだった。
+    """
+    page = FakeReader(forward="ArrowLeft", position=300, toc_start=1, swallow=1)
+    ok, _ = rewind_to_start(page, "left", page_wait=0)
+    assert ok is True
+
+
+def test_a_spread_page_book_is_not_mistaken_for_dead_keys():
+    """見開きの本を「キーが死んだ」と取り違えない。
+
+    見開き表示の本は位置が 1 まで下がらず 2 で止まる（実測で 10 冊中 8 冊）。
+    「一度も下がらなければ失敗」という判定にすると軒並み落ちるので、
+    前進させて効くかどうかで見る。
+    """
+    page = FakeReader(forward="ArrowLeft", position=400, min_position=2, toc_start=2)
+    ok, _ = rewind_to_start(page, "left", page_wait=0)
+    assert ok is True
+    assert page.position == 2
+
+
+def test_the_panel_is_closed_even_when_the_items_never_appear():
+    """項目が出てこなくても、開けたパネルは必ず閉じる。
+
+    開きっぱなしで返すと、後続のページ送りが全部飲まれて「動かなくなった」と
+    誤判定される（#72 と同じ形）。従来キーだけで戻せていた本が、
+    ジャンプを試みたせいで戻せなくなる。
+    """
+    page = FakeReader(forward="ArrowLeft", position=300, toc_empty=True)
+    ok, _ = rewind_to_start(page, "left", page_wait=0)
+    assert page.closed_with == ["escape", "click"]
+    assert ok is True  # キーでの巻き戻しに委ねて成功する
+
+
+def test_the_panel_is_closed_even_when_the_item_click_raises():
+    """項目のクリックが落ちても、開けたパネルは必ず閉じる。"""
+    page = FakeReader(forward="ArrowLeft", position=300, toc_start=1, toc_raises=True)
+    events = []
+    ok, _ = rewind_to_start(
+        page, "left", page_wait=0, emit=lambda name, **kw: events.append((name, kw))
+    )
+    assert page.closed_with == ["escape", "click"]
+    assert [n for n, _ in events if n == "toc_jump_failed"] != []
+    assert ok is True
+
+
+def test_the_panel_is_closed_before_the_reader_is_clicked():
+    """閉じる順序を固定する。Escape で閉じてから描画領域をクリックする。"""
+    page = FakeReader(forward="ArrowLeft", position=300, toc_start=1)
+    rewind_to_start(page, "left", page_wait=0)
+    assert page.closed_with == ["escape", "click"]
+
+
+def test_an_unreadable_landing_is_still_reported_and_not_assumed_to_be_the_start():
+    """飛んだ先が読めなくても、飛んだことはログに残す。先頭と決めつけない。
+
+    出さないと、目次を通った本とキーだけの本をログから切り分けられない
+    （#69 以降、原因別の集計で運用している）。
+    """
+    # 飛んだ直後から位置が読めなくなる本
+    page = FakeReader(
+        forward="ArrowLeft", position=4512, toc_start=1, blank_reads=99, blank_after=1
+    )
+    events = []
+    ok, _ = rewind_to_start(
+        page, "left", page_wait=0, emit=lambda name, **kw: events.append((name, kw))
+    )
+    jumps = [kw for n, kw in events if n == "toc_jump"]
+    assert [kw["after"] for kw in jumps] == [None]
+    assert ok is False  # 読めないまま先頭とみなさない
+
+
+def test_a_jump_that_lands_later_is_still_adopted():
+    """飛んだ先が元より後ろでも、読み直した値を採用する。
+
+    「下がったときだけ採用」にすると、飛んで実際に動いたのに before だけ
+    古い値のまま残り、位置と食い違う。
+    """
+    page = FakeReader(forward="ArrowLeft", position=15, toc_start=90)
+    events = []
+    ok, _ = rewind_to_start(
+        page, "left", page_wait=0, emit=lambda name, **kw: events.append((name, kw))
+    )
+    jumps = [kw for n, kw in events if n == "toc_jump"]
+    assert [(kw["before"], kw["after"]) for kw in jumps] == [(15, 90)]
+    assert ok is True
+    assert page.position == 1
+
+
+def test_the_rewound_event_says_whether_the_toc_was_used():
+    """目次を通ったかを rewound に残す。集計の主キーになる。"""
+    by_keys = FakeReader(forward="ArrowLeft", position=27)
+    events = []
+    rewind_to_start(by_keys, "left", page_wait=0, emit=lambda n, **kw: events.append((n, kw)))
+    assert [kw["via_toc"] for n, kw in events if n == "rewound"] == [False]
+
+    by_toc = FakeReader(forward="ArrowLeft", position=300, toc_start=1)
+    events = []
+    rewind_to_start(by_toc, "left", page_wait=0, emit=lambda n, **kw: events.append((n, kw)))
+    assert [kw["via_toc"] for n, kw in events if n == "rewound"] == [True]
 
 
 def test_rewind_reaches_the_first_page():
