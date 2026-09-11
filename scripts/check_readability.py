@@ -71,7 +71,11 @@ def read_pdf(path):
 
 
 def load_frequencies():
-    """wordfreq の日本語頻度表。zipf_frequency() は MeCab を要求するので生表を引く。"""
+    """wordfreq の日本語頻度表。入っていなければ ImportError。
+
+    ``get_frequency_dict`` は表をそのまま返すので **MeCab を必要としない**。
+    ``zipf_frequency()`` は語を分かち書きするため MeCab を要求する。
+    """
     from wordfreq import get_frequency_dict
 
     return get_frequency_dict("ja")
@@ -156,7 +160,14 @@ def main(argv=None):
     parser.add_argument("--all", action="store_true", help="OK の本も出す（既定は要確認以上だけ）")
     args = parser.parse_args(argv)
 
-    frequencies = load_frequencies()
+    try:
+        frequencies = load_frequencies()
+    except ImportError as e:
+        print(
+            f'頻度表を読み込めません（{e}）。pip install "wordfreq>=3.1,<4" で入ります',
+            file=sys.stderr,
+        )
+        return 2
     cache: dict = {}
     rows = []
     for path in iter_pdfs(args.paths):
