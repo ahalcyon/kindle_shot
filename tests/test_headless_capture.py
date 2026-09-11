@@ -629,9 +629,43 @@ def test_rewind_rebaselines_when_a_dialog_moves_the_reader():
     しながら実際は 1654 にいる、という事故になる。この PR が防ごうと
     しているものそのもの (#69)。
     """
+    events = []
     page = FakeReader(forward="ArrowLeft", position=5, blank_at={4}, dismiss_jumps=[1656])
-    ok, _ = rewind_to_start(page, "left", page_wait=0, max_retries=3)
-    assert ok is False or page.position <= MAX_START_POSITION
+    ok, _ = rewind_to_start(
+        page,
+        "left",
+        page_wait=0,
+        max_retries=3,
+        max_rewind=20,
+        emit=lambda name, **kw: events.append((name, kw)),
+    )
+    assert ok is False
+    # 報告した位置が実際の位置と合っていること。修正前は「位置 3 で先頭に
+    # 着いた」と報告しながら実際は 1654 にいた
+    rewound = [kw for name, kw in events if name == "rewound"][0]
+    assert rewound["position"] == page.position
+
+
+def test_a_dialog_that_does_not_move_the_reader_still_counts_as_stuck():
+    """ダイアログを閉じただけで基準を取り直さない。
+
+    先頭かどうかは「押しても下がらなくなった」でしか判定できない
+    （見開きの本は位置 2 で止まる）。閉じただけで stuck を 0 に戻すと、
+    ラベルが読めない回にダイアログが閉じられ続ける見開き本は、先頭に
+    いるのに永久に先頭と判定されない (#69)。
+    """
+    page = FakeReader(
+        forward="ArrowLeft",
+        position=2,
+        min_position=2,
+        blank_at=set(range(2, 400, 2)),
+        # 押すたびに閉じる。数が尽きて助かることのないよう多めに
+        dismiss_jumps=[2] * 500,
+    )
+    ok, presses = rewind_to_start(page, "left", page_wait=0, max_retries=3, max_rewind=50)
+    assert ok is True
+    # 3 回続けて下がらなければ先頭。それ以上は押さない
+    assert presses <= 5
 
 
 def test_rewind_keeps_going_after_a_dialog_moves_the_reader():

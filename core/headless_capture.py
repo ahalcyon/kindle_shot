@@ -778,19 +778,29 @@ def rewind_to_start(
                 page_wait=max(page_wait, DEFAULT_PAGE_WAIT),
                 attempts=REWIND_REREAD_ATTEMPTS,
             )
-            if closed and current is not None:
+            if closed and current is not None and current > before:
                 # **閉じた拍子に位置が飛ぶ本がある**（Whispersync の
                 # 「最後に読んでいたページへ移動しますか」に「はい」を押した形）。
                 # before はそれまでの最小値であって今の位置ではないので、
                 # 飛んだあとにこれと比べると 3 回で stuck が立ち、
                 # 「位置 3 で先頭に着いた」と報告しながら実際は 1654 にいる、
                 # という事故になる（この PR が防ごうとしているものそのもの）。
-                # 飛んだら基準を取り直す
+                # 飛んだら基準を取り直す。
+                # **条件は「閉じた」ではなく「先頭から遠ざかった」。** 閉じただけで
+                # 取り直すと stuck = 0 と continue でこの周回の停滞判定が消える。
+                # 先頭かどうかは「押しても下がらなくなった」でしか判定できない
+                # （見開きの本は位置 2 で止まる）ので、ラベルが読めない回に
+                # ダイアログが閉じられ続ける見開き本は、先頭にいるのに
+                # 永久に at_start にならない
                 before = current
                 stuck = 0
+                # 読めた周回なので、読めなかった回数も戻す
+                unreadable = 0
                 if seen_total is not None:
                     total = seen_total
                 at_start = before <= 1
+                if pressed % 25 == 0:
+                    emit("status", human=f"先頭へ巻き戻し中... (位置 {before})")
                 continue
         if current is None:
             unreadable += 1
@@ -850,11 +860,14 @@ def _still_at_start(page, *, emit=null_emit):
     """巻き戻した後もまだ先頭にいるか。読めなければ先頭とみなす。
 
     ダイアログを閉じた拍子に位置が飛ぶ本があるため、巻き戻しの成功だけでは
-    撮り始めてよいことにならない (#69)。位置が読めない場合にここで止めると、
-    位置ラベルを持たない本が撮れなくなる。巻き戻し本体が既に
-    「読めないなら失敗」を見ているので、ここは分かったときだけ止める。
+    撮り始めてよいことにならない (#69)。
+
+    **読めるまで待ってから判断する。** 1 回だけ読んで None なら通す形にすると、
+    一番起きやすい失敗（ダイアログを閉じた直後にラベルが一瞬消える）が
+    そのまま素通りする。ここに来る本は rewind_to_start の最初の読みを
+    通っている＝ラベルを読める本なので、待てば読める。
     """
-    position, total = read_position_pair(page)
+    position, total = _settled_position_pair(page, attempts=REWIND_REREAD_ATTEMPTS)
     if position is None or position <= MAX_START_POSITION:
         return True
     where = f"位置 {position}" + (f"/{total}" if total is not None else "")
@@ -1041,7 +1054,8 @@ def run_headless_capture(
                 # 「最後に読んでいたページへ移動しますか」）。巻き戻しが
                 # 成功したあとに飛ばされると、そのまま途中から撮り始める。
                 # 閉じたときだけ位置を見直す
-                if dismiss_dialogs(page) and not _still_at_start(page, emit=emit):
+                dismiss_dialogs(page)
+                if not _still_at_start(page, emit=emit):
                     stopped_reason = "rewind_failed"
                     return EXIT_ERROR
             total, stopped_reason = capture_pages(
