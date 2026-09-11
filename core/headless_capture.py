@@ -710,6 +710,64 @@ def capture_pages(
         page.wait_for_timeout(int(page_wait * 1000))
 
 
+# 目次パネル。合本はここからでないと巻の先頭を越えられない (#70)。
+TOC_BUTTON_SELECTOR = 'ion-button[aria-label="目次"]'
+TOC_MENU_SELECTOR = "ion-menu.side-menu"
+TOC_ITEM_SELECTOR = "ion-menu.side-menu ion-item"
+# 目次が無い本で 30 秒 x 342 冊を待たないための上限
+TOC_CLICK_TIMEOUT_MS = 5000
+TOC_OPEN_JS = """() => {
+  const b = document.querySelector('ion-button[aria-label="\u76ee\u6b21"]');
+  if (!b) return false;
+  b.click();
+  return true;
+}"""
+
+
+def jump_to_start_via_toc(page, *, page_wait=DEFAULT_REWIND_WAIT, emit=null_emit):
+    """目次の先頭項目へ飛ぶ。飛べたら True。
+
+    合本（全 7 巻など）はページ送りキーで巻の境界を越えられず、キーだけでは
+    本の先頭に戻せない（#70。位置 3216 付近で下がらなくなる）。目次からなら
+    巻を越えて一度で飛べる（実測: 位置 2594 → 1）。
+
+    **飛んだあとキー入力が効かなくなる。** 実測で 8 回押しても位置が動かず、
+    一方「次のページ」ボタンは効いた（1→2→3→4→5）のでリーダー自体は生きている。
+    パネルを Escape で閉じ、さらに**描画領域を実際にクリック**すると戻る。
+    JS の focus() では戻らなかった（activeElement は #kr-renderer になるのに
+    キーは死んだまま）。閉じずに返すと、後続のページ送りが全部飲まれて
+    「動かなくなった」と誤判定される（#72 と同じ形）。
+    """
+    try:
+        # **JS でクリックする。** この時点で hide_ui_css が効いていて、目次ボタンは
+        # .top-chrome__button として display:none になっている。Playwright の
+        # click() は要素が操作可能になるのを待つので、既定では 30 秒待って
+        # 落ちるだけだった（実測。巻き戻しがキーだけで走り #70 が直らなかった）
+        if not page.evaluate(TOC_OPEN_JS):
+            return False
+        page.wait_for_timeout(int(max(page_wait, DEFAULT_PAGE_WAIT) * 1000))
+
+        items = page.locator(TOC_ITEM_SELECTOR)
+        if items.count() == 0:
+            # 目次を持たない本。開いたパネルは閉じて、キーでの巻き戻しに委ねる
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(int(page_wait * 1000))
+            return False
+        # 項目のほうは実クリック。パネルは UI_SELECTORS に入っていないので見えている
+        items.first.click(timeout=TOC_CLICK_TIMEOUT_MS)
+        page.wait_for_timeout(int(max(page_wait, DEFAULT_PAGE_WAIT) * 1000))
+
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(int(page_wait * 1000))
+        size = page.viewport_size or {"width": 1600, "height": 1200}
+        page.mouse.click(size["width"] // 2, size["height"] // 2)
+        page.wait_for_timeout(int(page_wait * 1000))
+    except Exception as exc:  # 目次が無い・構造が変わった等。キーでの巻き戻しに委ねる
+        emit("toc_jump_failed", human=f"目次から先頭へ飛べませんでした: {exc}"[:REASON_MAX_CHARS])
+        return False
+    return True
+
+
 def rewind_to_start(
     page,
     forward,
@@ -750,6 +808,28 @@ def rewind_to_start(
             reason="no_position",
         )
         return False, 0
+
+    # まず目次から飛ぶ。合本はキーでは巻の境界を越えられない (#70)。
+    # 普通の本でも、数百回のキー送り（再撮影の実測で中央値 178 回）が 1 回で済む。
+    # 飛べたあとも下のループは回す。目次の先頭項目が本当の先頭より後ろにある本
+    # （表紙や前付けを目次に持たない本）では、残りをキーで詰める必要がある。
+    if before > MAX_START_POSITION and jump_to_start_via_toc(page, page_wait=page_wait, emit=emit):
+        jumped, jumped_total = _settled_position_pair(
+            page, page_wait=max(page_wait, DEFAULT_PAGE_WAIT)
+        )
+        # 読めたら必ず採用する。「下がったときだけ」にすると、飛んで動いたのに
+        # before だけ古い値のまま残り、実際の位置と食い違う。飛んだ先が後ろでも、
+        # 下のループが読み直して詰めるので嘘を持ち回るより良い
+        if jumped is not None:
+            emit(
+                "toc_jump",
+                human=f"目次から先頭へ飛びました: 位置 {before} → {jumped}",
+                before=before,
+                after=jumped,
+            )
+            before = jumped
+            if jumped_total is not None:
+                total = jumped_total
 
     pressed = 0
     stuck = 0
