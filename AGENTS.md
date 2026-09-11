@@ -79,27 +79,55 @@ Refs #<issue番号>
 `capture_engine` / `capture_runner` / `reader_navigator` を 1 行も実行しない。
 つまり「実機で確認した」という記録が実態を伴っていなかった（#50）。
 
+**分け方の規準は「どちらか一方に入れる」ではなく「検証できる経路すべてに入れる」。**
+共有部分を headless 側だけに置くと、画面側でしか確かめられない部分が
+無検証のまま通る。下の 3 つは両方に入っている。
+
 **画面キャプチャ経路**（`scripts/smoke_capture.py --screen`。デスクトップを占有する）
 
-- `core/capture_engine.py` / `core/capture_runner.py` / `core/reader_navigator.py`
+- `core/capture_engine.py`
+- `core/capture_runner.py`
+- `core/reader_navigator.py`
+- `core/win32_utils.py` — headless が呼ぶのは prevent_sleep / allow_sleep だけ。
+  ウィンドウ探索・前面化・モニタ列挙・全画面判定は画面経路でしか通らない
+- `core/capture_profiles.py`（両方）— headless が使うのは get_profile と to_dict
+  だけ。timeout_seconds / settle_\* / click_position / window_title_keyword /
+  fullscreen_wait は画面経路でしか効かない
+- `core/boundary_detector.py`（両方）— **要素撮影の本ではトリミングを丸ごと飛ばす**
+  ので、headless 側の検証範囲は `kindleshot.smokeAsin` に何を設定したかで変わる。
+  UI 帯の自動検出は画面経路でだけ通る
+- `cli.py`（両方）— run --no-headless の配線は --screen でしか通らない
 
 **headless 経路**（`scripts/smoke_capture.py`。画面を占有しない）
 
-- `core/headless_capture.py` / `core/headless_browser.py`
-  （`kindle_cloud` プロファイルの既定経路＝**本番のキャプチャ経路**）
-- `core/capture_profiles.py`
-- `core/win32_utils.py`（`prevent_sleep` は両経路で走る）
-- `core/dpi.py`（`cli.py` の起動時に `enable_per_monitor_dpi_awareness` が呼ばれる）
-- `core/boundary_detector.py` の境界検出（トリミングの純ロジックは対象外）
-- `cli.py` の `capture` / `open` / `run` / `batch` / `check` コマンド
-- `scripts/smoke_capture.py`（スモーク自身。壊れると全ての確認が無意味になる）
+- `core/headless_capture.py` — `kindle_cloud` プロファイルの既定経路＝**本番のキャプチャ経路**
+- `core/headless_browser.py`
+- `core/capture_profiles.py`（両方）
+- `core/boundary_detector.py`（両方）
+- `cli.py`（両方）
+- `scripts/smoke_capture.py` — スモーク自身。壊れると全ての確認が無意味になる
 
 **どちらのスモークでも検証できないもの**
 
+監視対象に足すと「検証できないのに push がブロックされる」だけになるので、
+あえて外してある。**外したこと自体は正しいが、書いておかないと穴が隠れる**ので
+ここに並べ、`tests/test_pre_push_hook.py` で固定している。
+
 - `core/amazon_signin.py`（Win32 のログアウト検出、#15）。`reader_navigator` から
-  呼ばれるが、**サインアウトしていないと通らない**。監視対象に足すと
-  「検証できないのに push がブロックされる」だけになるので、あえて外してある。
-  ここを触ったときは手でサインアウトして確認するしかない
+  呼ばれるが、**サインアウトしていないと通らない**
+- `core/dpi.py`。`cli.py` の起動時に呼ばれるので**実行はされる**が、中身が
+  `try/except Exception` と `contextlib.suppress` で全部握り潰されているため、
+  **どう壊してもスモークは緑のまま**。守りたい失敗（DPI 認識を失って
+  `GetWindowRect` と `ImageGrab` の座標がずれる）も、ページ数と画像の相違しか
+  見ていないスモークでは捕まらない
+- `core/page_turn_probe.py`。`ui/steps/capture_step.py` からしか呼ばれず、
+  `cli.py` は import すらしていない
+- `core/library.py`。`cli.py library` は実際の蔵書ページの DOM を読むが、
+  スモークは `cli.py run` しか実行しない
+
+`cli.py` はファイルとしては両方の一覧に入っているが、**スモークが実行するのは
+`run` だけ**。`capture` / `open` / `check` / `batch` / `headless` / `library` の
+各コマンドはどちらの経路でも実行されない。
 
 **Playwright などのブラウザ自動化は使えない。** このアプリはブラウザを操作していない。
 Win32 API でネイティブウィンドウを探し、`ImageGrab` で画面そのものを物理ピクセルで

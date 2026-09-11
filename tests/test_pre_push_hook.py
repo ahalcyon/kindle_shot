@@ -346,13 +346,36 @@ def _section(start, end):
 
 
 def _files_in(chunk):
-    listed = [line for line in chunk.splitlines() if line.startswith("- ")]
-    return {t for line in listed for t in re.findall(r"`([\w/]+\.py)`", line)}
+    """箇条書きが主語にしているファイル名。
+
+    **1 行につき最初のパスだけを見る。** 2 つ目以降は「どこから呼ばれるか」の
+    説明で出てくるので、主語と混ぜると一覧が狂う。
+    """
+    names = set()
+    for line in chunk.splitlines():
+        if not line.startswith("- "):
+            continue
+        found = re.findall(r"`([\w/]+\.py)`", line)
+        if found:
+            names.add(found[0])
+    return names
+
+
+_SCREEN_HEADING = "**画面キャプチャ経路**"
+_HEADLESS_HEADING = "**headless 経路**"
 
 
 def _documented_files():
     """AGENTS.md「実機スモーク」節が、監視対象として挙げているファイル名。"""
     return _files_in(_section("### 5. 実機スモーク", _UNVERIFIABLE_HEADING))
+
+
+def _documented_screen_files():
+    return _files_in(_section(_SCREEN_HEADING, _HEADLESS_HEADING))
+
+
+def _documented_headless_files():
+    return _files_in(_section(_HEADLESS_HEADING, _UNVERIFIABLE_HEADING))
 
 
 def _documented_unverifiable():
@@ -383,19 +406,34 @@ def test_the_unverifiable_files_are_documented_and_not_gated():
     assert unverifiable & _watch_re_files() == set()
 
 
-def test_the_two_lists_do_not_overlap():
-    """同じファイルを両方に入れない。
+def test_each_list_matches_its_own_section_in_the_documentation():
+    """どちらの一覧にどのファイルが入っているかまで一致させる。
 
-    入れると 1 回の push で画面スモークと headless スモークの両方が走る。
-    共有部分は headless 側に置く（画面を占有しないほうで確認できる）。
+    **合計だけ見ても足りない。** 2 つの一覧を入れ替えても合計は変わらない
+    ので、「どちらの経路で検証するか」というこの区別そのものが守られない。
     """
-    assert _hook_files("SCREEN") & _hook_files("HEADLESS") == set()
+    assert _hook_files("SCREEN") == _documented_screen_files()
+    assert _hook_files("HEADLESS") == _documented_headless_files()
 
 
 def test_the_screen_only_files_are_watched_by_the_screen_smoke():
-    """headless が 1 行も実行しないファイルは、画面スモーク側にあること (#50)。"""
-    assert _hook_files("SCREEN") == {
+    """headless が 1 行も実行しない、あるいは一部しか実行しないファイル (#50)。
+
+    **重なりは禁止しない。** 規準は「どちらか一方に入れる」ではなく
+    「検証できる経路すべてに入れる」。共有部分を headless 側だけに置くと、
+    画面側でしか確かめられない部分が無検証のまま通る。
+    """
+    screen = _hook_files("SCREEN")
+    # headless が 1 行も実行しない
+    assert {
         "core/capture_engine.py",
         "core/capture_runner.py",
         "core/reader_navigator.py",
-    }
+    } <= screen
+    # headless は prevent_sleep / allow_sleep しか呼ばない。ウィンドウ探索も
+    # 画面座標もモニタ列挙も画面経路でしか通らない
+    assert "core/win32_utils.py" in screen
+    # headless が使うのは get_profile / to_dict だけ
+    assert "core/capture_profiles.py" in screen
+    # run --no-headless の配線は --screen でしか通らない
+    assert "cli.py" in screen

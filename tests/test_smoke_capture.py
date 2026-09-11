@@ -134,17 +134,21 @@ def test_build_run_argv_for_the_screen_path():
     assert "--keep-images" in argv
 
 
-def test_retry_runs_again_after_a_failure(tmp_path, monkeypatch):
-    """1 回の失敗で確定させない。
+def test_retry_runs_again_after_a_page_turn_failure(tmp_path, monkeypatch):
+    """ページが進まなかった失敗は 1 回で確定させない。
 
     画面キャプチャ経路は実測で 4 回に 1 回ほど、1 ページ目から先へ送れずに
-    止まる。失敗を 1 回で確定させると push のゲートとして使えない。
+    止まる。1 回で確定させると push のゲートとして使えない。
     """
     calls = []
 
     def fake(asin, out, pages, python=None, echo=print, screen=False):
         calls.append(screen)
-        return ["こわれた"] if len(calls) == 1 else []
+        return (
+            [f"stopped_reason が max_pages ではなく timeout（{smoke_capture.RETRYABLE}…）"]
+            if len(calls) == 1
+            else []
+        )
 
     monkeypatch.setattr(smoke_capture, "run_smoke", fake)
     problems = smoke_capture.run_smoke_with_retry(
@@ -154,36 +158,78 @@ def test_retry_runs_again_after_a_failure(tmp_path, monkeypatch):
     assert calls == [True, True]
 
 
+def test_a_deterministic_failure_is_not_retried(tmp_path, monkeypatch):
+    """2 回目も同じように落ちる失敗でやり直さない。
+
+    引数の誤りや cli.py の異常終了をやり直すと、--screen 1 本ぶん (30 秒) を
+    捨てるだけで、本当に壊れているときの発覚が遅れる。
+    """
+    calls = []
+
+    def fake(asin, out, pages, python=None, echo=print, screen=False):
+        calls.append(1)
+        return ["cli.py run が終了コード 2 で失敗"]
+
+    monkeypatch.setattr(smoke_capture, "run_smoke", fake)
+    problems = smoke_capture.run_smoke_with_retry("B0TEST", str(tmp_path), 3, echo=lambda *_: None)
+    assert problems == ["cli.py run が終了コード 2 で失敗"]
+    assert len(calls) == 1
+
+
 def test_retry_gives_up_after_the_second_failure(tmp_path, monkeypatch):
     """やり直しても駄目なら失敗として返す。握りつぶさない。"""
-    monkeypatch.setattr(
-        smoke_capture,
-        "run_smoke",
-        lambda *a, **kw: ["こわれたまま"],
-    )
+    msg = f"stopped_reason が max_pages ではなく timeout（{smoke_capture.RETRYABLE}…）"
+    monkeypatch.setattr(smoke_capture, "run_smoke", lambda *a, **kw: [msg])
     problems = smoke_capture.run_smoke_with_retry("B0TEST", str(tmp_path), 3, echo=lambda *_: None)
-    assert problems == ["こわれたまま"]
+    assert problems == [msg]
 
 
-def test_retry_clears_the_previous_output(tmp_path, monkeypatch):
-    """やり直す前に前回の出力を消す。
+def test_the_previous_output_is_cleared_before_every_attempt(tmp_path, monkeypatch):
+    """毎回、前回の出力を消してから走らせる。
 
-    消さないと、2 回目が前回の manifest や画像を検証して通ってしまう。
+    残っていると「前回の結果」を検証して**誤って通る**。1 回目の前にも消すのは、
+    --out に前回の出力が残っていると 1 回目が必ず落ち、やり直しの 1 回を
+    そこで使い切ってしまうため。
     """
     out = str(tmp_path)
     os.makedirs(smoke_capture.capture_dir(out))
-    with open(os.path.join(smoke_capture.capture_dir(out), "manifest.json"), "w") as f:
-        f.write("{}")
+    os.makedirs(smoke_capture.trimmed_dir(out))
+    for path in (
+        os.path.join(smoke_capture.capture_dir(out), "manifest.json"),
+        smoke_capture.output_pdf(out),
+    ):
+        with open(path, "w") as f:
+            f.write("x")
     seen = []
 
     def fake(asin, out_, pages, python=None, echo=print, screen=False):
-        seen.append(os.path.exists(smoke_capture.capture_dir(out_)))
-        return ["だめ"] if len(seen) == 1 else []
+        # 3 つとも消えていること。1 つでも残ると前回の結果を検証しうる
+        seen.append(
+            [
+                os.path.exists(smoke_capture.capture_dir(out_)),
+                os.path.exists(smoke_capture.trimmed_dir(out_)),
+                os.path.exists(smoke_capture.output_pdf(out_)),
+            ]
+        )
+        return [smoke_capture.RETRYABLE] if len(seen) == 1 else []
 
     monkeypatch.setattr(smoke_capture, "run_smoke", fake)
     smoke_capture.run_smoke_with_retry("B0TEST", out, 3, echo=lambda *_: None)
-    # 1 回目は残っていて、2 回目の直前に消えている
-    assert seen == [True, False]
+    assert seen == [[False, False, False], [False, False, False]]
+
+
+def test_a_cleanup_that_fails_is_reported(tmp_path, monkeypatch):
+    """消せなかったことを握り潰さない。
+
+    握り潰すと次の実行が「保存先に既存の画像があります」で落ち、
+    引数の問題に見えるエラーになる。
+    """
+    monkeypatch.setattr(smoke_capture, "clear_output", lambda out: False)
+    monkeypatch.setattr(
+        smoke_capture, "run_smoke", lambda *a, **kw: pytest.fail("走らせてはいけない")
+    )
+    problems = smoke_capture.run_smoke_with_retry("B0TEST", str(tmp_path), 3, echo=lambda *_: None)
+    assert problems and "消せませんでした" in problems[0]
 
 
 def test_paths_follow_run_book_layout():

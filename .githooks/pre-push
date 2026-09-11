@@ -81,12 +81,20 @@ fi
 # capture_runner / reader_navigator を 1 行も実行しない。つまり
 # 「実機で確認した」という記録が実態を伴っていなかった (#50)。
 #
-# SCREEN_RE: 画面キャプチャ経路でしか動かない。--screen が要る（デスクトップを占有）
-SCREEN_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/reader_navigator\.py)$'
-# HEADLESS_RE: headless で動く。両方の経路が通る共有部分もここに入れる
-#   capture_profiles / cli / boundary_detector(trim) / win32_utils(prevent_sleep) /
-#   dpi(cli.py の起動時に呼ばれる) は headless でも実行される
-HEADLESS_RE='^(core/headless_capture\.py|core/headless_browser\.py|core/capture_profiles\.py|core/win32_utils\.py|core/dpi\.py|core/boundary_detector\.py|cli\.py|scripts/smoke_capture\.py)$'
+# **両方に入るファイルがある。** 分け方の規準は「どちらか一方に入れる」では
+# なく「**検証できる経路すべてに入れる**」。共有部分を headless 側だけに
+# 置くと、画面側でしか確かめられない部分が無検証のまま通る。
+#   cli.py             run --no-headless の配線は --screen でしか通らない
+#   capture_profiles   headless が使うのは get_profile/to_dict だけ。
+#                      timeout_seconds / settle_* / click_position /
+#                      window_title_keyword は画面経路でしか効かない
+#   boundary_detector  要素撮影の本（headless の既定）はトリミングを
+#                      丸ごと飛ばす。UI 帯の自動検出は画面経路でだけ通る
+#
+# SCREEN_RE: 画面キャプチャ経路で検証できる。--screen が要る（デスクトップを占有）
+SCREEN_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/reader_navigator\.py|core/win32_utils\.py|core/capture_profiles\.py|core/boundary_detector\.py|cli\.py)$'
+# HEADLESS_RE: headless で検証できる
+HEADLESS_RE='^(core/headless_capture\.py|core/headless_browser\.py|core/capture_profiles\.py|core/boundary_detector\.py|cli\.py|scripts/smoke_capture\.py)$'
 
 ZERO='0000000000000000000000000000000000000000'
 changed=''
@@ -150,7 +158,7 @@ if ! probe=$("$PY" -c "import sys" 2>&1 >/dev/null); then
     exit 1
 fi
 
-printf '          ASIN=%s python=%s\n' "$ASIN" "$PY"
+printf 'pre-push: ASIN=%s python=%s\n' "$ASIN" "$PY"
 echo ""
 
 fail() {

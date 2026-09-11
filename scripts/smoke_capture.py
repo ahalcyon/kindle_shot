@@ -32,6 +32,7 @@ pre-push は画面側のファイルに触ったときだけ要求する。
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -168,8 +169,9 @@ def build_run_argv(python, asin, out, pages, fmt="image_pdf", screen=False):
         # 読み込み待ちは既定 (45 秒) のまま。画面経路はブラウザの描画を待つ
         argv += ["--no-headless", "--json"]
     else:
-        # 読み込み待ちの既定 45 秒は画面キャプチャ経路向けの値
-        argv += ["--headless", "--load-wait", "12", "--json"]
+        # --load-wait は渡さない。headless 側の既定 (DEFAULT_LOAD_WAIT = 12) と
+        # 同じ値なので、明示すると既定の解決経路を素通りするだけになる
+        argv += ["--headless", "--json"]
     # 検証で manifest.json とキャプチャ画像を読むので消させない
     argv += ["--keep-images"]
     return argv
@@ -257,32 +259,50 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
 
 
 # 画面キャプチャ経路は実測で 4 回に 1 回ほど、1 ページ目から先へ送れずに
-# 止まる（stopped_reason=timeout）。ブラウザが前面に来る前にキーを送って
-# いるものと思われる。**失敗を 1 回で確定させると push のゲートとして
-# 使えない**ので、1 度だけやり直す。headless では観測していないが、
-# 経路で分けるほどの根拠が無いので両方に効かせる。
+# 止まる（stopped_reason=timeout）。原因は未調査 (#74)。**失敗を 1 回で
+# 確定させると push のゲートとして使えない**ので、1 度だけやり直す。
 SMOKE_ATTEMPTS = 2
+
+# やり直す価値のある失敗の印。check_manifest が stopped_reason=timeout に
+# 付ける説明で、「ページが進まずに止まった」形だけを拾う。
+# **何で失敗してもやり直すのは駄目。** 引数の誤りや cli.py の異常終了は
+# 2 回目も同じように落ちるので、--screen 1 本ぶん (30 秒) を捨てるだけになり、
+# 本当に壊れているときの発覚が遅れる。
+RETRYABLE = "ページが変化しなかった"
+
+
+def clear_output(out):
+    """前回の出力を消す。消せたかどうかを返す。
+
+    残っていると 2 回目が「前回の結果」を検証して**誤って通る**。
+    ignore_errors で握り潰すと、次の実行が「保存先に既存の画像があります」で
+    落ちて、引数の問題に見えるエラーになる。
+    """
+    shutil.rmtree(capture_dir(out), ignore_errors=True)
+    shutil.rmtree(trimmed_dir(out), ignore_errors=True)
+    if os.path.exists(output_pdf(out)):
+        with contextlib.suppress(OSError):
+            os.remove(output_pdf(out))
+    return not any(os.path.exists(p) for p in (capture_dir(out), trimmed_dir(out), output_pdf(out)))
 
 
 def run_smoke_with_retry(asin, out, pages, python=None, echo=print, screen=False):
-    """スモークを実行する。失敗したら 1 度だけやり直す。
-
-    やり直しは出力先を作り直してから行う。前回の画像や manifest が残って
-    いると、2 回目が「前回の結果」を検証してしまう。
-    """
+    """スモークを実行する。やり直す価値のある失敗なら 1 度だけやり直す。"""
     problems = []
     for attempt in range(1, SMOKE_ATTEMPTS + 1):
+        # 1 回目の前にも消す。--out に前回の出力が残っていると 1 回目が
+        # 必ず落ち、やり直しの 1 回をそこで使い切ってしまう
+        if not clear_output(out):
+            return [f"前回の出力を消せませんでした: {out}"]
         if attempt > 1:
-            echo(f"\n失敗したのでやり直します（{attempt}/{SMOKE_ATTEMPTS}）")
-            shutil.rmtree(capture_dir(out), ignore_errors=True)
-            shutil.rmtree(trimmed_dir(out), ignore_errors=True)
-            if os.path.exists(output_pdf(out)):
-                os.remove(output_pdf(out))
+            echo(f"\nやり直します（{attempt}/{SMOKE_ATTEMPTS}）")
         problems = run_smoke(asin, out, pages, python=python, echo=echo, screen=screen)
         if not problems:
             return []
         for p in problems:
             echo(f"  - {p}")
+        if not any(RETRYABLE in p for p in problems):
+            return problems
     return problems
 
 
