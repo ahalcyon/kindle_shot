@@ -19,6 +19,7 @@ from core.headless_capture import (
     DEFAULT_TURN_KEY,
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
+    _wait_for_position_change,
     alert_text,
     build_manifest,
     capture_pages,
@@ -30,6 +31,7 @@ from core.headless_capture import (
     pad_shot,
     page_shot,
     read_position,
+    read_position_pair,
     reader_padding,
     resolve_shot_mode,
     reverse_of,
@@ -299,6 +301,9 @@ class FakeReader:
         min_position=1,
         swallow=0,
         dismiss_jumps=None,
+        blank_reads=0,
+        blank_after=0,
+        total=339,
     ):
         self.forward = forward
         self.position = position
@@ -310,6 +315,14 @@ class FakeReader:
         # ダイアログを閉じると位置が飛ぶ本（Whispersync の「はい」を押した形）。
         # dismiss の呼び出しごとに先頭から消費する。None の回は何も起きない
         self.dismiss_jumps = list(dismiss_jumps or [])
+        # 位置ラベルの描画が間に合わず読めない回（#69）。
+        # blank_after 回ぶん読めたあと、blank_reads 回だけ空文字を返す
+        self.blank_reads = blank_reads
+        self.blank_after = blank_after
+        self.total = total
+        self.reads = 0
+        # wait_for_timeout に渡されたミリ秒。刻んで見ているかの確認に使う (#57)
+        self.waits: list[int] = []
         self.url = "https://read.amazon.co.jp/?asin=B0X"
         self.presses: list[str] = []
 
@@ -344,14 +357,18 @@ class FakeReader:
 
             def text_content(self):
                 # read_position は text_content を使う（UI を CSS で隠すため）
+                page.reads += 1
+                if page.reads > page.blank_after and page.blank_reads > 0:
+                    page.blank_reads -= 1
+                    return ""
                 if page.text is not None:
                     return page.text
-                return f"{page.position}/339ページ \u2002●\u2002 1%"
+                return f"{page.position}/{page.total}ページ \u2002●\u2002 1%"
 
         return Loc()
 
-    def wait_for_timeout(self, _ms):
-        pass
+    def wait_for_timeout(self, ms):
+        self.waits.append(ms)
 
     def evaluate(self, _js):
         """dismiss_dialogs の代役。閉じた拍子に位置が飛ぶ本を再現する。"""
@@ -383,6 +400,29 @@ def test_reverse_of():
 def test_read_position(text, expected):
     """ページ表示と位置表示の 2 形式から先頭の数値を読む。"""
     assert read_position(FakeReader(text=text)) == expected
+
+
+def test_position_pair_reads_the_total():
+    """総量も読む。先頭まで戻れたかの判断材料になる (#69)。"""
+    assert read_position_pair(FakeReader(text="位置1/3495 ● 0%")) == (1, 3495)
+    assert read_position_pair(FakeReader(text="")) == (None, None)
+
+
+def test_waiting_for_a_turn_stops_as_soon_as_the_page_moves():
+    """動いたら上限まで待たない。固定スリープだと 1 冊あたり 15 秒を捨てる (#57)。"""
+    page = FakeReader(forward="ArrowLeft", position=10)
+    page.keyboard.press("ArrowLeft")  # 前進キーなので位置が 11 になる
+    moved = _wait_for_position_change(page, 10, page_wait=2.5)
+    assert moved == 11
+    # 2.5 秒 x 2 回ぶん (5000ms) ではなく 250ms 刻みで 1 回だけ待つ
+    assert page.waits == [250]
+
+
+def test_waiting_for_a_turn_gives_up_after_the_same_budget():
+    """動かない向きに粘る時間は変えない。刻んで見るだけ。"""
+    page = FakeReader(forward="ArrowLeft", position=10)
+    assert _wait_for_position_change(page, 10, page_wait=2.5) is None
+    assert sum(page.waits) == 5000  # page_wait 2.5 x attempts 2
 
 
 def test_detects_left_for_vertical_book():
@@ -502,6 +542,48 @@ def test_rewind_gives_up_without_position():
     page = FakeReader(text="")
     ok, presses = rewind_to_start(page, "left", page_wait=0)
     assert (ok, presses) == (False, 0)
+
+
+def test_rewind_does_not_call_a_far_position_the_start():
+    """押しても下がらなくなっただけでは先頭の証拠にならない。
+
+    実測 342 冊のバッチで巻き戻しが成功した 227 冊は、位置 1 / 2 / 3 で
+    終わっている。位置 1658 で止まった本を先頭扱いしたために、冒頭 60 ページ
+    （前付け＋第1〜4章）が落ちた本が ok で完成した (#69)。
+    """
+    page = FakeReader(forward="ArrowLeft", position=1658, min_position=1658)
+    ok, _ = rewind_to_start(page, "left", page_wait=0, max_retries=3)
+    assert ok is False
+
+
+def test_rewind_reports_where_it_stopped():
+    """位置だけでなく総量と理由も残す。後からログで判断できるように。"""
+    events = []
+    page = FakeReader(forward="ArrowLeft", position=1658, min_position=1658, total=3495)
+    rewind_to_start(page, "left", page_wait=0, emit=lambda name, **kw: events.append((name, kw)))
+    rewound = [kw for name, kw in events if name == "rewound"]
+    assert rewound and rewound[0]["total"] == 3495
+    assert rewound[0]["reason"] == "stopped_short"
+    assert rewound[0]["ok"] is False
+
+
+def test_rewind_rereads_a_position_it_failed_to_read():
+    """読めなかった回を「動かなかった」と数えない。
+
+    長い巻き戻しの途中でラベルの描画が 3 回続けて間に合わないと、そこが
+    先頭ということにされていた (#69)。読み直せば先頭まで戻れる。
+    """
+    page = FakeReader(forward="ArrowLeft", position=5, blank_reads=1, blank_after=1)
+    ok, _ = rewind_to_start(page, "left", page_wait=0, max_retries=3)
+    assert ok is True
+    assert page.position == 1
+
+
+def test_rewind_fails_when_the_position_stays_unreadable():
+    """どこにいるか分からないなら、先頭だと決めつけない。"""
+    page = FakeReader(forward="ArrowLeft", position=500, blank_reads=10**6, blank_after=1)
+    ok, _ = rewind_to_start(page, "left", page_wait=0, max_retries=3)
+    assert ok is False
 
 
 def test_rewind_uses_the_reverse_key():

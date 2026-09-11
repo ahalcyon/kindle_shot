@@ -118,6 +118,12 @@ DEFAULT_LOAD_WAIT = 12
 # 巻き戻しは描画を待つ必要が無いので短くする
 DEFAULT_REWIND_WAIT = 0.6
 DEFAULT_MAX_REWIND = 1000
+# 先頭に着いたとみなせる位置の上限。実測 342 冊のバッチで巻き戻しが成功した
+# 227 冊は、位置 1 (73 冊) / 2 (153 冊) / 3 (1 冊) で終わっている。見開きの本が
+# 2 で止まるぶんの余裕を見て 10 にする (#69)。
+MAX_START_POSITION = 10
+# 巻き戻し中に位置ラベルを読み落としたときの読み直し回数
+REWIND_REREAD_ATTEMPTS = 3
 
 # 読書位置の表示。実測で 2 形式ある:
 #     "6/339ページ ● 1%"   (ページ表示)
@@ -128,33 +134,50 @@ POSITION_SELECTOR = ".footer-label.position"
 _POSITION_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 
 
-def read_position(page):
-    """現在の読書位置を数値で返す。読めなければ None。"""
+def read_position_pair(page):
+    """現在の読書位置と総量を (位置, 総量) で返す。読めなければ (None, None)。
+
+    総量は「先頭に戻り切れたか」の判断材料になる。位置だけを記録していたため、
+    位置 3344 で止まった本が先頭付近なのか終盤なのか、ログから判断できなかった
+    (#69)。
+    """
     try:
         locator = page.locator(POSITION_SELECTOR)
         if not locator.count():
-            return None
+            return None, None
         # text_content を使う。撮影前に UI を CSS で隠すため、
         # inner_text だと描画されていない要素から空文字が返ることがある
         matched = _POSITION_RE.search(locator.first.text_content() or "")
     except Exception:
-        return None
-    return int(matched.group(1)) if matched else None
+        return None, None
+    if not matched:
+        return None, None
+    return int(matched.group(1)), int(matched.group(2))
 
 
-def _settled_position(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=4):
-    """読書位置が読めるまで数回待って返す。読めなければ None。
+def read_position(page):
+    """現在の読書位置を数値で返す。読めなければ None。"""
+    return read_position_pair(page)[0]
+
+
+def _settled_position_pair(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=4):
+    """読書位置が読めるまで数回待って (位置, 総量) を返す。読めなければ (None, None)。
 
     読み込み直後はラベルの描画が間に合わず None になることがある。
     1 回で諦めると「動いていない」と誤判定して向きの判定に失敗する。
     """
     for i in range(attempts):
-        position = read_position(page)
+        position, total = read_position_pair(page)
         if position is not None:
-            return position
+            return position, total
         if i < attempts - 1:
             page.wait_for_timeout(int(page_wait * 1000))
-    return None
+    return None, None
+
+
+def _settled_position(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=4):
+    """読書位置が読めるまで数回待って返す。読めなければ None。"""
+    return _settled_position_pair(page, page_wait=page_wait, attempts=attempts)[0]
 
 
 # 1 つの向きにつき押す回数。ダイアログを閉じた直後の 1 回目は飲まれることが
@@ -164,19 +187,36 @@ TURN_PROBE_PRESSES = 3
 # 押した後に位置の変化を待つ回数。変化しないことの確認にも使う。
 TURN_WAIT_ATTEMPTS = 2
 
+# 位置を見に行く間隔。rewind_to_start は DEFAULT_REWIND_WAIT = 0.6 秒待って
+# 位置ラベルの更新を実機で観測できているので、250ms 刻みなら十分細かい。
+TURN_POLL_INTERVAL = 0.25
+
 
 def _wait_for_position_change(page, before, *, page_wait, attempts=TURN_WAIT_ATTEMPTS):
     """読書位置が before から変わるまで待つ。変わらなければ None。
 
     「読めるまで待つ」(_settled_position) では足りない。押した直後は前の値が
     そのまま読めるので、1 回読んで同じなら動いていない、と決めると誤判定する。
+
+    **待つ上限は変えずに、刻んで見る。** 固定スリープだと実機が 0.5 秒で
+    反映しても page_wait（既定 2.5 秒）を必ず払う。#53 で向きごとに最大 3 回
+    押すようにしたため、動かない向きは 3 x 2 x 2.5 = 15 秒かかっていた。
+    候補の順は ("left", "right") 固定なので、先頭ページの横書き本は毎回
+    left で 15 秒を捨てる (#57)。上限（page_wait x attempts）は据え置くので、
+    「動かない」の判定は今までと同じだけ粘る。
     """
-    for _ in range(attempts):
-        page.wait_for_timeout(int(page_wait * 1000))
+    budget = page_wait * attempts
+    interval = min(TURN_POLL_INTERVAL, budget)
+    waited = 0.0
+    while True:
+        page.wait_for_timeout(int(interval * 1000))
+        waited += interval
         now = read_position(page)
         if now is not None and now != before:
             return now
-    return None
+        # budget が 0 のとき（テスト）でも 1 回は読んでから抜ける
+        if waited >= budget:
+            return None
 
 
 def _probe_turn(page, candidate, *, page_wait):
@@ -671,20 +711,44 @@ def rewind_to_start(
     見るとマンガが軒並み失敗する（実測で 10 冊中 8 冊が該当した）。
     """
     back = turn_key(reverse_of(forward))
-    before = read_position(page)
+    before, total = read_position_pair(page)
     if before is None:
         emit("status", human="読書位置を読めないため巻き戻せません")
         return False, 0
 
     pressed = 0
     stuck = 0
+    unreadable = 0
     at_start = before <= 1
     while pressed < max_rewind and not at_start:
         page.keyboard.press(back)
         page.wait_for_timeout(int(page_wait * 1000))
         pressed += 1
-        current = read_position(page)
-        if current is None or current >= before:
+        current, seen_total = read_position_pair(page)
+        if current is None:
+            # ラベルの描画が間に合っていないだけかもしれないので読み直す。
+            # **「読めなかった」を「動かなかった」と同じに数えてはいけない。**
+            # 長い巻き戻しの途中で 3 回続けて読み落とすと、そこが先頭という
+            # ことにされる。実測で 2 冊がこれに当たり、冒頭 60 ページが落ちた
+            # 本が ok で完成した (#69)。
+            # 読み直しは巻き戻しの刻み (0.6 秒) ではなく通常の待ち時間で待つ。
+            # 実測では合本の巻の境目でラベルが数秒消える。0.6 秒の刻みでは
+            # 復帰を待ちきれず、読めないまま打ち切っていた (#69)
+            current, seen_total = _settled_position_pair(
+                page,
+                page_wait=max(page_wait, DEFAULT_PAGE_WAIT),
+                attempts=REWIND_REREAD_ATTEMPTS,
+            )
+        if current is None:
+            unreadable += 1
+            if unreadable >= max_retries:
+                # どこにいるか分からない。先頭だと決めつけない
+                break
+            continue
+        unreadable = 0
+        if seen_total is not None:
+            total = seen_total
+        if current >= before:
             stuck += 1
         else:
             stuck = 0
@@ -697,15 +761,34 @@ def rewind_to_start(
         if pressed % 25 == 0:
             emit("status", human=f"先頭へ巻き戻し中... (位置 {before})")
 
-    ok = at_start
+    # 「押しても下がらない」だけでは先頭の証拠にならない。実測 227 冊の
+    # 巻き戻しはすべて位置 1 / 2 / 3 で終わっており、4 以上は 1 冊も無い。
+    # 位置 1658 や 3344 で止まったものは、動かなくなっただけで先頭ではない (#69)。
+    ok = at_start and before <= MAX_START_POSITION
+    where = f"位置 {before}" + (f"/{total}" if total else "")
+    if ok:
+        human = f"先頭へ巻き戻しました（{pressed} 回、{where}）"
+        reason = "ok"
+    elif unreadable >= max_retries:
+        human = f"読書位置を読めなくなりました（{pressed} 回、最後に読めたのは {where}）"
+        reason = "unreadable"
+    elif at_start:
+        human = (
+            f"{where} で動かなくなりましたが、先頭ではありません"
+            f"（先頭とみなす上限は {MAX_START_POSITION}）"
+        )
+        reason = "stopped_short"
+    else:
+        human = f"先頭まで戻り切れませんでした（{pressed} 回、{where}）"
+        reason = "not_reached"
     emit(
         "rewound",
-        human=f"先頭へ巻き戻しました（{pressed} 回、位置 {before}）"
-        if ok
-        else f"先頭まで戻り切れませんでした（{pressed} 回、位置 {before}）",
+        human=human,
         ok=ok,
         presses=pressed,
         position=before,
+        total=total,
+        reason=reason,
     )
     return ok, pressed
 
