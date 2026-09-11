@@ -284,6 +284,42 @@ def test_touching_both_paths_runs_both_smokes(repo, tmp_path):
 
 
 @needs_sh
+def test_a_file_in_both_lists_runs_both_smokes(repo, tmp_path):
+    """両方の一覧に入っているファイル 1 つで、両方のスモークが走ること。
+
+    共有部分を片方だけで守ると、もう片方でしか確かめられない部分が
+    無検証のまま通る (#50)。
+    """
+    marker = tmp_path / "ran.txt"
+    _git(repo, "config", "kindleshot.python", str(_stub_python(repo, marker)))
+    _commit_change(repo, "cli.py")
+
+    code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
+    assert code == 0, err or out
+    calls = marker.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 2, calls
+    assert sum("--screen" in c for c in calls) == 1
+
+
+@needs_sh
+def test_the_smoke_script_itself_is_checked_on_both_paths(repo, tmp_path):
+    """スモーク自身を変えたら両方走ること。
+
+    --screen の配線（--no-headless を組み立てる所）は画面スモークでしか
+    通らない。headless 側だけで守ると、--no-headless のタイプミスが
+    緑のまま通る。
+    """
+    marker = tmp_path / "ran.txt"
+    _git(repo, "config", "kindleshot.python", str(_stub_python(repo, marker)))
+    _commit_change(repo, "scripts/smoke_capture.py")
+
+    code, out, err = _run_hook(repo, "origin", "u", stdin=_push_input(repo))
+    assert code == 0, err or out
+    calls = marker.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 2, calls
+
+
+@needs_sh
 def test_unwatched_change_does_not_run_smoke(repo, tmp_path):
     """キャプチャ経路に触らない変更は素通しする。"""
     marker = tmp_path / "ran.txt"
@@ -404,6 +440,25 @@ def test_the_unverifiable_files_are_documented_and_not_gated():
     unverifiable = _documented_unverifiable()
     assert "core/amazon_signin.py" in unverifiable
     assert unverifiable & _watch_re_files() == set()
+
+
+# 箇条書きの中で「どこから呼ばれるか」の説明として出てくるだけのパス。
+# 主語でも監視対象でもないので、下のテストの対象から外す。
+_CONTEXT_ONLY = {"ui/steps/capture_step.py", "tests/test_pre_push_hook.py"}
+
+
+def test_every_path_in_the_documentation_is_accounted_for():
+    """節の中に出てくる .py が、主語か・監視対象か・説明用かのどれかであること。
+
+    _files_in は 1 行の**最初の**パスだけを主語として拾う。そのため
+    「- `a.py` と `b.py`」と書くと b.py が黙って消え、**ドキュメントには
+    載っているのにフックは見ていない**状態が緑で通る。1 行 1 ファイルという
+    書き方の規約を、ここで強制する。
+    """
+    chunk = _section("### 5. 実機スモーク", "#### 対象は Cloud Reader")
+    mentioned = set(re.findall(r"`([\w/]+\.py)`", chunk))
+    known = _documented_files() | _documented_unverifiable() | _watch_re_files() | _CONTEXT_ONLY
+    assert mentioned <= known, f"主語にも監視対象にもなっていないパス: {mentioned - known}"
 
 
 def test_each_list_matches_its_own_section_in_the_documentation():

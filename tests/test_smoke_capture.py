@@ -144,11 +144,7 @@ def test_retry_runs_again_after_a_page_turn_failure(tmp_path, monkeypatch):
 
     def fake(asin, out, pages, python=None, echo=print, screen=False):
         calls.append(screen)
-        return (
-            [f"stopped_reason が max_pages ではなく timeout（{smoke_capture.RETRYABLE}…）"]
-            if len(calls) == 1
-            else []
-        )
+        return (["ページが進まなかった"], True) if len(calls) == 1 else ([], False)
 
     monkeypatch.setattr(smoke_capture, "run_smoke", fake)
     problems = smoke_capture.run_smoke_with_retry(
@@ -168,7 +164,7 @@ def test_a_deterministic_failure_is_not_retried(tmp_path, monkeypatch):
 
     def fake(asin, out, pages, python=None, echo=print, screen=False):
         calls.append(1)
-        return ["cli.py run が終了コード 2 で失敗"]
+        return ["cli.py run が終了コード 2 で失敗"], False
 
     monkeypatch.setattr(smoke_capture, "run_smoke", fake)
     problems = smoke_capture.run_smoke_with_retry("B0TEST", str(tmp_path), 3, echo=lambda *_: None)
@@ -178,8 +174,8 @@ def test_a_deterministic_failure_is_not_retried(tmp_path, monkeypatch):
 
 def test_retry_gives_up_after_the_second_failure(tmp_path, monkeypatch):
     """やり直しても駄目なら失敗として返す。握りつぶさない。"""
-    msg = f"stopped_reason が max_pages ではなく timeout（{smoke_capture.RETRYABLE}…）"
-    monkeypatch.setattr(smoke_capture, "run_smoke", lambda *a, **kw: [msg])
+    msg = "stopped_reason が max_pages ではなく timeout"
+    monkeypatch.setattr(smoke_capture, "run_smoke", lambda *a, **kw: ([msg], True))
     problems = smoke_capture.run_smoke_with_retry("B0TEST", str(tmp_path), 3, echo=lambda *_: None)
     assert problems == [msg]
 
@@ -211,11 +207,24 @@ def test_the_previous_output_is_cleared_before_every_attempt(tmp_path, monkeypat
                 os.path.exists(smoke_capture.output_pdf(out_)),
             ]
         )
-        return [smoke_capture.RETRYABLE] if len(seen) == 1 else []
+        return (["ページが進まなかった"], True) if len(seen) == 1 else ([], False)
 
     monkeypatch.setattr(smoke_capture, "run_smoke", fake)
     smoke_capture.run_smoke_with_retry("B0TEST", out, 3, echo=lambda *_: None)
     assert seen == [[False, False, False], [False, False, False]]
+
+
+def test_a_timeout_manifest_is_marked_retryable():
+    """やり直すかどうかを manifest の値で決める。表示文言に依存しない。
+
+    以前は check_manifest が付ける説明の文字列と照合していた。文言を変えると
+    テストは緑のまま、やり直しだけが黙って死ぬ。
+    """
+    assert smoke_capture.RETRYABLE_REASON == "timeout"
+    problems = smoke_capture.check_manifest(
+        {"total_pages": 1, "stopped_reason": smoke_capture.RETRYABLE_REASON}, 3
+    )
+    assert problems
 
 
 def test_a_cleanup_that_fails_is_reported(tmp_path, monkeypatch):
@@ -264,7 +273,7 @@ def test_asin_comes_from_git_config(monkeypatch):
 
     def fake_run_smoke(asin, out, pages, python=None, echo=print, screen=False):
         captured["asin"] = asin
-        return []
+        return [], False
 
     monkeypatch.setattr(smoke_capture, "run_smoke", fake_run_smoke)
     assert smoke_capture.main([]) == smoke_capture.EXIT_OK

@@ -46,6 +46,16 @@ CLI = os.path.join(REPO_ROOT, "cli.py")
 
 TITLE = "smoke"
 
+# やり直す価値のある停止理由。ページが進まずに止まった形だけを拾う。
+# **何で失敗してもやり直すのは駄目。** 引数の誤りや cli.py の異常終了は
+# 2 回目も同じように落ちるので、--screen 1 本ぶん (30 秒) を捨てるだけになり、
+# 本当に壊れているときの発覚が遅れる。
+#
+# **表示文言ではなく manifest の値で判定する。** check_manifest が付ける説明の
+# 文字列と照合していたことがあったが、文言を変えるとテストは緑のまま
+# やり直しだけが黙って死ぬ。この PR が潰そうとしている穴そのものだった。
+RETRYABLE_REASON = "timeout"
+
 # 終了コード
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -204,7 +214,11 @@ def list_pngs(folder):
 
 
 def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
-    """スモークを 1 本実行し、問題の一覧を返す。空なら合格。"""
+    """スモークを 1 本実行し、(問題の一覧, やり直す価値があるか) を返す。
+
+    problems が空なら合格。retryable は manifest の stopped_reason が
+    RETRYABLE_REASON だったかどうかで、表示文言には依存しない。
+    """
     python = python or sys.executable
     argv = build_run_argv(python, asin, out, pages, screen=screen)
     echo("実行: " + " ".join(argv))
@@ -229,6 +243,7 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
             echo(f"  [{event['event']}] {json.dumps(event, ensure_ascii=False)}")
 
     problems = []
+    retryable = False
     if proc.returncode != 0:
         problems.append(f"cli.py run が終了コード {proc.returncode} で失敗")
         if proc.stderr.strip():
@@ -245,6 +260,7 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
             "manifest: total_pages={total_pages} stopped_reason={stopped_reason} "
             "duration_seconds={duration_seconds}".format(**manifest)
         )
+        retryable = manifest.get("stopped_reason") == RETRYABLE_REASON
         problems.extend(check_manifest(manifest, pages))
         problems.extend(check_pages_differ(list_pngs(capture_dir(out))))
 
@@ -255,20 +271,13 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
         count = pdf_page_count(pdf)
         if count is not None and count != pages:
             problems.append(f"PDF のページ数が {pages} ではなく {count}")
-    return problems
+    return problems, retryable
 
 
 # 画面キャプチャ経路は実測で 4 回に 1 回ほど、1 ページ目から先へ送れずに
 # 止まる（stopped_reason=timeout）。原因は未調査 (#74)。**失敗を 1 回で
 # 確定させると push のゲートとして使えない**ので、1 度だけやり直す。
 SMOKE_ATTEMPTS = 2
-
-# やり直す価値のある失敗の印。check_manifest が stopped_reason=timeout に
-# 付ける説明で、「ページが進まずに止まった」形だけを拾う。
-# **何で失敗してもやり直すのは駄目。** 引数の誤りや cli.py の異常終了は
-# 2 回目も同じように落ちるので、--screen 1 本ぶん (30 秒) を捨てるだけになり、
-# 本当に壊れているときの発覚が遅れる。
-RETRYABLE = "ページが変化しなかった"
 
 
 def clear_output(out):
@@ -288,20 +297,23 @@ def clear_output(out):
 
 def run_smoke_with_retry(asin, out, pages, python=None, echo=print, screen=False):
     """スモークを実行する。やり直す価値のある失敗なら 1 度だけやり直す。"""
-    problems = []
+    problems: list[str] = []
     for attempt in range(1, SMOKE_ATTEMPTS + 1):
         # 1 回目の前にも消す。--out に前回の出力が残っていると 1 回目が
         # 必ず落ち、やり直しの 1 回をそこで使い切ってしまう
         if not clear_output(out):
-            return [f"前回の出力を消せませんでした: {out}"]
+            # 元の失敗を落とさない。掃除の失敗だけを返すと、なぜ
+            # やり直すことになったのかが分からなくなる
+            return [*problems, f"前回の出力を消せませんでした: {out}"]
         if attempt > 1:
             echo(f"\nやり直します（{attempt}/{SMOKE_ATTEMPTS}）")
-        problems = run_smoke(asin, out, pages, python=python, echo=echo, screen=screen)
+        problems, retryable = run_smoke(asin, out, pages, python=python, echo=echo, screen=screen)
         if not problems:
             return []
         for p in problems:
             echo(f"  - {p}")
-        if not any(RETRYABLE in p for p in problems):
+        if not retryable:
+            echo("やり直しません（2 回目も同じように落ちる失敗です）")
             return problems
     return problems
 

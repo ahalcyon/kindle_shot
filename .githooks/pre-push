@@ -88,13 +88,16 @@ fi
 #   capture_profiles   headless が使うのは get_profile/to_dict だけ。
 #                      timeout_seconds / settle_* / click_position /
 #                      window_title_keyword は画面経路でしか効かない
-#   boundary_detector  要素撮影の本（headless の既定）はトリミングを
-#                      丸ごと飛ばす。UI 帯の自動検出は画面経路でだけ通る
+#   boundary_detector  headless 側の検証範囲は smokeAsin に何を設定したかで
+#                      変わる。画面経路は必ずマージン自動検出を通る
+#   pipeline           headless / 画面の分岐そのものがここにある
+#   smoke_capture      --screen の配線（--no-headless を組み立てる所）は
+#                      画面スモークでしか通らない。スモーク自身が両方に要る
 #
 # SCREEN_RE: 画面キャプチャ経路で検証できる。--screen が要る（デスクトップを占有）
-SCREEN_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/reader_navigator\.py|core/win32_utils\.py|core/capture_profiles\.py|core/boundary_detector\.py|cli\.py)$'
+SCREEN_RE='^(core/capture_engine\.py|core/capture_runner\.py|core/reader_navigator\.py|core/win32_utils\.py|core/capture_profiles\.py|core/boundary_detector\.py|core/pipeline\.py|cli\.py|scripts/smoke_capture\.py)$'
 # HEADLESS_RE: headless で検証できる
-HEADLESS_RE='^(core/headless_capture\.py|core/headless_browser\.py|core/capture_profiles\.py|core/boundary_detector\.py|cli\.py|scripts/smoke_capture\.py)$'
+HEADLESS_RE='^(core/headless_capture\.py|core/headless_browser\.py|core/capture_profiles\.py|core/boundary_detector\.py|core/pipeline\.py|cli\.py|scripts/smoke_capture\.py)$'
 
 ZERO='0000000000000000000000000000000000000000'
 changed=''

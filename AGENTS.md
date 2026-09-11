@@ -89,14 +89,23 @@ Refs #<issue番号>
 - `core/capture_runner.py`
 - `core/reader_navigator.py`
 - `core/win32_utils.py` — headless が呼ぶのは prevent_sleep / allow_sleep だけ。
-  ウィンドウ探索・前面化・モニタ列挙・全画面判定は画面経路でしか通らない
+  ウィンドウ探索・前面化・モニタ列挙・全画面判定は画面経路でしか通らない。
+  その 2 つのために headless 側にも入れることはしていない。13 関数中 2 つでは
+  「確認した」と言える範囲が狭すぎる
 - `core/capture_profiles.py`（両方）— headless が使うのは get_profile と to_dict
   だけ。timeout_seconds / settle_\* / click_position / window_title_keyword /
   fullscreen_wait は画面経路でしか効かない
-- `core/boundary_detector.py`（両方）— **要素撮影の本ではトリミングを丸ごと飛ばす**
-  ので、headless 側の検証範囲は `kindleshot.smokeAsin` に何を設定したかで変わる。
-  UI 帯の自動検出は画面経路でだけ通る
+- `core/boundary_detector.py`（両方）— **headless 側の検証範囲は
+  `kindleshot.smokeAsin` に何を設定したかで変わる。** 要素撮影の本では
+  `margins=(0,0,0,0)` を渡すので、マージンの自動検出（`aggregate_margins` /
+  `page_variation_margins` / `combine_margins`）が走らない（`folder_page_margins` と
+  `clipped_pages_from` は走る）。画面経路は必ず自動検出を通るので、
+  こちらのほうが検証範囲が広い
 - `cli.py`（両方）— run --no-headless の配線は --screen でしか通らない
+- `core/pipeline.py`（両方）— headless と画面の分岐そのものがここにある
+- `scripts/smoke_capture.py`（両方）— **--screen の配線（--no-headless を
+  組み立てる所）は画面スモークでしか通らない。** ここを headless 側だけで
+  守ると、--no-headless のタイプミスが緑のまま通る
 
 **headless 経路**（`scripts/smoke_capture.py`。画面を占有しない）
 
@@ -104,8 +113,9 @@ Refs #<issue番号>
 - `core/headless_browser.py`
 - `core/capture_profiles.py`（両方）
 - `core/boundary_detector.py`（両方）
+- `core/pipeline.py`（両方）
 - `cli.py`（両方）
-- `scripts/smoke_capture.py` — スモーク自身。壊れると全ての確認が無意味になる
+- `scripts/smoke_capture.py`（両方）— スモーク自身。壊れると全ての確認が無意味になる
 
 **どちらのスモークでも検証できないもの**
 
@@ -126,8 +136,7 @@ Refs #<issue番号>
   スモークは `cli.py run` しか実行しない
 
 `cli.py` はファイルとしては両方の一覧に入っているが、**スモークが実行するのは
-`run` だけ**。`capture` / `open` / `check` / `batch` / `headless` / `library` の
-各コマンドはどちらの経路でも実行されない。
+`run` だけ**。それ以外のサブコマンドはどちらの経路でも実行されない。
 
 **Playwright などのブラウザ自動化は使えない。** このアプリはブラウザを操作していない。
 Win32 API でネイティブウィンドウを探し、`ImageGrab` で画面そのものを物理ピクセルで
