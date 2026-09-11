@@ -711,8 +711,23 @@ def test_still_at_start_refuses_a_far_position():
     assert any(name == "error" for name, _ in events)
 
 
+def test_still_at_start_waits_for_the_label_to_come_back():
+    """1 回読んで駄目でも諦めない。
+
+    ダイアログを閉じた直後にラベルが一瞬消えるのが一番起きやすい失敗で、
+    1 回読みで通す形にすると**それがそのまま素通りする**。
+    """
+    assert _still_at_start(FakeReader(position=1656, blank_reads=1)) is False
+
+
 def test_still_at_start_does_not_block_a_book_without_a_position_label():
-    """位置が読めない本をここで止めない。巻き戻し本体が既に見ている。"""
+    """位置が最後まで読めないときは通す。
+
+    ここに来るのは rewind_to_start の最初の読みを通った本（＝ラベルを
+    読める本）なので、この枝には本来来ない。来たときに撮影を止めるより
+    通すほうが、この関数の役割（飛ばされたのを捕まえる）に照らして
+    副作用が小さい。
+    """
     assert _still_at_start(FakeReader(text="")) is True
 
 

@@ -798,7 +798,7 @@ def rewind_to_start(
                 unreadable = 0
                 if seen_total is not None:
                     total = seen_total
-                at_start = before <= 1
+                # 取り直した先が先頭ということはない (current > before >= 2)
                 if pressed % 25 == 0:
                     emit("status", human=f"先頭へ巻き戻し中... (位置 {before})")
                 continue
@@ -1053,10 +1053,14 @@ def run_headless_capture(
                 # ここで閉じるダイアログも位置を飛ばしうる（Whispersync の
                 # 「最後に読んでいたページへ移動しますか」）。巻き戻しが
                 # 成功したあとに飛ばされると、そのまま途中から撮り始める。
-                # 閉じたときだけ位置を見直す
+                # 閉じたかどうかに関わらず見直す。dismiss_dialogs は
+                # evaluate が例外を投げると 0 を返すので、戻り値で門番すると
+                # チェックごと飛ぶ
                 dismiss_dialogs(page)
                 if not _still_at_start(page, emit=emit):
-                    stopped_reason = "rewind_failed"
+                    # 「戻し切れなかった」と区別する。342 冊のログを原因別に
+                    # 数えられるように
+                    stopped_reason = "moved_after_rewind"
                     return EXIT_ERROR
             total, stopped_reason = capture_pages(
                 page,
