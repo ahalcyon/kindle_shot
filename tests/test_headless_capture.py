@@ -16,10 +16,13 @@ import os
 import pytest
 
 from core.headless_capture import (
+    CATCHUP_WAIT,
+    CATCHUP_WAITS,
     DEFAULT_TURN_KEY,
     DISMISS_ALERTS_JS,
     LEAVE_BUTTON_JS,
     MAX_START_POSITION,
+    POSITION_SELECTOR,
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
     TOC_ITEM_SELECTOR,
@@ -64,6 +67,10 @@ class FakePage:
         alert="",
         page_image_lost_at=None,
         leave_button=False,
+        positions=None,
+        book_total=None,
+        lag_from_index=None,
+        lag_shots=0,
     ):
         self.frames = list(frames)
         # 要素撮影で返す内容。省略時は frames と同じ（方式を変えても中身は同じ）
@@ -82,6 +89,13 @@ class FakePage:
         self.leave_button = leave_button
         self.dismissed = 0
         self.shots: list[str] = []
+        self.waits: list[int] = []
+        # 読み手側が出す位置。index ごとに引く
+        self.positions = list(positions) if positions else None
+        self.book_total = book_total
+        # この index 以降、画面が lag_shots 回ぶん遅れて見える（本は進んでいる）
+        self.lag_from_index = lag_from_index
+        self.lag_shots = lag_shots
 
         page = self
 
@@ -96,12 +110,42 @@ class FakePage:
 
         self.keyboard = Keyboard()
 
+    def _visible_index(self):
+        """画面に見えている index。遅れている間は止まって見える。"""
+        if (
+            self.lag_from_index is not None
+            and self.index > self.lag_from_index
+            and self.lag_shots > 0
+        ):
+            self.lag_shots -= 1
+            return self.lag_from_index
+        return self.index
+
     def screenshot(self):
         self.shots.append("viewport")
-        return self.frames[self.index]
+        return self.frames[self._visible_index()]
 
-    def locator(self, _selector):
+    def locator(self, selector):
         page = self
+
+        if selector == POSITION_SELECTOR:
+            # **ページ画像とは別の要素。** 位置は進んでいるのに画面が遅れる、
+            # という状況を表すには分けておく必要がある
+            class PositionLoc:
+                def count(self):
+                    return 0 if page.positions is None else 1
+
+                @property
+                def first(self):
+                    return self
+
+                def text_content(self):
+                    if page.positions is None:
+                        return ""
+                    pos = page.positions[min(page.index, len(page.positions) - 1)]
+                    return f"{pos}/{page.book_total}ページ"
+
+            return PositionLoc()
 
         class Loc:
             def count(self):
@@ -116,12 +160,12 @@ class FakePage:
             def screenshot(self):
                 page.shots.append("element")
                 frames = page.element_frames or page.frames
-                return frames[page.index]
+                return frames[page._visible_index()]
 
         return Loc()
 
-    def wait_for_timeout(self, _ms):
-        pass
+    def wait_for_timeout(self, ms):
+        self.waits.append(ms)
 
     def add_style_tag(self, **_kw):
         """UI を隠す CSS の注入。撮影内容には影響しないので何もしない。"""
@@ -334,6 +378,90 @@ def test_the_stop_position_is_always_recorded(tmp_path):
     assert len(stopped) == 1
     assert stopped[0]["reason"] == "end_of_book"
     assert "position" in stopped[0] and "book_total" in stopped[0]
+
+
+def test_a_lagging_screen_does_not_lose_pages(tmp_path):
+    """描画が遅れているだけのときに押さない。押すとページが飛ぶ (#81)。
+
+    再送ループはキーを押す。押すたびに本は進むので、リーダーが単に遅かっただけなら
+    押した分だけ読み飛ばし、追いついた先から保存を続ける。**間が抜けた本**ができる。
+
+    欠けは後段で拾えない。validate が見るのは白紙・重複・寸法だけで、欠落は見ない。
+    ページ番号は保存順の連番なので、飛んでも詰まって連続する。短い本は短さで
+    気づけるが、中抜けの本は気づけない。
+    """
+    page = FakePage(
+        [b"a", b"b", b"c", b"d", b"e"],
+        positions=[10, 20, 30, 40, 50],
+        book_total=1000,
+        lag_from_index=1,
+        lag_shots=3,
+    )
+    total, _ = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
+    saved = [(tmp_path / n).read_bytes() for n in sorted(p.name for p in tmp_path.iterdir())]
+    assert saved == [b"a", b"b", b"c", b"d", b"e"], f"ページが飛んでいる: {saved}"
+    assert total == 5
+
+
+def test_a_stopped_book_is_still_pressed(tmp_path):
+    """本が進んでいないなら、これまでどおり押し直す。
+
+    キーが飲まれた本を救うのが再送ループの本来の役目。位置が動いていない
+    ときまで押さなくなると、モーダルで 1 回飲まれた本が撮れなくなる。
+    """
+    page = FakePage(
+        [b"a", b"b", b"c"],
+        positions=[10, 20, 30],
+        book_total=1000,
+        swallow=2,
+    )
+    total, _ = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
+    assert total == 3, "飲まれた本が撮れていない"
+    # 位置が動いていないなら待っても仕方がない。押すのが正しい
+    assert [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000] == [], (
+        "止まっている本で描画を待っている"
+    )
+
+
+def test_waiting_for_the_screen_has_a_bound(tmp_path):
+    """描画を待つ回数には上限がある。
+
+    上限の無い待ちは「終わらない」であって「丁寧」ではない。
+    """
+    page = FakePage(
+        [b"a", b"b", b"c"],
+        positions=[10, 20, 30],
+        book_total=1000,
+        lag_from_index=1,
+        lag_shots=999,
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
+    long_waits = [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000]
+    assert len(long_waits) == CATCHUP_WAITS, f"待った回数が上限と違う: {len(long_waits)}"
+    assert reason == "end_of_book"
+    assert total >= 1
+
+
+def test_the_wait_is_reported(tmp_path):
+    """押さずに待ったことをログに残す。"""
+    events = []
+    page = FakePage(
+        [b"a", b"b", b"c", b"d"],
+        positions=[10, 20, 30, 40],
+        book_total=1000,
+        lag_from_index=1,
+        lag_shots=2,
+    )
+    capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        max_retries=3,
+        emit=lambda name, **kw: events.append((name, kw)),
+    )
+    waiting = [kw for n, kw in events if n == "capture_waiting"]
+    assert waiting, "待ったことが記録されていない"
+    assert waiting[0]["position"] > waiting[0]["last_position"]
 
 
 def test_no_change_when_nothing_advances(tmp_path):

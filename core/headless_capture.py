@@ -731,6 +731,16 @@ def resolve_shot_mode(page, *, selector=PAGE_IMAGE_SELECTOR):
         return SHOT_VIEWPORT
 
 
+# 本が先に進んでしまっているとき、描画が追いつくのを待つ回数と 1 回あたりの秒数 (#81)。
+# 押してはいけない場面なので、待つ以外にできることが無い。上限は必ず置く
+# （上限の無い待ちは「終わらない」であって「丁寧」ではない）。
+#
+# **待てば追いつくかどうかは未確認。** 効かなければ従来より短い本になるが、
+# 押して飛ばすよりは良い。短い本は短さで気づけるが、中抜けの本は気づけない。
+CATCHUP_WAITS = 3
+CATCHUP_WAIT = 5.0
+
+
 def capture_pages(
     page,
     save_dir,
@@ -767,6 +777,9 @@ def capture_pages(
     """
     prev = None
     total = 0
+    # 最後に保存したページを撮ったときの読書位置。本が先へ進んでしまっているかの
+    # 判断に使う (#81)
+    last_position = None
     while True:
         # 途中でセッションが切れると、サインイン画面を本文として保存してしまう
         if not is_signed_in(page.url):
@@ -777,18 +790,54 @@ def capture_pages(
         current = digest(shot)
 
         if prev is not None and current == prev:
+            # **押す前に、押す必要があるかを確かめる。**
+            #
+            # 画像が変わらない理由は 2 つある:
+            #   (a) 本が進んでいない（キーが飲まれた・最終ページ）→ 押す必要がある
+            #   (b) 本は進んだが描画が追いついていない → **押してはいけない**
+            #
+            # (b) で押すと、押した分だけ本が先へ進む。追いついた先から保存を続ける
+            # ので、間のページが落ちた本ができる。**欠けは後段で拾えない**
+            # （validate が見るのは白紙・重複・寸法だけで、欠落は見ない。ページ番号は
+            # 保存順の連番なので、飛んでも詰まって連続する）。短い本は短さで
+            # 気づけるが、中抜けの本は気づけない (#81)。
+            #
+            # 見分けるのに読書位置を使う。最後に保存したページの位置より先に
+            # 進んでいれば (b)。押さずに待つ。
             retried = 0
-            while retried < max_retries and current == prev:
-                retried += 1
-                emit(
-                    "status",
-                    human=f"ページ変化なし、めくり再送 ({retried}/{max_retries})",
-                    message=f"ページ変化なし、めくり再送 ({retried}/{max_retries})",
+            waited = 0
+            while current == prev and (retried < max_retries or waited < CATCHUP_WAITS):
+                position, _ = read_position_pair(page)
+                ahead = (
+                    position is not None and last_position is not None and position > last_position
                 )
-                # 途中で出たモーダルはキー入力を吸うので閉じてから押し直す
-                dismiss_dialogs(page)
-                page.keyboard.press(key)
-                page.wait_for_timeout(int(page_wait * 1000))
+                if ahead and waited < CATCHUP_WAITS:
+                    waited += 1
+                    emit(
+                        "capture_waiting",
+                        human=(
+                            f"{total} ページぶん保存済みですが本は位置 {position} まで"
+                            f"進んでいます。押さずに描画を待ちます（{waited}/{CATCHUP_WAITS}）"
+                        ),
+                        page=total,
+                        position=position,
+                        last_position=last_position,
+                        waited=waited,
+                    )
+                    page.wait_for_timeout(int(CATCHUP_WAIT * 1000))
+                elif retried < max_retries:
+                    retried += 1
+                    emit(
+                        "status",
+                        human=f"ページ変化なし、めくり再送 ({retried}/{max_retries})",
+                        message=f"ページ変化なし、めくり再送 ({retried}/{max_retries})",
+                    )
+                    # 途中で出たモーダルはキー入力を吸うので閉じてから押し直す
+                    dismiss_dialogs(page)
+                    page.keyboard.press(key)
+                    page.wait_for_timeout(int(page_wait * 1000))
+                else:
+                    break
                 shot, mode = page_shot(page)
                 current = digest(shot)
             if current == prev:
@@ -841,6 +890,9 @@ def capture_pages(
         with open(os.path.join(save_dir, filename), "wb") as f:
             f.write(shot)
         emit("page", human=f"Page {total}: {filename}", page=total, file=filename)
+        # このページを撮ったときの位置。次に画像が止まったとき、本が先へ
+        # 進んでしまっているかをこれと比べて見る (#81)
+        last_position, _ = read_position_pair(page)
 
         if max_pages and total >= max_pages:
             return total, "max_pages"
