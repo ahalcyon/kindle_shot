@@ -748,6 +748,24 @@ CATCHUP_WAITS = 3
 CATCHUP_WAIT = 5.0
 
 
+# 最終ページに達したとみなす、読み手側の位置の割合 (#79)。
+#
+# **実測 9 冊で決めた。** 最後まで撮れた本は、読み手側の位置が総量にほぼ到達する:
+#
+#      713/713   1731/1731   1387/1387   582/582   917/917   537/537   = 100%
+#     1458/1459  10882/10891                                           = 99.9%
+#
+# 途中で止まった本は大きく手前にある:
+#
+#     1446/2999 = 48%      15916/58503 = 27%
+#
+# 間が 48% と 99.9% で大きく空いているので、0.98 に置く。到達しない本が実在すれば
+# その本は毎回失敗するが、**黙って途中までの本を完成扱いにするよりはよい**
+# （batch は出力があるとスキップするので、完成扱いは確定する）。
+# 次のバッチで capture_stopped の position/book_total を必ず集計すること。
+END_OF_BOOK_RATIO = 0.98
+
+
 def capture_pages(
     page,
     save_dir,
@@ -887,6 +905,15 @@ def capture_pages(
                 # （viewport 撮影の本でダイアログが読めない場合など）ので、
                 # 検出できなかったぶんはログから拾い直すしかない
                 position, book_total = read_position_pair(page)
+                if (
+                    reason == "end_of_book"
+                    and position is not None
+                    and book_total
+                    and position < book_total * END_OF_BOOK_RATIO
+                ):
+                    # **読み手側がまだ終わりに達していない。最終ページではない。**
+                    # 位置が読めない本は判断材料が無いので従来どおり扱う
+                    reason = "short_of_end"
                 emit(
                     "capture_stopped",
                     human=f"{total} ページで停止しました（{reason}、位置 {position}/{book_total}）",
@@ -1625,6 +1652,15 @@ def run_headless_capture(
         return EXIT_ERROR
     if stopped_reason == "signin_required":
         emit_error(emit, f"{total} ページでセッションが切れたため中断しました")
+        return EXIT_ERROR
+    if stopped_reason == "short_of_end":
+        # **完成扱いにしない。** 0 で返すと batch が出力を見てスキップし、
+        # 途中までの本がそのまま確定する (#79)
+        emit_error(
+            emit,
+            f"{total} ページで止まりましたが、読み手側の位置は本の終わりに達していません。"
+            "最終ページではないので、この本は撮り直しが要ります",
+        )
         return EXIT_ERROR
     if stopped_reason == "reader_error":
         # **完成扱いにしない。** 0 で返すと batch が出力を見てスキップし、

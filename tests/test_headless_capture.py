@@ -444,7 +444,9 @@ def test_waiting_for_the_screen_has_a_bound(tmp_path):
     total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
     long_waits = [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000]
     assert len(long_waits) == CATCHUP_WAITS, f"待った回数が上限と違う: {len(long_waits)}"
-    assert reason == "end_of_book"
+    # 位置 30/1000 は本の終わりではないので short_of_end になる (#79)。
+    # このテストの主題は待ちの上限なので、そこだけ見る
+    assert reason == "short_of_end"
     assert total >= 1
 
 
@@ -2105,3 +2107,66 @@ def test_the_manifest_keeps_the_waits_and_gap_risks(tmp_path, monkeypatch):
     manifest = _json.loads((tmp_path / "t" / hc.MANIFEST_NAME).read_text(encoding="utf-8"))
     assert manifest["waits"] == [{"page": 3, "position": 30, "last_position": 20}]
     assert manifest["gap_risks"] == [{"page": 3, "position": 30, "last_position": 20}]
+
+
+# ------------------------------------------------------------
+# 読み手側の位置が終わりに達しているか (#79)
+# ------------------------------------------------------------
+
+
+def test_a_book_that_stops_short_is_not_the_end_of_the_book(tmp_path):
+    """位置が本の終わりに達していなければ、最終ページと呼ばない。
+
+    実測で、end_of_book は本の途中でも出る。合本の撮り直しでは位置 1446/2999
+    (48%) と 15916/58503 (27%) で「最終ページ」と判定された。リーダーのエラーも
+    出ず、ページ画像も消えていないので、#76 の 2 つの検出はどちらも発火しない。
+    **位置だけが手がかり。**
+    """
+    page = FakePage([b"a", b"b"], positions=[10, 1446], book_total=2999)
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert reason == "short_of_end"
+    assert total == 2
+
+
+def test_a_book_that_reaches_the_end_is_the_end_of_the_book(tmp_path):
+    """位置が総量に達していれば、これまでどおり最終ページ。
+
+    実測 9 冊のうち 6 冊がちょうど 100%、2 冊が 99.9% (1458/1459, 10882/10891)。
+    """
+    for position, book_total in ((713, 713), (1458, 1459), (10882, 10891)):
+        folder = tmp_path / f"{position}"
+        folder.mkdir()
+        page = FakePage([b"a", b"b"], positions=[1, position], book_total=book_total)
+        _, reason = capture_pages(page, str(folder), key="ArrowLeft", max_retries=2)
+        assert reason == "end_of_book", f"{position}/{book_total} を途中と判定している"
+
+
+def test_a_book_without_a_readable_position_is_left_alone(tmp_path):
+    """位置が読めない本は判断材料が無いので、従来どおり扱う。"""
+    page = FakePage([b"a", b"b"])
+    _, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert reason == "end_of_book"
+
+
+def test_a_reader_error_keeps_its_own_reason(tmp_path):
+    """リーダーが落ちた本は reader_error のまま。位置で上書きしない。"""
+    page = FakePage(
+        [b"a", b"b"],
+        positions=[10, 20],
+        book_total=1000,
+        alert="申し訳ありません。問題が発生しました",
+    )
+    _, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert reason == "reader_error"
+
+
+def test_stopping_short_does_not_exit_zero(tmp_path, monkeypatch):
+    """途中で止まった本を完成扱いにしない。
+
+    0 で返すと batch は出力があるものとしてスキップし、途中までの本がそのまま
+    確定する。
+    """
+    from core.pipeline import EXIT_ERROR
+
+    code = _run_with_stop_reason("short_of_end", tmp_path, monkeypatch)
+    assert code == EXIT_ERROR
