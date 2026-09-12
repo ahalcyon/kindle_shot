@@ -64,6 +64,10 @@ class FakePage:
         alert="",
         page_image_lost_at=None,
         leave_button=False,
+        positions=None,
+        book_total=None,
+        unstick_after_long_wait=False,
+        freeze_from_index=None,
     ):
         self.frames = list(frames)
         # 要素撮影で返す内容。省略時は frames と同じ（方式を変えても中身は同じ）
@@ -74,6 +78,7 @@ class FakePage:
         self.swallow = swallow
         # ページ画像の要素があるか（無い本はビューポート撮影にフォールバックする）
         self.page_image = page_image
+        self.waits: list[int] = []
         # 表示されているダイアログの文言（リーダーが落ちた状態の再現）
         self.alert = alert
         # この index 以降はページ画像の要素が消える（リーダーが落ちた形）
@@ -81,6 +86,20 @@ class FakePage:
         # 「ライブラリに戻る」しか無いダイアログが出ているか
         self.leave_button = leave_button
         self.dismissed = 0
+        # 読み手側が出す位置。frames と同じ長さで持つ
+        self.positions = list(positions) if positions else None
+        self.book_total = book_total
+        # 長く待つと描画が追いつく本（一過性の停滞の模擬。#79）
+        self.unstick_after_long_wait = unstick_after_long_wait
+        # この index 以降は画面が止まる（一過性の停滞）。長く待つと解ける。
+        # 複数渡すと、立ち直るたびに次の停滞が待っている本になる
+        if freeze_from_index is None:
+            self.freezes: list[int] = []
+        elif isinstance(freeze_from_index, int):
+            self.freezes = [freeze_from_index]
+        else:
+            self.freezes = list(freeze_from_index)
+        self.frozen_at = None
         self.shots: list[str] = []
 
         page = self
@@ -96,9 +115,17 @@ class FakePage:
 
         self.keyboard = Keyboard()
 
+    def _frame(self):
+        """停滞中は同じ画面を返す。長く待つと追いつく。"""
+        if self.frozen_at is None and self.freezes and self.index >= self.freezes[0]:
+            self.frozen_at = self.freezes[0]
+        if self.frozen_at is not None:
+            return self.frames[self.frozen_at]
+        return self.frames[self.index]
+
     def screenshot(self):
         self.shots.append("viewport")
-        return self.frames[self.index]
+        return self._frame()
 
     def locator(self, _selector):
         page = self
@@ -115,13 +142,25 @@ class FakePage:
 
             def screenshot(self):
                 page.shots.append("element")
-                frames = page.element_frames or page.frames
-                return frames[page.index]
+                if page.element_frames:
+                    idx = page.frozen_at if page.frozen_at is not None else page.index
+                    return page.element_frames[idx]
+                return page._frame()
+
+            def text_content(self):
+                if page.positions is None:
+                    return ""
+                pos = page.positions[min(page.index, len(page.positions) - 1)]
+                return f"{pos}/{page.book_total}ページ"
 
         return Loc()
 
-    def wait_for_timeout(self, _ms):
-        pass
+    def wait_for_timeout(self, ms):
+        self.waits.append(ms)
+        # 長く待つと描画が追いつく（一過性の停滞から立ち直る本の模擬）
+        if self.unstick_after_long_wait and ms >= 10000 and self.frozen_at is not None:
+            self.frozen_at = None
+            self.freezes.pop(0)
 
     def add_style_tag(self, **_kw):
         """UI を隠す CSS の注入。撮影内容には影響しないので何もしない。"""
@@ -1839,3 +1878,79 @@ def test_the_position_after_closing_the_dialog_is_the_one_adopted():
     assert jumped["after"] == 150, "閉じる前の位置を基準にしている"
     assert ok is True
     assert page.position == 1
+
+
+def test_a_transient_stall_before_the_end_is_not_the_end_of_the_book(tmp_path):
+    """画像が止まっても、読み手側の位置が終わりでなければ粘る (#79)。
+
+    実測: 合本の撮り直しで位置 1237/2999 (41%) と 14541/58503 (25%) が
+    「最終ページ」と判定された。**その本は壊れていない。** あとから同じ位置を
+    開いて送ると普通に進み、止まった地点の前後 16 ページはすべて別画像だった。
+    一過性の停滞で、3 回の素早い再送では足りなかっただけ。
+    """
+    page = FakePage(
+        [b"a", b"b", b"c", b"d", b"e", b"f"],
+        positions=[10, 20, 30, 40, 50, 60],
+        book_total=1000,
+        freeze_from_index=2,
+        unstick_after_long_wait=True,
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
+    # 粘らないと c で打ち切られて 3 ページ。立ち直れば その先の f まで撮れる
+    assert total == 4, f"停滞で打ち切られている（{total} ページ）"
+    assert (tmp_path / "004.png").read_bytes() == b"f"
+    assert reason == "end_of_book"
+
+
+def test_no_extra_waiting_at_the_real_end_of_the_book(tmp_path):
+    """位置が総量に達していれば粘らない。
+
+    本当の最終ページで毎回 30 秒待つと 342 冊で 3 時間増える。実測では
+    最後まで撮れた本が position == book_total ちょうどで終わっている。
+    """
+    page = FakePage([b"a", b"b"], positions=[500, 1000], book_total=1000)
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert (total, reason) == (2, "end_of_book")
+    assert [ms for ms in page.waits if ms >= 10000] == [], "最終ページで長く待っている"
+
+
+def test_the_stall_is_reported(tmp_path):
+    """粘ったことをログに残す。どの本が際どかったかを後から見られるように。"""
+    events = []
+    page = FakePage(
+        [b"a", b"b", b"c", b"d"],
+        positions=[10, 20, 30, 40],
+        book_total=1000,
+        freeze_from_index=2,
+        unstick_after_long_wait=True,
+    )
+    capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        max_retries=3,
+        emit=lambda name, **kw: events.append((name, kw)),
+    )
+    stalled = [kw for n, kw in events if n == "capture_stalled"]
+    assert stalled, "粘ったことが記録されていない"
+    assert stalled[0]["book_total"] == 1000
+
+
+def test_patience_is_restored_after_each_recovered_page(tmp_path, monkeypatch):
+    """立ち直るたびに粘りを戻す。
+
+    上限は「立て続けに立ち直れなかった回数」であって、本ぜんたいの回数ではない。
+    戻さないと、長い本ほど一過性の停滞に当たりやすいのに早く力尽きる。
+    """
+    # 上限 1 回にして、停滞 2 回を通す。戻さなければ 2 回目で力尽きる
+    monkeypatch.setattr("core.headless_capture.STALL_PATIENCE", 1)
+    page = FakePage(
+        [b"a", b"b", b"c", b"d", b"e", b"f", b"g", b"h"],
+        positions=[10, 20, 30, 40, 50, 60, 70, 80],
+        book_total=1000,
+        freeze_from_index=[2, 5],
+        unstick_after_long_wait=True,
+    )
+    total, _ = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
+    assert total >= 4, f"2 回目の停滞で力尽きている（{total} ページ）"
+    assert (tmp_path / f"{total:03d}.png").read_bytes() == b"h"

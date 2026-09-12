@@ -731,6 +731,22 @@ def resolve_shot_mode(page, *, selector=PAGE_IMAGE_SELECTOR):
         return SHOT_VIEWPORT
 
 
+# 画像が変わらなくなったとき、**読み手側の位置がまだ終わりに達していなければ**
+# 粘る回数と待ち時間 (#79)。
+#
+# 実測で、`end_of_book` は本の途中でも出る。合本 4 冊の撮り直しでは
+# 位置 1237/2999 (41%) と 14541/58503 (25%) で「最終ページ」と判定された。
+# ところが**その本は壊れていない**。あとから同じ位置を開いて送ると普通に進み、
+# 止まった地点の前後 16 ページはすべて別画像だった。つまり一過性の停滞で、
+# 3 回の素早い再送では足りなかっただけ。
+#
+# 位置が総量に達していれば粘らない。本当の最終ページで毎回 30 秒待つと
+# 342 冊で 3 時間増える。実測では最後まで撮れた本が position == book_total
+# ちょうどで終わっている。
+STALL_PATIENCE = 3
+STALL_WAIT = 10.0
+
+
 def capture_pages(
     page,
     save_dir,
@@ -767,6 +783,7 @@ def capture_pages(
     """
     prev = None
     total = 0
+    patience = 0
     while True:
         # 途中でセッションが切れると、サインイン画面を本文として保存してしまう
         if not is_signed_in(page.url):
@@ -791,6 +808,32 @@ def capture_pages(
                 page.wait_for_timeout(int(page_wait * 1000))
                 shot, mode = page_shot(page)
                 current = digest(shot)
+            if current == prev and patience < STALL_PATIENCE:
+                # **読み手側の位置がまだ終わりに達していないなら、もう少し粘る。**
+                # 一過性の停滞を最終ページと呼ばないため (#79)
+                position, book_total = read_position_pair(page)
+                if (
+                    position is not None
+                    and book_total is not None
+                    and position < book_total
+                    and not reader_error_text(page)
+                ):
+                    patience += 1
+                    emit(
+                        "capture_stalled",
+                        human=(
+                            f"{total} ページで画像が変わらなくなりましたが、"
+                            f"位置 {position}/{book_total} は終わりではありません。"
+                            f"待って撮り直します（{patience}/{STALL_PATIENCE}）"
+                        ),
+                        page=total,
+                        position=position,
+                        book_total=book_total,
+                    )
+                    page.wait_for_timeout(int(STALL_WAIT * 1000))
+                    shot, mode = page_shot(page)
+                    current = digest(shot)
+
             if current == prev:
                 # **「変わらない」の理由を確かめてから最終ページと呼ぶ。**
                 # リーダーが落ちるとページ画像が消え、静止した画面を撮り続けるので
@@ -828,6 +871,9 @@ def capture_pages(
                 return total, reason
 
         total += 1
+        # 1 ページ進めたら粘りを戻す。上限は「立て続けに立ち直れなかった回数」で、
+        # 本ぜんたいの回数ではない。長い本ほど一過性の停滞に当たりやすい
+        patience = 0
         filename = f"{total:03d}.png"
         if expect_mode is not None and mode != expect_mode:
             # status ではなく専用のイベントにする。ログを grep するだけで
