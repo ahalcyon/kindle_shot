@@ -427,6 +427,8 @@ def build_manifest(
     shot_mode_changed=None,
     rewind=None,
     stopped_at=None,
+    waits=None,
+    gap_risks=None,
 ):
     """run_capture が書くものと同じ形の manifest を組み立てる。"""
     return {
@@ -455,6 +457,11 @@ def build_manifest(
         # 撮影が止まったときの位置。最終ページまで行った本は position が
         # book_total の近くにあり、途中で止まった本は大きく手前にある (#76)
         "stopped_at": stopped_at or {},
+        # 押さずに描画を待った箇所 (#81)
+        "waits": waits or [],
+        # 待っても追いつかず押し直した箇所。**中抜けの疑いがある本の目印**。
+        # ここが空でない本は、撮り直すか中身を見る価値がある
+        "gap_risks": gap_risks or [],
         "total_pages": total,
         "save_dir": save_dir,
         "stopped_reason": stopped_reason,
@@ -731,6 +738,16 @@ def resolve_shot_mode(page, *, selector=PAGE_IMAGE_SELECTOR):
         return SHOT_VIEWPORT
 
 
+# 本が先に進んでしまっているとき、描画が追いつくのを待つ回数と 1 回あたりの秒数 (#81)。
+# 押してはいけない場面なので、待つ以外にできることが無い。上限は必ず置く
+# （上限の無い待ちは「終わらない」であって「丁寧」ではない）。
+#
+# **待てば追いつくかどうかは未確認。** 効かなければ従来より短い本になるが、
+# 押して飛ばすよりは良い。短い本は短さで気づけるが、中抜けの本は気づけない。
+CATCHUP_WAITS = 3
+CATCHUP_WAIT = 5.0
+
+
 def capture_pages(
     page,
     save_dir,
@@ -767,6 +784,9 @@ def capture_pages(
     """
     prev = None
     total = 0
+    # 最後に保存したページを撮ったときの読書位置。本が先へ進んでしまっているかの
+    # 判断に使う (#81)
+    last_position = None
     while True:
         # 途中でセッションが切れると、サインイン画面を本文として保存してしまう
         if not is_signed_in(page.url):
@@ -777,18 +797,75 @@ def capture_pages(
         current = digest(shot)
 
         if prev is not None and current == prev:
+            # **押す前に、押す必要があるかを確かめる。**
+            #
+            # 画像が変わらない理由は 2 つある:
+            #   (a) 本が進んでいない（キーが飲まれた・最終ページ）→ 押す必要がある
+            #   (b) 本は進んだが描画が追いついていない → **押してはいけない**
+            #
+            # (b) で押すと、押した分だけ本が先へ進む。追いついた先から保存を続ける
+            # ので、間のページが落ちた本ができる。**欠けは後段で拾えない**
+            # （validate が見るのは白紙・重複・寸法だけで、欠落は見ない。ページ番号は
+            # 保存順の連番なので、飛んでも詰まって連続する）。短い本は短さで
+            # 気づけるが、中抜けの本は気づけない (#81)。
+            #
+            # 見分けるのに読書位置を使う。最後に保存したページの位置より先に
+            # 進んでいれば (b)。押さずに待つ。
             retried = 0
-            while retried < max_retries and current == prev:
-                retried += 1
-                emit(
-                    "status",
-                    human=f"ページ変化なし、めくり再送 ({retried}/{max_retries})",
-                    message=f"ページ変化なし、めくり再送 ({retried}/{max_retries})",
+            waited = 0
+            while current == prev and (retried < max_retries or waited < CATCHUP_WAITS):
+                position, _ = read_position_pair(page)
+                ahead = (
+                    position is not None and last_position is not None and position > last_position
                 )
-                # 途中で出たモーダルはキー入力を吸うので閉じてから押し直す
-                dismiss_dialogs(page)
-                page.keyboard.press(key)
-                page.wait_for_timeout(int(page_wait * 1000))
+                if ahead and waited < CATCHUP_WAITS:
+                    waited += 1
+                    emit(
+                        "capture_waiting",
+                        human=(
+                            f"{total} ページぶん保存済みですが本は位置 {position} まで"
+                            f"進んでいます。押さずに描画を待ちます（{waited}/{CATCHUP_WAITS}）"
+                        ),
+                        page=total,
+                        position=position,
+                        last_position=last_position,
+                        waited=waited,
+                    )
+                    page.wait_for_timeout(int(CATCHUP_WAIT * 1000))
+                elif retried < max_retries:
+                    if ahead:
+                        # **待っても追いつかなかったが、それでも押す。**
+                        # 画素からは「描画が遅れている」と「同じ見た目のページが
+                        # 続いている（白紙・章扉）」を区別できない。押さずに
+                        # 打ち切ると、白紙が続く本をそこで切ってしまう。
+                        #
+                        # だが押せば本は先へ進むので、**ここから先は中抜けの
+                        # 可能性がある**。黙って進めない。記録して、あとから
+                        # 洗えるようにする（#81）。
+                        emit(
+                            "capture_gap_risk",
+                            human=(
+                                f"{total} ページまで保存した時点で本は位置 {position} "
+                                f"（保存時 {last_position}）まで進んでおり、待っても"
+                                "画面が追いつきませんでした。押し直すので、"
+                                "ここでページが抜けた可能性があります"
+                            ),
+                            page=total,
+                            position=position,
+                            last_position=last_position,
+                        )
+                    retried += 1
+                    emit(
+                        "status",
+                        human=f"ページ変化なし、めくり再送 ({retried}/{max_retries})",
+                        message=f"ページ変化なし、めくり再送 ({retried}/{max_retries})",
+                    )
+                    # 途中で出たモーダルはキー入力を吸うので閉じてから押し直す
+                    dismiss_dialogs(page)
+                    page.keyboard.press(key)
+                    page.wait_for_timeout(int(page_wait * 1000))
+                else:
+                    break
                 shot, mode = page_shot(page)
                 current = digest(shot)
             if current == prev:
@@ -841,6 +918,9 @@ def capture_pages(
         with open(os.path.join(save_dir, filename), "wb") as f:
             f.write(shot)
         emit("page", human=f"Page {total}: {filename}", page=total, file=filename)
+        # このページを撮ったときの位置。次に画像が止まったとき、本が先へ
+        # 進んでしまっているかをこれと比べて見る (#81)
+        last_position, _ = read_position_pair(page)
 
         if max_pages and total >= max_pages:
             return total, "max_pages"
@@ -1339,6 +1419,8 @@ def run_headless_capture(
     shot_mode_changed: list = []
     rewind_info: dict = {}
     stopped_at: dict = {}
+    waits: list = []
+    gap_risks: list = []
 
     def note(event, human=None, **fields):
         """manifest に残す情報を控えつつ、そのまま emit する。
@@ -1356,6 +1438,12 @@ def run_headless_capture(
                     for k in ("ok", "presses", "position", "total", "reason", "via_toc", "jumps")
                 }
             )
+        if event == "capture_waiting":
+            waits.append({k: fields.get(k) for k in ("page", "position", "last_position")})
+        if event == "capture_gap_risk":
+            # **中抜けの疑いがある箇所。** 押さずに打ち切ると白紙が続く本を
+            # 切ってしまうので押すが、黙って進めない (#81)
+            gap_risks.append({k: fields.get(k) for k in ("page", "position", "last_position")})
         if event == "capture_stopped":
             stopped_at.update(
                 {k: fields.get(k) for k in ("page", "reason", "position", "book_total")}
@@ -1381,6 +1469,8 @@ def run_headless_capture(
             shot_mode_changed=shot_mode_changed,
             rewind=rewind_info,
             stopped_at=stopped_at,
+            waits=waits,
+            gap_risks=gap_risks,
         )
         path = os.path.join(save_dir, MANIFEST_NAME)
         with open(path, "w", encoding="utf-8") as f:
