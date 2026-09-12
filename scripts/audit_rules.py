@@ -24,10 +24,23 @@
 3. **少数の壊れ**。既定の ``--min-count 3`` では 1〜2 件の壊れは挙がらない
 
 **置換後にまだ誤読が残るもの**（#68）には ★ を付ける。大書きの 1 文字を小書きに
-直した形がコーパスに出てくれば、そちらが本来の綴り。ただし**コーパス全体に聞く**
-ので、別の本の綴りを勧めることがある。採用する前に、同じ本の中での出現数を見ること
-（`grep -c` で足りる）。実際 `ウエッジウッド` は 3 冊とも `ウェッジウッド` が
-圧倒的だったので直したが、逆の本があれば直してはいけない。
+直した形がコーパスに出てくれば、そちらが本来の綴り。
+
+この判定にも見えないものがある。
+
+4. **置換後の形がコーパスに在ると、★ は付かない**。`suspicious` は
+   ``after in present`` で先に落とすため。コーパス自体が OCR の出力なので、
+   誤読形がそこに在ることは普通にある。判定が循環している
+5. **小書きに直すのは 1 文字だけ**。提案する「あるべき形」自体がまだ誤読でありうる
+   （`mine_misreads.corrected` は同じ理由で総当たりにしている）
+6. **コーパス全体に聞く**ので、別の本の綴りを勧めることがある。採用する前に、
+   同じ本の中での出現数を見ること（`grep -c` で足りる）。実際 `ウエッジウッド` は
+   3 冊とも `ウェッジウッド` が圧倒的だったので直したが、逆の本があれば直しては
+   いけない
+
+4 はコーパスに聞かない判定で塞げる。**置換を 2 回かけて変わるなら、1 回目の出力に
+まだ規則が当たる＝直りきっていない**（「収束していない規則」として別に出す）。
+コーパスの内容に依存しないので、4 の循環に引っかからない。
 
 読み込みの際、改行以外の空白を落とす (mine_misreads.load_corpus)。そのぶん
 空白で区切られたカタカナが 1 連続に融着するので、文字数は本番と一致しない。
@@ -75,7 +88,8 @@ def suspicious(runs, replacer, *, min_count):
         if after == run or after in present:
             continue
         found.append((count, run, after, still_misread(after, present)))
-    found.sort(reverse=True)
+    # 件数の降順、同数なら語順。4 番目は None でありうるので比較に混ぜない
+    found.sort(key=lambda row: (-row[0], row[1]))
     return found
 
 
@@ -94,6 +108,34 @@ SMALL_KANA = {
 }
 
 
+def not_settled(runs, replacer, *, min_count):
+    """置換を 2 回かけると変わる連続を返す。1 回で直りきっていない規則。
+
+    Returns: [(count, before, once, twice), ...]
+
+    **コーパスに聞かない。** 置換後の形がコーパスに在るかどうかと無関係に、
+    規則の側だけで決まる。`still_misread` が見られない形（置換後の形が
+    コーパスに在るために `suspicious` で落ちるもの）をここで拾う。
+
+    長いキーが先に当たり、短いキーの出番が来ないまま右辺に誤読が残ると、
+    もう一度かけたときに短いキーが当たって変わる。実例 (#68):
+
+        ウエツジウッド -> ウエッジウッド -> ウェッジウッド
+
+    1 回目の出力 `ウエッジウッド` は辞書自身が「誤り」と宣言している形。
+    """
+    found = []
+    for run, count in runs.items():
+        if count < min_count:
+            continue
+        once = replacer.apply(run)
+        twice = replacer.apply(once)
+        if twice != once:
+            found.append((count, run, once, twice))
+    found.sort(key=lambda row: (-row[0], row[1]))
+    return found
+
+
 def still_misread(after, present):
     """置換後の形にまだ誤読が残っていないか。残っていれば「あるべき形」を返す。
 
@@ -109,7 +151,9 @@ def still_misread(after, present):
     出てくるなら、そちらが本来の綴り。出てこなければ何も言わない（固有名詞や
     造語を勝手に直さない）。
     """
-    for i, ch in enumerate(after):
+    # 先頭の 1 文字は対象外。小書きのカナが語頭に来ることは無い
+    # (mine_misreads.corrected が同じ理由で同じ除外をしている)
+    for i, ch in enumerate(after[1:], start=1):
         small = SMALL_KANA.get(ch)
         if small is None:
             continue
@@ -182,19 +226,36 @@ def main(argv=None):
         return 0
 
     found = suspicious(runs, replacer, min_count=args.min_count)
+    unsettled = not_settled(runs, replacer, min_count=args.min_count)
     if args.as_json:
         json.dump(
-            [{"count": c, "before": b, "after": a, "should_be": fix} for c, b, a, fix in found],
+            {
+                "suspicious": [
+                    {"count": c, "before": b, "after": a, "should_be": fix}
+                    for c, b, a, fix in found
+                ],
+                "not_settled": [
+                    {"count": c, "before": b, "once": o, "twice": t} for c, b, o, t in unsettled
+                ],
+            },
             sys.stdout,
             ensure_ascii=False,
             indent=2,
         )
         print()
         return 0
+    if unsettled:
+        # コーパスに聞かない判定なので、要確認より先に出す。直りきっていない
+        # ことが規則の側だけで分かっている
+        print(f"収束していない規則 {len(unsettled)} 件（置換を 2 回かけると変わる）")
+        for c, b, once, twice in unsettled:
+            print(f"{c:6d}  {b}  ->  {once}  ->  {twice}")
+        print()
+
     half = [row for row in found if row[3]]
     print(f"要確認 {len(found)} 件（置換後の形がコーパスに出てこないもの）")
     for c, b, a, fix in found:
-        note = f"   ★まだ誤読が残る（コーパスは {fix}）" if fix else ""
+        note = f"   ★まだ誤読が残る（コーパスは {fix} が {runs[fix]} 件）" if fix else ""
         print(f"{c:6d}  {b}  ->  {a}{note}")
     if half:
         print()
