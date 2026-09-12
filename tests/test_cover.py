@@ -120,9 +120,11 @@ def test_a_book_without_a_cover_still_converts(tmp_path):
     )
     assert os.listdir(tmp_path) == ["001.png"]
     # 「取れなかった」と「置けなかった」を区別して報告する
-    assert [kw["human"] for name, kw in events if name == "cover"] == [
+    cover_events = [kw for name, kw in events if name == "cover"]
+    assert [kw["human"] for kw in cover_events] == [
         "表紙を取得できませんでした（本文だけで続けます）"
     ]
+    assert [kw["added"] for kw in cover_events] == [False]
 
 
 def test_a_missing_folder_is_not_an_error(tmp_path):
@@ -257,9 +259,10 @@ def test_adding_the_cover_is_reported(tmp_path):
         fetch=lambda _a: _png((1021, 1500)),
         emit=lambda name, **kw: events.append((name, kw)),
     )
-    assert [kw["human"] for name, kw in events if name == "cover"] == [
-        "表紙を 1 ページ目にしました（1600x1200）"
-    ]
+    cover_events = [kw for name, kw in events if name == "cover"]
+    assert [kw["human"] for kw in cover_events] == ["表紙を 1 ページ目にしました（1600x1200）"]
+    # **human は --json の出力に入らない。** 判定に使えるのは構造化した値だけ
+    assert [kw["added"] for kw in cover_events] == [True]
 
 
 # ------------------------------------------------------------

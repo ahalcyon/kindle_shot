@@ -240,6 +240,7 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
         errors="replace",
         env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
     )
+    covered = False
     for line in proc.stdout.splitlines():
         if not line.strip():
             continue
@@ -252,13 +253,13 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
             # 表紙を足したかどうかで PDF のページ数が 1 増える。**取れなかった
             # ときだけ緑になる**のは、ゲートの成否が外部サービスの機嫌で変わる
             # ということで、#50 で問題にした偽陰性と同じ形 (#27)
-            covered = "1 ページ目にしました" in (event.get("human") or "")
+            # **human ではなく added を見る。** human は --json の出力に入らない
+            covered = bool(event.get("added"))
         if event.get("event") in ("error", "run_summary", "result", "cover"):
             echo(f"  [{event['event']}] {json.dumps(event, ensure_ascii=False)}")
 
     problems = []
     retryable = False
-    covered = False
     if proc.returncode != 0:
         problems.append(f"cli.py run が終了コード {proc.returncode} で失敗")
         if proc.stderr.strip():
