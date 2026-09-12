@@ -427,6 +427,7 @@ def build_manifest(
     shot_mode_changed=None,
     rewind=None,
     stopped_at=None,
+    stalls=None,
 ):
     """run_capture が書くものと同じ形の manifest を組み立てる。"""
     return {
@@ -455,6 +456,8 @@ def build_manifest(
         # 撮影が止まったときの位置。最終ページまで行った本は position が
         # book_total の近くにあり、途中で止まった本は大きく手前にある (#76)
         "stopped_at": stopped_at or {},
+        # 画像が止まって待ち直した箇所。**中抜けの疑いがある本の目印** (#79)
+        "stalls": stalls or [],
         "total_pages": total,
         "save_dir": save_dir,
         "stopped_reason": stopped_reason,
@@ -732,17 +735,22 @@ def resolve_shot_mode(page, *, selector=PAGE_IMAGE_SELECTOR):
 
 
 # 画像が変わらなくなったとき、**読み手側の位置がまだ終わりに達していなければ**
-# 粘る回数と待ち時間 (#79)。
+# 押さずに待つ回数と待ち時間 (#79)。最悪 3 x 10 = 30 秒。
 #
 # 実測で、`end_of_book` は本の途中でも出る。合本 4 冊の撮り直しでは
 # 位置 1237/2999 (41%) と 14541/58503 (25%) で「最終ページ」と判定された。
-# ところが**その本は壊れていない**。あとから同じ位置を開いて送ると普通に進み、
-# 止まった地点の前後 16 ページはすべて別画像だった。つまり一過性の停滞で、
-# 3 回の素早い再送では足りなかっただけ。
+# ところが**その本は壊れていない**。あとから同じ位置を開いて送ると普通に進み
+# (1239, 1241, 1243...)、止まった地点の前後 16 ページはすべて別画像だった。
 #
-# 位置が総量に達していれば粘らない。本当の最終ページで毎回 30 秒待つと
+# **待てば直るかどうかは未確認。** 実機で観測したのは「本は壊れていない」ことと
+# 「押したあと位置と画像は同じ 120ms のサンプルで変わる（描画の遅れではない）」
+# ことまでで、**待ったら直った、は見ていない**。停滞の正体は分かっていない。
+# 押さずに待つ形にしてあるので、効かなくても従来と同じ結果になるだけで悪化はしない。
+# 効いたかどうかは次のバッチの capture_stalled と capture_stopped で分かる。
+#
+# 位置が総量に達していれば待たない。本当の最終ページで毎回 30 秒待つと
 # 342 冊で 3 時間増える。実測では最後まで撮れた本が position == book_total
-# ちょうどで終わっている。
+# ちょうどで終わっている（ただし 4 冊中 1 冊しか標本が無い）。
 STALL_PATIENCE = 3
 STALL_WAIT = 10.0
 
@@ -783,7 +791,6 @@ def capture_pages(
     """
     prev = None
     total = 0
-    patience = 0
     while True:
         # 途中でセッションが切れると、サインイン画面を本文として保存してしまう
         if not is_signed_in(page.url):
@@ -794,6 +801,38 @@ def capture_pages(
         current = digest(shot)
 
         if prev is not None and current == prev:
+            # **まず押さずに待つ。** 再送ループはキーを押すので、描画が遅れて
+            # いるだけだった場合は押した分だけ本が進み、**ページが飛ぶ**。
+            # 飛んだページは後段で拾えない（validator が見るのは白紙・重複・
+            # 寸法だけで、欠けは見ない）ので、短い本より悪い「中抜けの本」に
+            # なる。待つだけなら飛ばしようがない (#79)。
+            #
+            # 読み手側の位置が終わりに達していれば待たない。本当の最終ページで
+            # 毎回待つと 342 冊ぶんの時間が丸ごと増える。
+            waited = 0
+            while waited < STALL_PATIENCE and current == prev:
+                position, book_total = read_position_pair(page)
+                if position is None or book_total is None or position >= book_total:
+                    break
+                if reader_error_text(page):
+                    break
+                waited += 1
+                emit(
+                    "capture_stalled",
+                    human=(
+                        f"{total} ページで画像が変わらなくなりましたが、"
+                        f"位置 {position}/{book_total} は終わりではありません。"
+                        f"押さずに待って撮り直します（{waited}/{STALL_PATIENCE}）"
+                    ),
+                    page=total,
+                    position=position,
+                    book_total=book_total,
+                    waited=waited,
+                )
+                page.wait_for_timeout(int(STALL_WAIT * 1000))
+                shot, mode = page_shot(page)
+                current = digest(shot)
+
             retried = 0
             while retried < max_retries and current == prev:
                 retried += 1
@@ -808,31 +847,6 @@ def capture_pages(
                 page.wait_for_timeout(int(page_wait * 1000))
                 shot, mode = page_shot(page)
                 current = digest(shot)
-            if current == prev and patience < STALL_PATIENCE:
-                # **読み手側の位置がまだ終わりに達していないなら、もう少し粘る。**
-                # 一過性の停滞を最終ページと呼ばないため (#79)
-                position, book_total = read_position_pair(page)
-                if (
-                    position is not None
-                    and book_total is not None
-                    and position < book_total
-                    and not reader_error_text(page)
-                ):
-                    patience += 1
-                    emit(
-                        "capture_stalled",
-                        human=(
-                            f"{total} ページで画像が変わらなくなりましたが、"
-                            f"位置 {position}/{book_total} は終わりではありません。"
-                            f"待って撮り直します（{patience}/{STALL_PATIENCE}）"
-                        ),
-                        page=total,
-                        position=position,
-                        book_total=book_total,
-                    )
-                    page.wait_for_timeout(int(STALL_WAIT * 1000))
-                    shot, mode = page_shot(page)
-                    current = digest(shot)
 
             if current == prev:
                 # **「変わらない」の理由を確かめてから最終ページと呼ぶ。**
@@ -871,9 +885,6 @@ def capture_pages(
                 return total, reason
 
         total += 1
-        # 1 ページ進めたら粘りを戻す。上限は「立て続けに立ち直れなかった回数」で、
-        # 本ぜんたいの回数ではない。長い本ほど一過性の停滞に当たりやすい
-        patience = 0
         filename = f"{total:03d}.png"
         if expect_mode is not None and mode != expect_mode:
             # status ではなく専用のイベントにする。ログを grep するだけで
@@ -1385,6 +1396,7 @@ def run_headless_capture(
     shot_mode_changed: list = []
     rewind_info: dict = {}
     stopped_at: dict = {}
+    stalls: list = []
 
     def note(event, human=None, **fields):
         """manifest に残す情報を控えつつ、そのまま emit する。
@@ -1402,6 +1414,10 @@ def run_headless_capture(
                     for k in ("ok", "presses", "position", "total", "reason", "via_toc", "jumps")
                 }
             )
+        if event == "capture_stalled":
+            # 粘った本＝中抜けの疑いがある本。**標準出力にしか無いと、
+            # ログを捨てた時点で追えなくなる** (#72 と同じ理由)
+            stalls.append({k: fields.get(k) for k in ("page", "position", "book_total")})
         if event == "capture_stopped":
             stopped_at.update(
                 {k: fields.get(k) for k in ("page", "reason", "position", "book_total")}
@@ -1427,6 +1443,7 @@ def run_headless_capture(
             shot_mode_changed=shot_mode_changed,
             rewind=rewind_info,
             stopped_at=stopped_at,
+            stalls=stalls,
         )
         path = os.path.join(save_dir, MANIFEST_NAME)
         with open(path, "w", encoding="utf-8") as f:

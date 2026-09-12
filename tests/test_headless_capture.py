@@ -20,8 +20,11 @@ from core.headless_capture import (
     DISMISS_ALERTS_JS,
     LEAVE_BUTTON_JS,
     MAX_START_POSITION,
+    POSITION_SELECTOR,
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
+    STALL_PATIENCE,
+    STALL_WAIT,
     TOC_ITEM_SELECTOR,
     _keys_respond,
     _still_at_start,
@@ -67,6 +70,7 @@ class FakePage:
         positions=None,
         book_total=None,
         unstick_after_long_wait=False,
+        waits_needed=1,
         freeze_from_index=None,
     ):
         self.frames = list(frames)
@@ -91,6 +95,10 @@ class FakePage:
         self.book_total = book_total
         # 長く待つと描画が追いつく本（一過性の停滞の模擬。#79）
         self.unstick_after_long_wait = unstick_after_long_wait
+        # 何回長く待てば描画が追いつくか。1 回で必ず解ける模擬だけだと、
+        # 粘りの上限が効いているかを確かめられない
+        self.waits_needed = waits_needed
+        self._waited = 0
         # この index 以降は画面が止まる（一過性の停滞）。長く待つと解ける。
         # 複数渡すと、立ち直るたびに次の停滞が待っている本になる
         if freeze_from_index is None:
@@ -127,8 +135,28 @@ class FakePage:
         self.shots.append("viewport")
         return self._frame()
 
-    def locator(self, _selector):
+    def locator(self, selector):
         page = self
+
+        if selector == POSITION_SELECTOR:
+            # **ページ画像とは別の要素。** 同じ Loc にすると、リーダーが落ちた
+            # 模擬（page_image_lost_at）で位置ラベルまで読めなくなり、
+            # 「落ちているが位置は読める」という実機の形をテストで表せない
+            class PositionLoc:
+                def count(self):
+                    return 0 if page.positions is None else 1
+
+                @property
+                def first(self):
+                    return self
+
+                def text_content(self):
+                    if page.positions is None:
+                        return ""
+                    pos = page.positions[min(page.index, len(page.positions) - 1)]
+                    return f"{pos}/{page.book_total}ページ"
+
+            return PositionLoc()
 
         class Loc:
             def count(self):
@@ -147,20 +175,17 @@ class FakePage:
                     return page.element_frames[idx]
                 return page._frame()
 
-            def text_content(self):
-                if page.positions is None:
-                    return ""
-                pos = page.positions[min(page.index, len(page.positions) - 1)]
-                return f"{pos}/{page.book_total}ページ"
-
         return Loc()
 
     def wait_for_timeout(self, ms):
         self.waits.append(ms)
         # 長く待つと描画が追いつく（一過性の停滞から立ち直る本の模擬）
-        if self.unstick_after_long_wait and ms >= 10000 and self.frozen_at is not None:
-            self.frozen_at = None
-            self.freezes.pop(0)
+        if self.unstick_after_long_wait and ms >= STALL_WAIT * 1000 and self.frozen_at is not None:
+            self._waited += 1
+            if self._waited >= self.waits_needed:
+                self._waited = 0
+                self.frozen_at = None
+                self.freezes.pop(0)
 
     def add_style_tag(self, **_kw):
         """UI を隠す CSS の注入。撮影内容には影響しないので何もしない。"""
@@ -1896,9 +1921,13 @@ def test_a_transient_stall_before_the_end_is_not_the_end_of_the_book(tmp_path):
         unstick_after_long_wait=True,
     )
     total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
-    # 粘らないと c で打ち切られて 3 ページ。立ち直れば その先の f まで撮れる
-    assert total == 4, f"停滞で打ち切られている（{total} ページ）"
-    assert (tmp_path / "004.png").read_bytes() == b"f"
+    # **押さずに待つので 1 ページも飛ばない。** 再送ループを先に回すと、
+    # 押した分だけ本が進んで d と e が落ち、中抜けの本になる。
+    # 欠けは後段で拾えない（validator は白紙・重複・寸法しか見ない）ので、
+    # 短い本より悪い
+    saved = [(tmp_path / n).read_bytes() for n in sorted(p.name for p in tmp_path.iterdir())]
+    assert saved == [b"a", b"b", b"c", b"d", b"e", b"f"], "停滞の前後でページが飛んでいる"
+    assert total == 6
     assert reason == "end_of_book"
 
 
@@ -1952,5 +1981,74 @@ def test_patience_is_restored_after_each_recovered_page(tmp_path, monkeypatch):
         unstick_after_long_wait=True,
     )
     total, _ = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
-    assert total >= 4, f"2 回目の停滞で力尽きている（{total} ページ）"
-    assert (tmp_path / f"{total:03d}.png").read_bytes() == b"h"
+    assert total == 8, f"2 回目の停滞で力尽きている（{total} ページ）"
+    assert (tmp_path / "008.png").read_bytes() == b"h"
+
+
+def test_waiting_gives_up_after_the_bound(tmp_path):
+    """待つ回数には上限がある。立ち直らなければ従来どおり打ち切る。
+
+    上限が効いていないと、立ち直らない本で待ち続ける。
+    """
+    page = FakePage(
+        [b"a", b"b", b"c", b"d", b"e"],
+        positions=[10, 20, 30, 40, 50],
+        book_total=1000,
+        freeze_from_index=2,
+        unstick_after_long_wait=True,
+        waits_needed=STALL_PATIENCE + 1,
+    )
+    total, _ = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
+    assert total == 3, "立ち直らない本で撮り続けている"
+    long_waits = [ms for ms in page.waits if ms >= STALL_WAIT * 1000]
+    assert len(long_waits) == STALL_PATIENCE, f"待った回数が上限と違う: {len(long_waits)}"
+
+
+def test_a_reader_error_is_not_waited_out(tmp_path):
+    """リーダーが落ちているなら待たない。
+
+    **位置ラベルは読める**（`text_content` で読むので、ページ画像が消えても
+    フッターは残る）。位置だけを見て待つと、落ちている本で 30 秒を捨てたうえで
+    結局 reader_error になる。
+    """
+    page = FakePage(
+        [b"a", b"b"],
+        positions=[10, 20],
+        book_total=1000,
+        alert="申し訳ありません。問題が発生しました",
+    )
+    _, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert reason == "reader_error"
+    assert [ms for ms in page.waits if ms >= STALL_WAIT * 1000] == [], "落ちている本で待っている"
+
+
+def test_the_manifest_keeps_the_stalls(tmp_path, monkeypatch):
+    """粘った箇所を manifest に残す。中抜けの疑いがある本の目印 (#79)。"""
+    import contextlib
+    import json as _json
+
+    from core import headless_browser
+    from core import headless_capture as hc
+    from core.capture_profiles import get_profile
+
+    page = FakePage([b"a", b"b"])
+
+    @contextlib.contextmanager
+    def fake_open_reader(*a, **kw):
+        yield page
+
+    def fake_capture(_page, _dir, **kw):
+        kw["emit"]("capture_stalled", page=5, position=100, book_total=999, waited=1)
+        kw["emit"]("capture_stopped", page=9, reason="end_of_book", position=999, book_total=999)
+        return 9, "end_of_book"
+
+    monkeypatch.setattr(headless_browser, "open_reader", fake_open_reader)
+    monkeypatch.setattr(hc, "capture_pages", fake_capture)
+    monkeypatch.setattr(hc, "rewind_to_start", lambda *a, **kw: (True, 0))
+    monkeypatch.setattr(hc, "_still_at_start", lambda *a, **kw: True)
+
+    hc.run_headless_capture(
+        get_profile("kindle_cloud"), "t", str(tmp_path), asin="B0TEST", page_turn="left"
+    )
+    manifest = _json.loads((tmp_path / "t" / hc.MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert manifest["stalls"] == [{"page": 5, "position": 100, "book_total": 999}]
