@@ -422,6 +422,7 @@ def cmd_run(args, rep):
         ocr_workers=args.ocr_workers,
         faithful=args.faithful,
         no_cleanup=args.no_cleanup,
+        no_cover=args.no_cover,
         split_words=args.split_words,
         emit=rep.event,
     )
@@ -474,6 +475,7 @@ def cmd_batch(args, rep):
         "ocr_workers": args.ocr_workers,
         "faithful": args.faithful,
         "no_cleanup": args.no_cleanup,
+        "no_cover": args.no_cover,
         "split_words": args.split_words,
     }
     return run_batch(
@@ -772,6 +774,11 @@ def build_parser():
         "--no-cleanup", action="store_true", help="--format markdown 時の行内クリーニングを無効化"
     )
     p_run.add_argument(
+        "--no-cover",
+        action="store_true",
+        help="表紙を 1 ページ目に足さない（既定は商品ページから取って足す）",
+    )
+    p_run.add_argument(
         "--split-words",
         type=int,
         metavar="N",
@@ -917,6 +924,11 @@ def build_parser():
         "--no-cleanup",
         action="store_true",
         help="--format markdown 時の行内クリーニングを無効化（全本の既定）",
+    )
+    p_batch.add_argument(
+        "--no-cover",
+        action="store_true",
+        help="表紙を 1 ページ目に足さない（全本の既定。既定は商品ページから取って足す）",
     )
     p_batch.add_argument(
         "--split-words",
