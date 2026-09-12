@@ -71,6 +71,7 @@ class FakePage:
         book_total=None,
         lag_from_index=None,
         lag_shots=0,
+        read_positions=None,
     ):
         self.frames = list(frames)
         # 要素撮影で返す内容。省略時は frames と同じ（方式を変えても中身は同じ）
@@ -96,6 +97,8 @@ class FakePage:
         # この index 以降、画面が lag_shots 回ぶん遅れて見える（本は進んでいる）
         self.lag_from_index = lag_from_index
         self.lag_shots = lag_shots
+        # 読むたびに変わる位置。「押した結果あとから ahead に転じる」形を作る
+        self.read_positions = list(read_positions) if read_positions else None
 
         page = self
 
@@ -133,13 +136,16 @@ class FakePage:
             # という状況を表すには分けておく必要がある
             class PositionLoc:
                 def count(self):
-                    return 0 if page.positions is None else 1
+                    return 0 if page.positions is None and not page.read_positions else 1
 
                 @property
                 def first(self):
                     return self
 
                 def text_content(self):
+                    if page.read_positions:
+                        pos = page.read_positions.pop(0)
+                        return f"{pos}/{page.book_total}ページ"
                     if page.positions is None:
                         return ""
                     pos = page.positions[min(page.index, len(page.positions) - 1)]
@@ -462,6 +468,100 @@ def test_the_wait_is_reported(tmp_path):
     waiting = [kw for n, kw in events if n == "capture_waiting"]
     assert waiting, "待ったことが記録されていない"
     assert waiting[0]["position"] > waiting[0]["last_position"]
+
+
+def test_a_gap_risk_is_recorded_when_waiting_did_not_help(tmp_path):
+    """待っても追いつかず押し直したら、**中抜けの疑いを記録する** (#81)。
+
+    押さずに打ち切ると、見た目の同じページが続く本（白紙・章扉）をそこで
+    切ってしまう。画素からは「描画が遅れている」と「同じページが続いている」を
+    区別できないので、押すしかない。**だが押せば本は先へ進むので、ここから先は
+    中抜けの可能性がある。黙って進めない。**
+    """
+    events = []
+    page = FakePage(
+        [b"a", b"b", b"c", b"d", b"e", b"f", b"g", b"h"],
+        positions=[10, 20, 30, 40, 50, 60, 70, 80],
+        book_total=1000,
+        lag_from_index=1,
+        lag_shots=6,
+    )
+    capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        max_retries=3,
+        emit=lambda name, **kw: events.append((name, kw)),
+    )
+    risks = [kw for n, kw in events if n == "capture_gap_risk"]
+    assert risks, "押し直したのに中抜けの疑いを記録していない"
+    assert risks[0]["position"] > risks[0]["last_position"]
+    assert "page" in risks[0]
+
+
+def test_a_book_whose_position_goes_backwards_is_pressed(tmp_path):
+    """位置が**減っている**ときは押す。
+
+    縦書きでラベルが逆行する本や一過性のラベル (#53) で「進んでいる」と
+    誤判定すると、飲まれた本を救えなくなる。
+    """
+    page = FakePage(
+        [b"a", b"b", b"c", b"d"],
+        positions=[40, 30, 20, 10],
+        book_total=1000,
+        lag_from_index=1,
+        lag_shots=2,
+    )
+    capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
+    assert [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000] == [], (
+        "位置が減っているのに待っている"
+    )
+
+
+def test_the_position_is_read_again_on_every_turn_of_the_loop(tmp_path):
+    """待つか押すかの判断は、**毎周読み直した**位置で決める。
+
+    1 回だけ読んで使い回すと、「押した結果あとから進んだ」形を拾えない。
+    実機では再送で押した結果 ahead に転じることがある。
+    """
+    page = FakePage(
+        [b"a", b"b", b"c"],
+        book_total=1000,
+        lag_from_index=0,
+        lag_shots=5,
+        # 1 ページ目保存時 10 → 停滞 1 周目も 10（押す）→ 2 周目に 90（待つ）
+        read_positions=[10, 10, 90, 90, 90, 90, 90, 90, 90, 90],
+    )
+    capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
+    assert [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000] != [], (
+        "位置を読み直していないため、あとから進んだ本で待てていない"
+    )
+
+
+def test_the_press_budget_is_separate_from_the_wait_budget(tmp_path):
+    """押す予算と待つ予算は別。max_retries を変えても待ちは CATCHUP_WAITS のまま。
+
+    テストの max_retries を CATCHUP_WAITS と同じ値だけにしていると、
+    ループ条件を壊しても気づけない。
+    """
+    page = FakePage(
+        [b"a", b"b", b"c", b"d", b"e"],
+        positions=[10, 20, 30, 40, 50],
+        book_total=1000,
+        lag_from_index=1,
+        lag_shots=999,
+    )
+    capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=1)
+    long_waits = [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000]
+    assert len(long_waits) == CATCHUP_WAITS, f"待った回数が押す予算に引きずられている: {long_waits}"
+    assert page.pressed.count("ArrowLeft") >= 1
+
+
+def test_the_total_waiting_time_is_bounded_in_seconds(tmp_path):
+    """待ちの総量を実時間で縛る。「有限」なだけでは上限を置いたことにならない。"""
+    assert CATCHUP_WAITS * CATCHUP_WAIT <= 60, (
+        f"1 停止あたりの待ちが長すぎる: {CATCHUP_WAITS * CATCHUP_WAIT} 秒"
+    )
 
 
 def test_no_change_when_nothing_advances(tmp_path):
@@ -1967,3 +2067,41 @@ def test_the_position_after_closing_the_dialog_is_the_one_adopted():
     assert jumped["after"] == 150, "閉じる前の位置を基準にしている"
     assert ok is True
     assert page.position == 1
+
+
+def test_the_manifest_keeps_the_waits_and_gap_risks(tmp_path, monkeypatch):
+    """待った箇所と中抜けの疑いを manifest に残す (#81)。
+
+    標準出力にしか無いと、ログを捨てた時点で「中抜けの疑いがある本」を
+    洗えなくなる。
+    """
+    import contextlib
+    import json as _json
+
+    from core import headless_browser
+    from core import headless_capture as hc
+    from core.capture_profiles import get_profile
+
+    page = FakePage([b"a", b"b"])
+
+    @contextlib.contextmanager
+    def fake_open_reader(*a, **kw):
+        yield page
+
+    def fake_capture(_page, _dir, **kw):
+        kw["emit"]("capture_waiting", page=3, position=30, last_position=20, waited=1)
+        kw["emit"]("capture_gap_risk", page=3, position=30, last_position=20)
+        kw["emit"]("capture_stopped", page=9, reason="end_of_book", position=999, book_total=999)
+        return 9, "end_of_book"
+
+    monkeypatch.setattr(headless_browser, "open_reader", fake_open_reader)
+    monkeypatch.setattr(hc, "capture_pages", fake_capture)
+    monkeypatch.setattr(hc, "rewind_to_start", lambda *a, **kw: (True, 0))
+    monkeypatch.setattr(hc, "_still_at_start", lambda *a, **kw: True)
+
+    hc.run_headless_capture(
+        get_profile("kindle_cloud"), "t", str(tmp_path), asin="B0TEST", page_turn="left"
+    )
+    manifest = _json.loads((tmp_path / "t" / hc.MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert manifest["waits"] == [{"page": 3, "position": 30, "last_position": 20}]
+    assert manifest["gap_risks"] == [{"page": 3, "position": 30, "last_position": 20}]

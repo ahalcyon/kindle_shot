@@ -427,6 +427,8 @@ def build_manifest(
     shot_mode_changed=None,
     rewind=None,
     stopped_at=None,
+    waits=None,
+    gap_risks=None,
 ):
     """run_capture が書くものと同じ形の manifest を組み立てる。"""
     return {
@@ -455,6 +457,11 @@ def build_manifest(
         # 撮影が止まったときの位置。最終ページまで行った本は position が
         # book_total の近くにあり、途中で止まった本は大きく手前にある (#76)
         "stopped_at": stopped_at or {},
+        # 押さずに描画を待った箇所 (#81)
+        "waits": waits or [],
+        # 待っても追いつかず押し直した箇所。**中抜けの疑いがある本の目印**。
+        # ここが空でない本は、撮り直すか中身を見る価値がある
+        "gap_risks": gap_risks or [],
         "total_pages": total,
         "save_dir": save_dir,
         "stopped_reason": stopped_reason,
@@ -826,6 +833,27 @@ def capture_pages(
                     )
                     page.wait_for_timeout(int(CATCHUP_WAIT * 1000))
                 elif retried < max_retries:
+                    if ahead:
+                        # **待っても追いつかなかったが、それでも押す。**
+                        # 画素からは「描画が遅れている」と「同じ見た目のページが
+                        # 続いている（白紙・章扉）」を区別できない。押さずに
+                        # 打ち切ると、白紙が続く本をそこで切ってしまう。
+                        #
+                        # だが押せば本は先へ進むので、**ここから先は中抜けの
+                        # 可能性がある**。黙って進めない。記録して、あとから
+                        # 洗えるようにする（#81）。
+                        emit(
+                            "capture_gap_risk",
+                            human=(
+                                f"{total} ページまで保存した時点で本は位置 {position} "
+                                f"（保存時 {last_position}）まで進んでおり、待っても"
+                                "画面が追いつきませんでした。押し直すので、"
+                                "ここでページが抜けた可能性があります"
+                            ),
+                            page=total,
+                            position=position,
+                            last_position=last_position,
+                        )
                     retried += 1
                     emit(
                         "status",
@@ -1391,6 +1419,8 @@ def run_headless_capture(
     shot_mode_changed: list = []
     rewind_info: dict = {}
     stopped_at: dict = {}
+    waits: list = []
+    gap_risks: list = []
 
     def note(event, human=None, **fields):
         """manifest に残す情報を控えつつ、そのまま emit する。
@@ -1408,6 +1438,12 @@ def run_headless_capture(
                     for k in ("ok", "presses", "position", "total", "reason", "via_toc", "jumps")
                 }
             )
+        if event == "capture_waiting":
+            waits.append({k: fields.get(k) for k in ("page", "position", "last_position")})
+        if event == "capture_gap_risk":
+            # **中抜けの疑いがある箇所。** 押さずに打ち切ると白紙が続く本を
+            # 切ってしまうので押すが、黙って進めない (#81)
+            gap_risks.append({k: fields.get(k) for k in ("page", "position", "last_position")})
         if event == "capture_stopped":
             stopped_at.update(
                 {k: fields.get(k) for k in ("page", "reason", "position", "book_total")}
@@ -1433,6 +1469,8 @@ def run_headless_capture(
             shot_mode_changed=shot_mode_changed,
             rewind=rewind_info,
             stopped_at=stopped_at,
+            waits=waits,
+            gap_risks=gap_risks,
         )
         path = os.path.join(save_dir, MANIFEST_NAME)
         with open(path, "w", encoding="utf-8") as f:
