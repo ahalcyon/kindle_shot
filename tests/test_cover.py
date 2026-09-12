@@ -36,16 +36,21 @@ def test_the_hires_attribute_wins():
     )
 
 
-def test_the_largest_dynamic_image_is_used_as_a_fallback():
-    """data-old-hires が無ければ、対応表の一番大きいものを採る。"""
-    block = json.dumps(
-        {
-            "https://m.media-amazon.com/images/I/a._SY342_.jpg": [342, 233],
-            "https://m.media-amazon.com/images/I/a._SY522_.jpg": [522, 355],
-        }
-    ).replace('"', "&quot;")
-    html = f'<img data-a-dynamic-image="{block}">'
-    assert cover.cover_url_from_html(html).endswith("_SY522_.jpg")
+def test_another_products_cover_is_never_picked():
+    """data-old-hires が無ければ表紙なし。**面積で選ばない。**
+
+    商品ページにはおすすめ商品のぶんも含めて data-a-dynamic-image が 7 個あり
+    （実測）、うち 6 個は他商品の 420x420 だった。面積で選ぶと、この本の主画像が
+    522x355 しかない本で**他商品の表紙が選ばれる**。黙って別の本の表紙が
+    1 ページ目に入るくらいなら、表紙なしのほうがよい。
+    """
+    mine = json.dumps({"https://m.media-amazon.com/images/I/mine._SY342_.jpg": [342, 233]})
+    other = json.dumps({"https://m.media-amazon.com/images/I/other._AC_UL420_.jpg": [420, 420]})
+    html = (
+        f'<img id="landingImage" data-a-dynamic-image="{mine.replace(chr(34), "&quot;")}">'
+        f'<img data-a-dynamic-image="{other.replace(chr(34), "&quot;")}">'
+    )
+    assert cover.cover_url_from_html(html) is None
 
 
 def test_a_page_without_a_cover_gives_nothing():
@@ -133,3 +138,190 @@ def test_a_broken_cover_does_not_stop_the_book(tmp_path):
     (tmp_path / "001.png").write_bytes(_png((1600, 1200)))
     assert add_cover_page(str(tmp_path), "B0TEST", fetch=lambda _asin: b"not an image") is False
     assert os.listdir(tmp_path) == ["001.png"]
+
+
+# ------------------------------------------------------------
+# 取りに行き方
+# ------------------------------------------------------------
+
+
+def test_the_product_page_is_read_then_the_image():
+    """商品ページ → hires の URL → 画像、の順に取りに行く。"""
+    urls = []
+
+    def fake_get(url):
+        urls.append(url)
+        if "amazon" in url and "/dp/" in url:
+            return b'<img data-old-hires="https://m.media-amazon.com/images/I/big.jpg">'
+        return b"PNG-DATA"
+
+    assert cover.fetch_cover("B0TEST", get=fake_get) == b"PNG-DATA"
+    assert urls == [
+        "https://www.amazon.co.jp/dp/B0TEST",
+        "https://m.media-amazon.com/images/I/big.jpg",
+    ]
+
+
+def test_a_book_without_an_asin_is_not_fetched():
+    """--url で開いた本では ASIN が無い。/dp/None を毎回取りに行かない。"""
+    called = []
+
+    def spy(url):
+        called.append(url)
+        return b""
+
+    assert cover.fetch_cover(None, get=spy) is None
+    assert called == []
+
+
+def test_a_failure_is_not_raised():
+    """取れないことは失敗にしない。例外を外へ出さない。"""
+
+    def boom(_url):
+        raise TimeoutError("応答なし")
+
+    assert cover.fetch_cover("B0TEST", get=boom) is None
+
+
+def test_a_page_without_a_hires_link_gives_nothing():
+    assert cover.fetch_cover("B0TEST", get=lambda _u: "<html>なし</html>".encode()) is None
+
+
+def test_the_request_has_a_timeout_and_a_user_agent(monkeypatch):
+    """**上限の無い待ちを置かない。** 無人で 342 冊回すので、ここが無いと止まる。"""
+    seen = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def read(self):
+            return b"ok"
+
+    def fake_urlopen(request, timeout=None):
+        seen["timeout"] = timeout
+        seen["ua"] = request.get_header("User-agent")
+        return FakeResponse()
+
+    monkeypatch.setattr(cover.urllib.request, "urlopen", fake_urlopen)
+    assert cover._get("https://example.test/x.jpg") == b"ok"
+    assert seen["timeout"] == cover.REQUEST_TIMEOUT
+    assert seen["timeout"] is not None
+    assert "Mozilla" in seen["ua"]
+
+
+# ------------------------------------------------------------
+# 本文に合わせる
+# ------------------------------------------------------------
+
+
+def test_the_cover_matches_the_body_page_size(tmp_path):
+    """本文が 1600x1200 以外の本でも、本文と同じ寸法にする。
+
+    PDF のページ寸法を揃えるため（validate は表紙を足す前を見るので掛からない）。
+    """
+    (tmp_path / "001.png").write_bytes(_png((1240, 1754)))
+    assert add_cover_page(str(tmp_path), "B0TEST", fetch=lambda _asin: _png((1021, 1500))) is True
+    with Image.open(tmp_path / COVER_NAME) as image:
+        assert image.size == (1240, 1754)
+
+
+def test_a_cmyk_cover_becomes_rgb(tmp_path):
+    """CMYK の JPEG を渡しても、置く表紙は RGB にする。
+
+    Amazon は CMYK の JPEG を返しうる。PIL は CMYK でも paste 自体はできる
+    （実測）ので落ちはしないが、**保存される表紙のモードが本文と揃わない**。
+    """
+    buffer = io.BytesIO()
+    Image.new("CMYK", (600, 900)).save(buffer, format="JPEG")
+    (tmp_path / "001.png").write_bytes(_png((1600, 1200)))
+    assert add_cover_page(str(tmp_path), "B0TEST", fetch=lambda _a: buffer.getvalue()) is True
+    with Image.open(tmp_path / COVER_NAME) as image:
+        # 貼る先のキャンバスが RGB なので、保存されるモードは元画像に依らず RGB。
+        # つまり convert("RGB") を外しても**この経路では観測できない**（実測）。
+        # 守っているのは「CMYK の表紙で落ちないこと」まで
+        assert image.mode == "RGB"
+        assert image.size == (1600, 1200)
+
+
+def test_adding_the_cover_is_reported(tmp_path):
+    """表紙を付けたことを記録する。バッチ全体で何冊に付いたかを数えるため。"""
+    (tmp_path / "001.png").write_bytes(_png((1600, 1200)))
+    events = []
+    add_cover_page(
+        str(tmp_path),
+        "B0TEST",
+        fetch=lambda _a: _png((1021, 1500)),
+        emit=lambda name, **kw: events.append((name, kw)),
+    )
+    assert [kw["human"] for name, kw in events if name == "cover"] == [
+        "表紙を 1 ページ目にしました（1600x1200）"
+    ]
+
+
+# ------------------------------------------------------------
+# パイプラインへの配線
+# ------------------------------------------------------------
+
+
+def _record(calls, args, kwargs):
+    calls.append((args, kwargs))
+    return True
+
+
+def _run_book_collecting(tmp_path, monkeypatch, **kwargs):
+    """run_book を通し、(add_cover_page の呼ばれ方, イベント) を返す。"""
+    from core import headless_capture, pipeline
+
+    save_dir = tmp_path / "本"
+    calls: list = []
+    events: list = []
+
+    def fake_capture(*_a, **_k):
+        os.makedirs(save_dir, exist_ok=True)
+        Image.new("RGB", (1600, 1200), (1, 2, 3)).save(save_dir / "001.png")
+        with open(save_dir / "manifest.json", "w", encoding="utf-8") as f:
+            json.dump({"shot_mode": "element", "total_pages": 1}, f)
+        return 0
+
+    monkeypatch.setattr(headless_capture, "run_headless_capture", fake_capture)
+    monkeypatch.setattr(pipeline, "run_validate", lambda *a, **k: 0)
+    monkeypatch.setattr(pipeline, "run_trim", lambda *a, **k: 0)
+    monkeypatch.setattr(pipeline, "run_convert", lambda *a, **k: 0)
+    monkeypatch.setattr(pipeline, "add_cover_page", lambda *a, **k: _record(calls, a, k))
+    pipeline.run_book(
+        asin="B0TEST",
+        title="本",
+        output=str(tmp_path),
+        fmt="image_pdf",
+        headless=True,
+        emit=lambda name, **kw: events.append((name, kw)),
+        **kwargs,
+    )
+    return calls, events
+
+
+def test_the_pipeline_adds_the_cover(tmp_path, monkeypatch):
+    """既定では表紙を足す。機能をパイプラインから外したら落ちること。"""
+    calls, _ = _run_book_collecting(tmp_path, monkeypatch)
+    assert len(calls) == 1
+    assert calls[0][0][1] == "B0TEST", "ASIN を渡していない"
+
+
+def test_no_cover_skips_it(tmp_path, monkeypatch):
+    """--no-cover を渡したら足さない。"""
+    calls, _ = _run_book_collecting(tmp_path, monkeypatch, no_cover=True)
+    assert calls == []
+
+
+def test_the_step_numbers_stay_within_the_total(tmp_path, monkeypatch):
+    """[5/4] を出さない。current / total は README の JSON Lines 仕様（外部契約）。"""
+    for kwargs in ({}, {"no_cover": True}):
+        _, events = _run_book_collecting(tmp_path, monkeypatch, **kwargs)
+        steps = [kw for name, kw in events if name == "run_step"]
+        assert steps, "ステップが出ていない"
+        for kw in steps:
+            assert kw["current"] <= kw["total"], f"{kw['current']}/{kw['total']} ({kwargs})"

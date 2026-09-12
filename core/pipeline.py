@@ -753,7 +753,10 @@ def run_convert(
 
             results = [(fn, clean_text(t)) for fn, t in results]
 
-        chapters = detect_chapters(results) if bookmarks_enabled else None
+        # **表紙を章検出に入れない。** 表紙の文字（「FEEDBACK COMPLETE」等）が
+        # しおりの先頭に、本と無関係な見出しとして 1 本入る (#27)
+        body = [(fn, text) for fn, text in results if os.path.basename(fn) != COVER_NAME]
+        chapters = detect_chapters(body) if bookmarks_enabled else None
 
         if fmt == "text_pdf":
             filename = _ensure_ext(filename, ".pdf")
@@ -868,11 +871,11 @@ def add_cover_page(trimmed_dir, asin, *, emit=null_emit, fetch=None):
     except Exception:  # noqa: BLE001 - 読めないなら表紙なしで続ける
         return False
 
-    data = fetch(asin)
-    if not data:
-        emit("cover", human="表紙を取得できませんでした（本文だけで続けます）", asin=asin)
-        return False
     try:
+        data = fetch(asin)
+        if not data:
+            emit("cover", human="表紙を取得できませんでした（本文だけで続けます）", asin=asin)
+            return False
         fitted = cover_module.fit_cover(data, size)
         with open(os.path.join(trimmed_dir, COVER_NAME), "wb") as f:
             f.write(fitted)
@@ -961,6 +964,10 @@ def run_book(
 
     # headless は本を開く処理がキャプチャに含まれるので open のステップが無い
     total_steps = 4 if headless else (5 if (asin or url) else 4)
+    if not no_cover:
+        # 表紙のステップを足したぶん分母も増やす。増やさないと [5/4] が出る。
+        # current / total は README の JSON Lines 仕様（外部契約）
+        total_steps += 1
     step_no = 0
     t_start = time.perf_counter()
     timings: list = []  # [ステップ名, 開始時刻→確定後は所要秒]

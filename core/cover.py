@@ -24,35 +24,34 @@ from PIL import Image
 
 PRODUCT_URL = "https://www.amazon.co.jp/dp/{asin}"
 
-# 商品ページを普通のブラウザとして取りに行く。User-Agent が無いと弾かれる
+# 普通のブラウザとして取りに行く。既定の User-Agent (Python-urllib) でも 200 が
+# 返ることは確認したが、弾かれる相手もありうるので予防として送る
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+# 1 回のソケット操作の上限。無人で 342 冊回すので、上限の無い待ちは置かない。
+# 30 秒は「商品ページが普通に取れる時間（実測 3 秒）の 10 倍」。応答が細切れに
+# 届く相手には総時間の上限にならない点は承知のうえ
 REQUEST_TIMEOUT = 30
 
 # 主画像の高解像度版。Amazon は小さい画像の src とは別に、この属性で大きいほうを
 # 指している。**画像 ID が違う**ので、src の URL のサイズ修飾子を書き換えても
 # 大きくならない（実測: 31kuSxEiAzL は ._SL2000_ でも 340x500 のまま）
 _HIRES_RE = re.compile(r'data-old-hires="(https://[^"]+?\.jpg)"')
-# 予備。URL -> [高さ, 幅] の対応表から一番大きいものを採る
-_DYNAMIC_RE = re.compile(r'data-a-dynamic-image="([^"]+)"')
-_ENTRY_RE = re.compile(r'(https://[^"&]+?\.jpg)[^\[]*\[\s*(\d+)\s*,\s*(\d+)\s*\]')
 
 
 def cover_url_from_html(html):
-    """商品ページの HTML から、一番大きい表紙画像の URL を返す。無ければ None。"""
+    """商品ページの HTML から表紙画像の URL を返す。無ければ None。
+
+    **data-old-hires だけを見る。** 以前は「data-a-dynamic-image の中で面積が
+    一番大きいもの」を予備にしていたが、商品ページにはおすすめ商品のぶんも含めて
+    このブロックが 7 個あり（実測）、うち 6 個は他商品の 420x420 だった。この本の
+    主画像が 522x355 しかない本では**他商品の表紙が選ばれる**。
+    黙って別の本の表紙が 1 ページ目に入るくらいなら、表紙なしのほうがよい。
+    """
     found = _HIRES_RE.search(html)
-    if found:
-        return found.group(1)
-    best = None
-    best_area = 0
-    for block in _DYNAMIC_RE.findall(html):
-        for url, a, b in _ENTRY_RE.findall(block.replace("&quot;", '"')):
-            area = int(a) * int(b)
-            if area > best_area:
-                best, best_area = url, area
-    return best
+    return found.group(1) if found else None
 
 
 def _get(url):
