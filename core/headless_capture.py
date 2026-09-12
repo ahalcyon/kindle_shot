@@ -396,6 +396,8 @@ def build_manifest(
     shot_mode=None,
     shot_padding=None,
     shot_mode_changed=None,
+    rewind=None,
+    stopped_at=None,
 ):
     """run_capture が書くものと同じ形の manifest を組み立てる。"""
     return {
@@ -418,6 +420,12 @@ def build_manifest(
         # ヘッダーの写ったページが紛れ込むが、寸法が同じなので validate では
         # 拾えない。ここだけが手がかりになる
         "shot_mode_changed": shot_mode_changed or [],
+        # 巻き戻しの結果（位置・総量・理由）。**事後に部分本を洗うにはこれが要る。**
+        # 標準出力にしか無いと、ログを捨てた時点で追えなくなる (#72)
+        "rewind": rewind or {},
+        # 撮影が止まったときの位置。最終ページまで行った本は position が
+        # book_total の近くにあり、途中で止まった本は大きく手前にある (#76)
+        "stopped_at": stopped_at or {},
         "total_pages": total,
         "save_dir": save_dir,
         "stopped_reason": stopped_reason,
@@ -1098,6 +1106,46 @@ def rewind_to_start(
         unreadable = 0
         if seen_total is not None:
             total = seen_total
+        if current > before:
+            # **先頭から遠ざかった。** 「押しても下がらない」とは別の事象。
+            # ここを stuck に数えて before を据え置くと、3 回で「先頭に着いた」と
+            # 結論しながら実際は遠くにいる、という**嘘の成功**になる
+            # （実測の再現で ok=true position=5 と報告して実際は 1654）。
+            # before はそれまでの最小値であって、今いる場所ではない (#72)。
+            #
+            # 一過性のラベルを拾っただけかもしれないので、落ち着いてから読み直す。
+            # 巻き戻しの刻み (0.6 秒) は遷移中の値を掴みやすい (#53)。
+            settled, settled_total = _settled_position_pair(
+                page, page_wait=max(page_wait, DEFAULT_PAGE_WAIT)
+            )
+            if settled is not None:
+                current = settled
+                if settled_total is not None:
+                    total = settled_total
+            if current > before:
+                # 本当に遠ざかっている。**入力を飲むダイアログが出ていても
+                # 位置ラベルは読める**（text_content で読むので CSS で隠れていても
+                # 返る）。実測: 目次パネルを閉じた直後、位置ラベルは 1 と読めるのに
+                # 1 回目の押下だけ飲まれた。だから「読めない周回」だけで
+                # ダイアログを閉じていたのでは間に合わない
+                dismiss_dialogs(page)
+                moved, moved_total = _settled_position_pair(
+                    page, page_wait=max(page_wait, DEFAULT_PAGE_WAIT)
+                )
+                if moved is not None:
+                    current = moved
+                    if moved_total is not None:
+                        total = moved_total
+                emit(
+                    "rewind_jumped",
+                    human=f"巻き戻し中に位置が飛びました: {before} → {current}",
+                    before=before,
+                    after=current,
+                )
+                # 今いる場所を基準にする。嘘の位置を報告しない
+                before = current
+                stuck = 0
+                continue
         if current >= before:
             stuck += 1
         else:
@@ -1232,11 +1280,26 @@ def run_headless_capture(
     shot_mode = None
     shot_padding = None
     shot_mode_changed: list = []
+    rewind_info: dict = {}
+    stopped_at: dict = {}
 
     def note(event, human=None, **fields):
-        """撮影方式が途中で変わったページを控えつつ、そのまま emit する。"""
+        """manifest に残す情報を控えつつ、そのまま emit する。
+
+        イベントを横取りするのは、rewind_to_start / capture_pages の戻り値を
+        増やすと呼び出し側とテストに広く波及するため。出している情報は
+        すでに揃っているので、拾って manifest に入れるだけでよい。
+        """
         if event == "shot_mode_changed" and "page" in fields:
             shot_mode_changed.append(fields["page"])
+        if event == "rewound":
+            rewind_info.update(
+                {k: fields.get(k) for k in ("ok", "presses", "position", "total", "reason")}
+            )
+        if event == "capture_stopped":
+            stopped_at.update(
+                {k: fields.get(k) for k in ("page", "reason", "position", "book_total")}
+            )
         emit(event, human=human, **fields)
 
     def write_manifest():
@@ -1256,6 +1319,8 @@ def run_headless_capture(
             shot_mode=shot_mode,
             shot_padding=shot_padding,
             shot_mode_changed=shot_mode_changed,
+            rewind=rewind_info,
+            stopped_at=stopped_at,
         )
         path = os.path.join(save_dir, MANIFEST_NAME)
         with open(path, "w", encoding="utf-8") as f:
@@ -1352,7 +1417,7 @@ def run_headless_capture(
             emit("status", human=f"ページ送りキー: {key}", message=f"ページ送りキー: {key}")
 
             if not no_rewind:
-                rewound, _ = rewind_to_start(page, forward, max_rewind=max_rewind, emit=emit)
+                rewound, _ = rewind_to_start(page, forward, max_rewind=max_rewind, emit=note)
                 if not rewound:
                     emit_error(
                         emit,
