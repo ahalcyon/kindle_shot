@@ -20,6 +20,8 @@ from core.headless_capture import (
     CATCHUP_WAITS,
     DEFAULT_TURN_KEY,
     DISMISS_ALERTS_JS,
+    END_OF_BOOK_SHORT_PERCENT,
+    END_OF_BOOK_SLACK,
     LEAVE_BUTTON_JS,
     MAX_START_POSITION,
     POSITION_SELECTOR,
@@ -45,6 +47,7 @@ from core.headless_capture import (
     resolve_shot_mode,
     reverse_of,
     rewind_to_start,
+    short_of_end,
     turn_key,
     unsupported_reason,
 )
@@ -99,6 +102,8 @@ class FakePage:
         self.lag_shots = lag_shots
         # 読むたびに変わる位置。「押した結果あとから ahead に転じる」形を作る
         self.read_positions = list(read_positions) if read_positions else None
+        # 位置ラベルを読んだ回数。停止判定が「落ち着くまで読む」かを見るのに使う
+        self.position_reads = 0
 
         page = self
 
@@ -143,6 +148,7 @@ class FakePage:
                     return self
 
                 def text_content(self):
+                    page.position_reads += 1
                     if page.read_positions:
                         pos = page.read_positions.pop(0)
                         return f"{pos}/{page.book_total}ページ"
@@ -437,16 +443,16 @@ def test_waiting_for_the_screen_has_a_bound(tmp_path):
     page = FakePage(
         [b"a", b"b", b"c"],
         positions=[10, 20, 30],
-        book_total=1000,
+        # 本の終わりまで来ている本にする。ここを 1000 にすると #79 の判定も
+        # 兼ねることになり、#79 の仕様を変えたときに巻き添えで落ちる
+        book_total=30,
         lag_from_index=1,
         lag_shots=999,
     )
     total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
     long_waits = [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000]
     assert len(long_waits) == CATCHUP_WAITS, f"待った回数が上限と違う: {len(long_waits)}"
-    # 位置 30/1000 は本の終わりではないので short_of_end になる (#79)。
-    # このテストの主題は待ちの上限なので、そこだけ見る
-    assert reason == "short_of_end"
+    assert reason == "end_of_book"
     assert total >= 1
 
 
@@ -2131,7 +2137,8 @@ def test_a_book_that_stops_short_is_not_the_end_of_the_book(tmp_path):
 def test_a_book_that_reaches_the_end_is_the_end_of_the_book(tmp_path):
     """位置が総量に達していれば、これまでどおり最終ページ。
 
-    実測 9 冊のうち 6 冊がちょうど 100%、2 冊が 99.9% (1458/1459, 10882/10891)。
+    実測 8 冊のうち 6 冊が不足 0、1 冊が不足 1 (1458/1459)、1 冊が不足 9
+    (10882/10891)。
     """
     for position, book_total in ((713, 713), (1458, 1459), (10882, 10891)):
         folder = tmp_path / f"{position}"
@@ -2170,3 +2177,86 @@ def test_stopping_short_does_not_exit_zero(tmp_path, monkeypatch):
 
     code = _run_with_stop_reason("short_of_end", tmp_path, monkeypatch)
     assert code == EXIT_ERROR
+
+
+def test_a_short_book_is_not_failed_by_the_ratio(tmp_path):
+    """短い本を割合だけで落とさない (#79)。
+
+    実測の不足は絶対量で小さい（最大 9）。割合だけにすると本が短いほど厳しく
+    なり、不足 9 は総量 450 を切った時点で 2% を超える。**標本は蔵書の最長側
+    から採ったもの**で、実際の蔵書は中央値 106 ページ・最小 11 ページ。
+    効くかどうかを決めるのは短い本のほう。
+    """
+    page = FakePage([b"a", b"b"], positions=[1, 290], book_total=300)
+    _, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert reason == "end_of_book", "短い本を途中と誤判定している"
+
+
+def test_the_boundary_follows_the_constants(tmp_path):
+    """境界は定数から決まる。数値を直書きしない。"""
+    book_total = 10_000
+    allowed = max(END_OF_BOOK_SLACK, book_total * END_OF_BOOK_SHORT_PERCENT // 100)
+    assert short_of_end(book_total - allowed, book_total) is False
+    assert short_of_end(book_total - allowed - 1, book_total) is True
+    # 判断材料が無ければ従来どおり
+    assert short_of_end(None, book_total) is False
+    assert short_of_end(100, None) is False
+
+
+def test_the_slack_covers_the_measured_lag(tmp_path):
+    """実測の不足（最大 9）はどの長さの本でも許す。"""
+    for book_total in (11, 30, 300, 1459, 10891, 58503):
+        assert short_of_end(book_total - 9, book_total) is False, book_total
+
+
+def test_the_percentage_binds_on_long_books(tmp_path):
+    """長い本では割合のほうが効く。下駄だけでは決まらないことを固定する。
+
+    **わざと緩めにしてある。** 偽陽性（正常に撮れた本を毎回失敗させる）が最悪の
+    ケースで、失敗した本は中間ファイルを残すので毎回 GB 単位を置いていく。
+    実測の不足は最大 9 なので、10% は 24 倍以上の余裕がある。
+    """
+    assert short_of_end(95_000, 100_000) is False, "10% 以内を途中と判定している"
+    assert short_of_end(89_000, 100_000) is True
+
+
+def test_the_measured_short_books_are_still_caught(tmp_path):
+    """途中で止まった実測の 2 冊は捕まえ続ける。"""
+    assert short_of_end(1446, 2999) is True
+    assert short_of_end(15916, 58503) is True
+
+
+def test_a_transient_label_does_not_fail_a_finished_book(tmp_path):
+    """停止時の一過性のラベルで、撮り切った本を落とさない (#53)。
+
+    この地点は、リトライで最大 max_retries 回キーを押した直後。押した直後に
+    一瞬だけ別の値を返す本がある。生読みで判断すると、最後まで撮れた本が
+    1 回の下振れで失敗する。
+    """
+    page = FakePage([b"a", b"b"], positions=[1, 713], book_total=713)
+    _, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=2)
+    assert reason == "end_of_book"
+    # **停止判定で 2 回以上読んでいること。** 1 回しか読まない実装では、一過性の
+    # 値をそのまま判断に使ってしまう。この構成では 2 ページぶんの記録 (#81) と
+    # 再送ループの確認で 5 回読むので、判定が 1 回なら 6、落ち着くまで読めば 7 以上
+    assert page.position_reads >= 7, f"停止判定で 1 回しか読んでいない: {page.position_reads}"
+
+
+def test_the_stop_event_and_manifest_carry_short_of_end(tmp_path, monkeypatch):
+    """短く止まったことをログと manifest に残す。
+
+    342 冊を機械的に洗う唯一の手がかりがこのイベント。
+    """
+    events = []
+    page = FakePage([b"a", b"b"], positions=[10, 1446], book_total=2999)
+    capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        max_retries=2,
+        emit=lambda name, **kw: events.append((name, kw)),
+    )
+    stopped = [kw for name, kw in events if name == "capture_stopped"]
+    assert [kw["reason"] for kw in stopped] == ["short_of_end"]
+    assert stopped[0]["position"] == 1446
+    assert stopped[0]["book_total"] == 2999
