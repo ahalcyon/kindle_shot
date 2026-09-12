@@ -20,6 +20,7 @@ GUI は 0 / 非 0 で成否を判定する。
 """
 
 import contextlib
+import io
 import json
 import os
 import shutil
@@ -868,6 +869,7 @@ def add_cover_page(trimmed_dir, asin, *, emit=null_emit, fetch=None):
         # list_images が返すのはファイル名。フォルダと繋ぐこと
         with Image.open(os.path.join(trimmed_dir, pages[0])) as first:
             size = first.size
+            first_page = first.copy()
     except Exception:  # noqa: BLE001 - 読めないなら表紙なしで続ける
         return False
 
@@ -882,6 +884,18 @@ def add_cover_page(trimmed_dir, asin, *, emit=null_emit, fetch=None):
             )
             return False
         fitted = cover_module.fit_cover(data, size)
+        # **リーダーのページ送りに表紙が入っている本がある**（マンガはたいてい
+        # そう）。しかもフル解像度なので、そこへストア画像を足すと同じ絵が
+        # 小さく劣化して 2 枚並ぶ (#27)
+        with Image.open(io.BytesIO(fitted)) as candidate:
+            if cover_module.same_picture(candidate, first_page):
+                emit(
+                    "cover",
+                    human="1 ページ目が既に表紙なので足しません",
+                    asin=asin,
+                    added=False,
+                )
+                return False
         with open(os.path.join(trimmed_dir, COVER_NAME), "wb") as f:
             f.write(fitted)
     except Exception as exc:  # noqa: BLE001 - 表紙で本を落とさない

@@ -16,6 +16,19 @@ def _png(size, color=(10, 20, 30)):
     return buffer.getvalue()
 
 
+def _patterned(size, seed=0):
+    """本文ページの代役。**単色にしない。** 単色どうしは「同じ絵」に見えるので、
+    表紙が既にあるかの判定 (#27) がすべて真になってしまう。"""
+    image = Image.new("RGB", size, (250, 250, 250))
+    for i in range(0, size[0], 40):
+        for j in range(0, size[1], 40):
+            if (i + j + seed * 40) % 80 == 0:
+                image.paste((20, 20, 20), (i, j, min(i + 20, size[0]), min(j + 20, size[1])))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 # ------------------------------------------------------------
 # 商品ページから表紙の URL を取る
 # ------------------------------------------------------------
@@ -37,7 +50,7 @@ def test_the_hires_attribute_wins():
 
 
 def test_another_products_cover_is_never_picked():
-    """data-old-hires が無ければ表紙なし。**面積で選ばない。**
+    """data-old-hires が無いときは**主画像の中だけ**で選ぶ。
 
     商品ページにはおすすめ商品のぶんも含めて data-a-dynamic-image が 7 個あり
     （実測）、うち 6 個は他商品の 420x420 だった。面積で選ぶと、この本の主画像が
@@ -50,7 +63,9 @@ def test_another_products_cover_is_never_picked():
         f'<img id="landingImage" data-a-dynamic-image="{mine.replace(chr(34), "&quot;")}">'
         f'<img data-a-dynamic-image="{other.replace(chr(34), "&quot;")}">'
     )
-    assert cover.cover_url_from_html(html) is None
+    picked = cover.cover_url_from_html(html)
+    assert picked is not None, "主画像があるのに取れていない"
+    assert "mine" in picked, f"他商品の表紙を選んでいる: {picked}"
 
 
 def test_a_page_without_a_cover_gives_nothing():
@@ -93,7 +108,7 @@ def test_a_small_cover_is_not_blown_up():
 
 def test_the_cover_is_written_as_the_first_page(tmp_path):
     """本文は 001.png からなので、0 始まりなら必ず先に並ぶ。"""
-    (tmp_path / "001.png").write_bytes(_png((1600, 1200)))
+    (tmp_path / "001.png").write_bytes(_patterned((1600, 1200)))
     assert add_cover_page(str(tmp_path), "B0TEST", fetch=lambda _asin: _png((1021, 1500))) is True
     assert COVER_NAME == "000.png"
     assert sorted(os.listdir(tmp_path)) == ["000.png", "001.png"]
@@ -107,7 +122,7 @@ def test_a_book_without_a_cover_still_converts(tmp_path):
     表紙が無いまま本文だけの PDF になるだけで、本の中身は 1 ページも欠けない。
     ここで落とすほうが損。
     """
-    (tmp_path / "001.png").write_bytes(_png((1600, 1200)))
+    (tmp_path / "001.png").write_bytes(_patterned((1600, 1200)))
     events = []
     assert (
         add_cover_page(
@@ -137,7 +152,7 @@ def test_a_missing_folder_is_not_an_error(tmp_path):
 
 def test_a_broken_cover_does_not_stop_the_book(tmp_path):
     """壊れた画像でも本を落とさない。"""
-    (tmp_path / "001.png").write_bytes(_png((1600, 1200)))
+    (tmp_path / "001.png").write_bytes(_patterned((1600, 1200)))
     assert add_cover_page(str(tmp_path), "B0TEST", fetch=lambda _asin: b"not an image") is False
     assert os.listdir(tmp_path) == ["001.png"]
 
@@ -225,7 +240,7 @@ def test_the_cover_matches_the_body_page_size(tmp_path):
 
     PDF のページ寸法を揃えるため（validate は表紙を足す前を見るので掛からない）。
     """
-    (tmp_path / "001.png").write_bytes(_png((1240, 1754)))
+    (tmp_path / "001.png").write_bytes(_patterned((1240, 1754)))
     assert add_cover_page(str(tmp_path), "B0TEST", fetch=lambda _asin: _png((1021, 1500))) is True
     with Image.open(tmp_path / COVER_NAME) as image:
         assert image.size == (1240, 1754)
@@ -239,7 +254,7 @@ def test_a_cmyk_cover_becomes_rgb(tmp_path):
     """
     buffer = io.BytesIO()
     Image.new("CMYK", (600, 900)).save(buffer, format="JPEG")
-    (tmp_path / "001.png").write_bytes(_png((1600, 1200)))
+    (tmp_path / "001.png").write_bytes(_patterned((1600, 1200)))
     assert add_cover_page(str(tmp_path), "B0TEST", fetch=lambda _a: buffer.getvalue()) is True
     with Image.open(tmp_path / COVER_NAME) as image:
         # 貼る先のキャンバスが RGB なので、保存されるモードは元画像に依らず RGB。
@@ -251,7 +266,7 @@ def test_a_cmyk_cover_becomes_rgb(tmp_path):
 
 def test_adding_the_cover_is_reported(tmp_path):
     """表紙を付けたことを記録する。バッチ全体で何冊に付いたかを数えるため。"""
-    (tmp_path / "001.png").write_bytes(_png((1600, 1200)))
+    (tmp_path / "001.png").write_bytes(_patterned((1600, 1200)))
     events = []
     add_cover_page(
         str(tmp_path),
@@ -328,3 +343,47 @@ def test_the_step_numbers_stay_within_the_total(tmp_path, monkeypatch):
         assert steps, "ステップが出ていない"
         for kw in steps:
             assert kw["current"] <= kw["total"], f"{kw['current']}/{kw['total']} ({kwargs})"
+
+
+def test_a_book_whose_first_page_is_already_the_cover_is_left_alone(tmp_path):
+    """リーダーのページ送りに表紙が入っている本には足さない (#27)。
+
+    マンガはたいていそうで、しかもフル解像度（1600x1200）。そこへ 353x500 の
+    ストア画像を足すと、**同じ絵が小さく劣化して 2 枚並ぶ**。実測（未来日記・
+    ヨコハマ買い出し紀行・てーきゅう）で、取得した表紙とリーダー 1 ページ目の
+    差は 1.32 / 1.48 / 2.79 だった。
+    """
+    # **実際の形に合わせる。** ストアの表紙は小さく（実測 353x500）、リーダーの
+    # ページはフル解像度。同じ絵でも寸法も枠も違うので、そこを揃えて比べられる
+    # ことが要点
+    page = _patterned((1600, 1200))
+    with Image.open(io.BytesIO(page)) as full:
+        buffer = io.BytesIO()
+        full.resize((353, 500), Image.Resampling.LANCZOS).save(buffer, format="PNG")
+    store = buffer.getvalue()
+    (tmp_path / "001.png").write_bytes(page)
+    events = []
+    added = add_cover_page(
+        str(tmp_path),
+        "B0TEST",
+        fetch=lambda _a: store,
+        emit=lambda name, **kw: events.append((name, kw)),
+    )
+    assert added is False
+    assert os.listdir(tmp_path) == ["001.png"], "同じ表紙を 2 枚並べている"
+    assert [kw["human"] for name, kw in events if name == "cover"] == [
+        "1 ページ目が既に表紙なので足しません"
+    ]
+
+
+def test_a_lookalike_title_page_still_gets_the_cover(tmp_path):
+    """表紙と同じデザインの扉は「同じ絵」ではない。足す。
+
+    実測で、表紙と扉の差は 16.09（真の重複は最大 2.79）。**迷ったら足す側に
+    倒す。** 冗長な 1 ページより、表紙が無いほうが困る。
+    """
+    (tmp_path / "001.png").write_bytes(_patterned((1600, 1200), seed=1))
+    assert (
+        add_cover_page(str(tmp_path), "B0TEST", fetch=lambda _a: _patterned((1021, 1500))) is True
+    )
+    assert sorted(os.listdir(tmp_path)) == ["000.png", "001.png"]

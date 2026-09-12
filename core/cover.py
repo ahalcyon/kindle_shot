@@ -39,19 +39,42 @@ REQUEST_TIMEOUT = 30
 # 指している。**画像 ID が違う**ので、src の URL のサイズ修飾子を書き換えても
 # 大きくならない（実測: 31kuSxEiAzL は ._SL2000_ でも 340x500 のまま）
 _HIRES_RE = re.compile(r'data-old-hires="(https://[^"]+?\.jpg)"')
+# 主画像の要素が持つ「URL -> [高さ, 幅]」の対応表。**この要素の中だけ**を見る
+_LANDING_RE = re.compile(
+    r'id="landingImage"[^>]*?data-a-dynamic-image="([^"]+)"'
+    r'|data-a-dynamic-image="([^"]+)"[^>]*?id="landingImage"'
+)
+_ENTRY_RE = re.compile(r'(https://[^"&]+?\.jpg)[^\[]*\[\s*(\d+)\s*,\s*(\d+)\s*\]')
 
 
 def cover_url_from_html(html):
     """商品ページの HTML から表紙画像の URL を返す。無ければ None。
 
-    **data-old-hires だけを見る。** 以前は「data-a-dynamic-image の中で面積が
-    一番大きいもの」を予備にしていたが、商品ページにはおすすめ商品のぶんも含めて
-    このブロックが 7 個あり（実測）、うち 6 個は他商品の 420x420 だった。この本の
-    主画像が 522x355 しかない本では**他商品の表紙が選ばれる**。
+    まず data-old-hires。無ければ**主画像 (landingImage) の中だけ**で一番大きい
+    ものを採る。
+
+    **ページ全体から面積最大を採ってはいけない。** 商品ページにはおすすめ商品の
+    ぶんも含めて data-a-dynamic-image が 7 個あり（実測）、うち 6 個は他商品の
+    420x420 だった。この本の主画像が 522x355 しかない本では他商品が勝つ。
     黙って別の本の表紙が 1 ページ目に入るくらいなら、表紙なしのほうがよい。
+
+    主画像に限れば安全で、実測で取りこぼしも減る。マンガの商品ページには
+    data-old-hires が無く landingImage だけがある（未来日記 (10)(12) で確認）。
     """
     found = _HIRES_RE.search(html)
-    return found.group(1) if found else None
+    if found:
+        return found.group(1)
+    landing = _LANDING_RE.search(html)
+    if not landing:
+        return None
+    best = None
+    best_area = 0
+    block = landing.group(1) or landing.group(2) or ""
+    for url, a, b in _ENTRY_RE.findall(block.replace("&quot;", '"')):
+        area = int(a) * int(b)
+        if area > best_area:
+            best, best_area = url, area
+    return best
 
 
 def _get(url):
@@ -102,3 +125,46 @@ def fit_cover(data, size, background=(255, 255, 255)):
         buffer = io.BytesIO()
         canvas.save(buffer, format="PNG")
         return buffer.getvalue()
+
+
+# 取得した表紙と本文 1 ページ目が同じ絵かを判定する閾値 (#27)。
+#
+# **リーダーのページ送りに表紙が入っている本がある。** マンガはたいていそうで、
+# しかもフル解像度（1600x1200）。そこへ 353x500 のストア画像を足すと、同じ絵が
+# 小さく劣化して 2 枚並ぶ。実測（未来日記・ヨコハマ買い出し紀行・てーきゅう）。
+#
+# 実測値:
+#     同じ表紙                     1.32 / 1.48 / 2.79
+#     表紙と「同じデザインの扉」   16.09      ← 一番紛らわしい本
+#     表紙と本文                   50 以上
+#
+# 6 は、真の重複（最大 2.79）の 2 倍、紛らわしい例（16.09）の 1/2.7。
+# **迷ったら足す側に倒す。** 冗長な 1 ページより、表紙が無いほうが困る。
+SAME_PICTURE_DIFF = 6.0
+
+
+def _fingerprint(image):
+    """余白を落として 32x32 のグレースケールにする。
+
+    余白を落とすのは、取得した表紙が枠の中で小さく置かれるため。落とさないと
+    同じ絵でも「片方だけ白が多い」で別物に見える。
+    """
+    import numpy as np
+    from PIL import ImageChops
+
+    picture = image.convert("RGB")
+    ground = Image.new("RGB", picture.size, picture.getpixel((0, 0)))
+    box = ImageChops.difference(picture, ground).getbbox()
+    if box:
+        picture = picture.crop(box)
+    return np.asarray(picture.convert("L").resize((32, 32)), dtype=np.float32)
+
+
+def same_picture(left, right, *, threshold=SAME_PICTURE_DIFF):
+    """2 枚が同じ絵か。判定できなければ False（＝表紙を足す側に倒す）。"""
+    import numpy as np
+
+    try:
+        return float(np.abs(_fingerprint(left) - _fingerprint(right)).mean()) < threshold
+    except Exception:  # noqa: BLE001 - 比べられないなら足す
+        return False
