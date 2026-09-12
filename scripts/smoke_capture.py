@@ -240,6 +240,7 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
         errors="replace",
         env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
     )
+    covered = False
     for line in proc.stdout.splitlines():
         if not line.strip():
             continue
@@ -248,7 +249,13 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
         except json.JSONDecodeError:
             echo(line)
             continue
-        if event.get("event") in ("error", "run_summary", "result"):
+        if event.get("event") == "cover":
+            # 表紙を足したかどうかで PDF のページ数が 1 増える。**取れなかった
+            # ときだけ緑になる**のは、ゲートの成否が外部サービスの機嫌で変わる
+            # ということで、#50 で問題にした偽陰性と同じ形 (#27)
+            # **human ではなく added を見る。** human は --json の出力に入らない
+            covered = bool(event.get("added"))
+        if event.get("event") in ("error", "run_summary", "result", "cover"):
             echo(f"  [{event['event']}] {json.dumps(event, ensure_ascii=False)}")
 
     problems = []
@@ -277,9 +284,14 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
     if not os.path.exists(pdf):
         problems.append(f"出力 PDF が無い: {pdf}")
     else:
+        # 表紙を足した本は 1 ページ多い。**足したかどうかはイベントで決める。**
+        # 期待値のほうを緩めると、表紙が取れなかった回も緑になってしまう
+        expected = pages + 1 if covered else pages
         count = pdf_page_count(pdf)
-        if count is not None and count != pages:
-            problems.append(f"PDF のページ数が {pages} ではなく {count}")
+        if count is not None and count != expected:
+            problems.append(f"PDF のページ数が {expected} ではなく {count}")
+        if not covered:
+            problems.append("表紙を 1 ページ目にできませんでした（cover イベントが出ていない）")
     return problems, retryable, argv
 
 

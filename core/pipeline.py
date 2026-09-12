@@ -25,6 +25,8 @@ import os
 import shutil
 import tempfile
 
+from PIL import Image
+
 from core.capture_profiles import PAGE_TURN_KEYS
 from core.image_files import clear_images, list_images
 from core.safe_names import MIN_NAME_CHARS, book_path_name, name_budget
@@ -751,7 +753,10 @@ def run_convert(
 
             results = [(fn, clean_text(t)) for fn, t in results]
 
-        chapters = detect_chapters(results) if bookmarks_enabled else None
+        # **表紙を章検出に入れない。** 表紙の文字（「FEEDBACK COMPLETE」等）が
+        # しおりの先頭に、本と無関係な見出しとして 1 本入る (#27)
+        body = [(fn, text) for fn, text in results if os.path.basename(fn) != COVER_NAME]
+        chapters = detect_chapters(body) if bookmarks_enabled else None
 
         if fmt == "text_pdf":
             filename = _ensure_ext(filename, ".pdf")
@@ -840,6 +845,59 @@ def run_convert(
 # ============================================================
 
 
+# 表紙のファイル名。本文は 001.png からなので、0 始まりなら必ず先に並ぶ
+COVER_NAME = "000.png"
+
+
+def add_cover_page(trimmed_dir, asin, *, emit=null_emit, fetch=None):
+    """本の表紙を 1 ページ目として trimmed_dir に置く。置けたら True。
+
+    **リーダーのページ送りには表紙が入っていない** (#27)。撮れる 1 ページ目は
+    扉（タイトルページ）で、表紙とは別物。表紙は商品ページから取る。
+
+    取れないことは失敗にしない。表紙が無いまま本文だけの PDF になるだけで、
+    本の中身は 1 ページも欠けない。ここで本を落とすほうが損。
+    """
+    from core import cover as cover_module
+
+    fetch = fetch or cover_module.fetch_cover
+    try:
+        pages = list_images(trimmed_dir)
+        if not pages:
+            return False
+        # list_images が返すのはファイル名。フォルダと繋ぐこと
+        with Image.open(os.path.join(trimmed_dir, pages[0])) as first:
+            size = first.size
+    except Exception:  # noqa: BLE001 - 読めないなら表紙なしで続ける
+        return False
+
+    try:
+        data = fetch(asin)
+        if not data:
+            emit(
+                "cover",
+                human="表紙を取得できませんでした（本文だけで続けます）",
+                asin=asin,
+                added=False,
+            )
+            return False
+        fitted = cover_module.fit_cover(data, size)
+        with open(os.path.join(trimmed_dir, COVER_NAME), "wb") as f:
+            f.write(fitted)
+    except Exception as exc:  # noqa: BLE001 - 表紙で本を落とさない
+        emit("cover", human=f"表紙を置けませんでした: {exc}", asin=asin, added=False)
+        return False
+    # **表示文言ではなく構造化した値で伝える。** human は --json の出力に入らない
+    # ので、文言で判定する側は絶対に一致しない（#50 で同じ穴を踏んでいる）
+    emit(
+        "cover",
+        human=f"表紙を 1 ページ目にしました（{size[0]}x{size[1]}）",
+        asin=asin,
+        added=True,
+    )
+    return True
+
+
 def run_book(
     *,
     title,
@@ -864,6 +922,7 @@ def run_book(
     ocr_workers=None,
     faithful=False,
     no_cleanup=False,
+    no_cover=False,
     split_words=None,
     config=None,
     emit=null_emit,
@@ -917,6 +976,10 @@ def run_book(
 
     # headless は本を開く処理がキャプチャに含まれるので open のステップが無い
     total_steps = 4 if headless else (5 if (asin or url) else 4)
+    if not no_cover:
+        # 表紙のステップを足したぶん分母も増やす。増やさないと [5/4] が出る。
+        # current / total は README の JSON Lines 仕様（外部契約）
+        total_steps += 1
     step_no = 0
     t_start = time.perf_counter()
     timings: list = []  # [ステップ名, 開始時刻→確定後は所要秒]
@@ -1052,6 +1115,10 @@ def run_book(
         if code != EXIT_OK:
             return finish(code)
 
+        if not no_cover:
+            step("cover: 表紙を 1 ページ目にする")
+            add_cover_page(trimmed_dir, asin, emit=emit)
+
         step(f"convert: {fmt} に変換")
         code = run_convert(
             trimmed_dir,
@@ -1164,6 +1231,7 @@ _BOOK_FIELDS = (
     ("ui_bands", "ui_bands", _v_bool),
     ("faithful", "faithful", _v_bool),
     ("no_cleanup", "no_cleanup", _v_bool),
+    ("no_cover", "no_cover", _v_bool),
     ("ocr_workers", "ocr_workers", _v_int),
     ("split_words", "split_words", _v_int),
 )

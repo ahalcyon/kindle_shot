@@ -220,6 +220,7 @@ kindle_shot.bat check --profile kindle_cloud
 | `--keep-images` | オフ（＝消す） | PDF 化に成功しても中間ファイル（キャプチャ画像・トリミング済み画像・`manifest.json`）を残す |
 | `--overwrite` | オフ | 保存先・トリミング先の既存画像を削除してから実行 |
 | `--no-rewind` / `--max-rewind` / `--load-wait` | - / `1000` / `45` | open の巻き戻し・読み込み待ちの調整 |
+| `--no-cover` | - | 表紙を 1 ページ目に足さない（既定は商品ページから取って足す） |
 | `--ocr-workers` | config の `ocr.workers` | ndlocr-lite の並列プロセス数 |
 | `--faithful` / `--no-cleanup` / `--split-words` | - | Markdown の形式・クリーニング・分割出力（[Markdown 出力](#markdown-出力notebooklm-最適化)） |
 
@@ -229,7 +230,7 @@ kindle_shot.bat check --profile kindle_cloud
 |-----------|------|------|
 | `--books` | （必須） | 本リストの JSON ファイル（[batch ファイル形式](#batch-ファイル形式)） |
 | `--out` | （必須） | 全本共通の保存先フォルダ（直下に `<title>.pdf` / `.md` が並ぶ） |
-| `--profile` / `--format` / `--page-turn` / `--page-wait` / `--expect-pages` / `--max-pages` / `--max-rewind` / `--load-wait` / `--no-rewind` / `--safety` / `--min-margins` / `--no-ui-bands` / `--ocr-workers` / `--faithful` / `--no-cleanup` / `--split-words` | `run` と同じ | **全本の既定**。JSON 側の本ごとの指定がこれを上書きする |
+| `--profile` / `--format` / `--page-turn` / `--page-wait` / `--expect-pages` / `--max-pages` / `--max-rewind` / `--load-wait` / `--no-rewind` / `--safety` / `--min-margins` / `--no-ui-bands` / `--ocr-workers` / `--faithful` / `--no-cleanup` / `--no-cover` / `--split-words` | `run` と同じ | **全本の既定**。JSON 側の本ごとの指定がこれを上書きする |
 | `--keep-images` | オフ（＝消す） | `run` と同じ。**全本共通で、JSON 側の本ごとの指定はできない** |
 | `--overwrite` | オフ | 完成済み（出力ファイルがある）本も再処理する。既定は完成済みをスキップして途中から再開 |
 | `--stop-on-error` | オフ | 1冊でも失敗したらバッチを中断（既定は続行して末尾に成功/失敗の一覧を出す） |
@@ -470,6 +471,23 @@ Kindle Cloud Reader は本文を**サーバ側でレンダリングした画像 
 進めなかった場合だけです）。既定の `auto` は判定できなければ**エラーで停止する**ので、
 黙って逆順に撮ることはありません。
 
+**1 ページ目は本の表紙にします。** リーダーのページ送りには表紙が入っておらず、
+撮れる 1 ページ目は扉（タイトルページ）です（実測: 本物の表紙にある「光文社」
+「株式会社コンカー 代表取締役社長」が、撮れた 1 ページ目には無い）。表紙は
+Amazon の商品ページの `data-old-hires` から取ります。
+
+```
+ライブラリの img[id="cover-<ASIN>"]   340x500 が上限
+商品ページの data-old-hires           1021x1500（実測）
+```
+
+ページの枠は 1600x1200 なので、前者は引き伸ばすことになり**ぼやけます**。後者なら
+縮小して収まるので劣化しません。**引き伸ばしはしません** — 元画像が枠より小さい本では
+拡大せず等倍で中央に置きます。ぼやけた表紙を足すのは、表紙が無いより悪いからです。
+
+取れなくても本は落としません（表紙なしで本文だけの PDF になります）。`--no-cover` で
+足さないようにできます。
+
 **先頭ページまで自動で巻き戻します。** `read.amazon.co.jp/?asin=...` は前回の読書位置で
 開くため（実測: 位置 27 で開いた）、巻き戻さないと読みかけの本が途中から末尾までだけ
 撮れ、しかも正常終了します。`batch` は出力があるとスキップするので、半分だけの本が
@@ -705,6 +723,9 @@ python scripts\convert_2nd.py --books books_c.json --out C:\books --format markd
   いるが精度が疑わしい）に分かれ、`result` イベントにも同じ内容が載ります。
   ビューアの UI（柱・ノンブル）の写り込み、本文が 1 行も読めなかったページ、
   低信頼度の行数、既知の誤認識パターン、括弧の対応を見ます
+- **`cover` イベント**: 表紙を 1 ページ目にしたか。`human` に「1 ページ目にしました」と
+  出れば付いており、PDF のページ数は本文より 1 多くなります。取れなかった本でも処理は
+  続きます（表紙なしで本文だけの PDF になります）
 - **`margins_clip_content` イベント**: 自動検出したトリミングが内容の位置を超えた辺と
   超過ピクセル数。本文が欠ける可能性があります（要素撮影の本では削らないので出ません）
 - **`ocr_layout` イベント（`searchable_pdf` のみ）**: 文字の位置つきで読めたページ数
@@ -1136,7 +1157,7 @@ python scripts\audit_rules.py C:\books\out --rule プロード   # 1 規則の�
   2形式目は `scripts\convert_2nd.py` で作ります
 - 本ごとに上書きできるキー: `format` / `max_pages` / `expect_pages` / `page_turn` / `page_wait` /
   `min_margins` / `ui_bands` / `profile` / `safety` / `ocr_workers` / `faithful` / `no_cleanup` / `split_words` /
-  `max_rewind` / `load_wait` / `no_rewind`
+  `max_rewind` / `load_wait` / `no_rewind` / `no_cover`
   （`min_margins` は `[0,0,80,80]` の配列か `"0,0,80,80"` の文字列、`ui_bands` は true/false）
 - CLI フラグはバッチ全体の既定で、JSON 側の指定が本ごとにそれを上書きします
 
