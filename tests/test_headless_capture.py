@@ -457,6 +457,8 @@ class FakeReader:
         transient=None,
         transient_ms=0,
         toc_start=None,
+        jump_to=None,
+        jump_revives_on_dismiss=False,
         toc_empty=False,
         toc_raises=False,
         keys_die_after_toc=False,
@@ -491,6 +493,13 @@ class FakeReader:
         self.presses: list[str] = []
         # 目次の先頭項目へ飛んだときに落ち着く位置。None なら目次を持たない本
         self.toc_start = toc_start
+        # 巻き戻し中に 1 度だけ位置が飛ぶ本（ダイアログが開いた形）。
+        # 飛んだあとは入力を飲んで動かなくなる (#72)
+        self.jump_to = jump_to
+        # ダイアログを閉じれば入力が戻る本。**これが実機に近い形**で、
+        # 「閉じて立て直す」経路を通すにはこちらが要る。飲みっぱなしの
+        # 模擬だけだと、閉じる処理を消してもテストが通ってしまう
+        self.jump_revives_on_dismiss = jump_revives_on_dismiss
         # 目次ボタンはあるが項目が出てこない本 / 項目のクリックが落ちる本
         self.toc_empty = toc_empty
         self.toc_raises = toc_raises
@@ -515,6 +524,12 @@ class FakeReader:
                     page.closed_with.append("escape")
                     return
                 if page.keys_dead:
+                    return
+                if page.jump_to is not None:
+                    # 飛んだあとは位置ラベルは読めるが入力は飲まれる
+                    page.position = page.jump_to
+                    page.jump_to = None
+                    page.keys_dead = True
                     return
                 page.pressed_at = page.clock
                 # 巻の境界（min_position）は**上から**越えられない壁。目次で
@@ -611,6 +626,14 @@ class FakeReader:
         """
         if js == LEAVE_BUTTON_JS:
             return False
+        if js == DISMISS_ALERTS_JS and self.jump_revives_on_dismiss and self.keys_dead:
+            self.keys_dead = False
+            # 閉じた拍子にさらに位置が動く本もある（#71 の Whispersync の形）
+            if self.dismiss_jumps:
+                jump = self.dismiss_jumps.pop(0)
+                if jump is not None:
+                    self.position = jump
+            return 1
         if js != DISMISS_ALERTS_JS:  # TOC_OPEN_JS（目次ボタンをセレクタで押す）
             if self.toc_start is None and not self.toc_empty:
                 return False
@@ -1027,6 +1050,83 @@ def test_the_rewound_event_says_whether_the_toc_was_used():
     events = []
     rewind_to_start(by_toc, "left", page_wait=0, emit=lambda n, **kw: events.append((n, kw)))
     assert [kw["via_toc"] for n, kw in events if n == "rewound"] == [True]
+
+
+def test_a_jump_away_from_the_start_is_not_counted_as_stuck():
+    """先頭から遠ざかったら、それは「押しても下がらない」ではない (#72)。
+
+    before はそれまでの**最小値**であって今いる場所ではない。遠ざかったのを
+    stuck に数えて before を据え置くと、3 回で「先頭に着いた」と結論しながら
+    実際は遠くにいる、という嘘の成功になる。
+    """
+    # 位置 5 まで戻したところでダイアログが開いて 1654 へ飛び、以後は動かない本
+    page = FakeReader(forward="ArrowLeft", position=5, min_position=5, jump_to=1654)
+    events = []
+    ok, _ = rewind_to_start(page, "left", page_wait=0, emit=lambda n, **kw: events.append((n, kw)))
+    rewound = [kw for n, kw in events if n == "rewound"][0]
+    assert ok is False, "遠くにいるのに成功と報告している"
+    assert rewound["position"] == 1654, f"嘘の位置を報告している: {rewound['position']}"
+
+
+def test_a_jump_within_the_start_window_also_fails_loudly():
+    """飛び先が先頭付近でも、黙って冒頭を落とさない。
+
+    飛び先が MAX_START_POSITION 以下だと、位置を正直に報告しても
+    `ok = at_start and before <= 10` を通ってしまう。飛んだあと入力が飲まれた
+    ままなら、押しても動かないので stuck が 3 たまり、**冒頭数ページが欠けた本が
+    完成扱いで確定する**（batch は出力があるとスキップする）。目次ジャンプで
+    踏んだ穴と同じ故障なので、同じ門番（キーの生存確認）を置く。
+    """
+    page = FakeReader(forward="ArrowLeft", position=5, min_position=5, jump_to=8)
+    events = []
+    ok, _ = rewind_to_start(page, "left", page_wait=0, emit=lambda n, **kw: events.append((n, kw)))
+    rewound = [kw for n, kw in events if n == "rewound"][0]
+    assert rewound["position"] == 8, "飛んだ先ではなく古い基準を報告している"
+    assert ok is False, "冒頭が欠けているのに完成扱いになっている"
+    assert rewound["reason"] == "keys_dead"
+
+
+def test_a_book_that_recovers_when_the_dialog_is_closed_is_rewound():
+    """ダイアログを閉じれば入力が戻る本は、立て直して最後まで巻き戻す。
+
+    **これが実機に近い形。** 飲みっぱなしの模擬だけで固めると、閉じる処理を
+    消してもテストが通ってしまう。
+    """
+    page = FakeReader(forward="ArrowLeft", position=50, jump_to=200, jump_revives_on_dismiss=True)
+    events = []
+    ok, _ = rewind_to_start(page, "left", page_wait=0, emit=lambda n, **kw: events.append((n, kw)))
+    assert ok is True
+    assert page.position == 1
+    jumped = [kw for n, kw in events if n == "rewind_jumped"]
+    assert [(kw["before"], kw["after"]) for kw in jumped] == [(50, 200)]
+    assert [kw for n, kw in events if n == "rewound"][0]["jumps"] == 1
+
+
+def test_a_transient_label_does_not_fail_a_book_at_the_start():
+    """押した直後の一過性の値で「遠ざかった」と決めない (#53)。
+
+    先頭にいる本が一過性の大きい値を 1 回返しただけで基準を取り直すと、
+    **先頭にいるのに失敗**になる（実測の再現: 位置 2 の見開き本が
+    ok=false reason=stopped_short）。342 冊すべての巻き戻し経路に入る判定なので、
+    ここで偽の失敗を作ると被害が大きい。
+    """
+    page = FakeReader(
+        forward="ArrowLeft", position=2, min_position=2, transient=1000, transient_ms=400
+    )
+    ok, _ = rewind_to_start(page, "left", page_wait=0)
+    assert ok is True
+
+
+def test_a_spread_page_book_is_still_detected_as_the_start():
+    """見開きの本（位置 2 で止まる）は、これまでどおり先頭と判定する。
+
+    遠ざかった場合だけを別扱いにする。位置が**同じ**なら従来どおり stuck に
+    数える。ここを崩すとマンガが軒並み失敗する（実測で 10 冊中 8 冊が該当）。
+    """
+    page = FakeReader(forward="ArrowLeft", position=40, min_position=2)
+    ok, _ = rewind_to_start(page, "left", page_wait=0)
+    assert ok is True
+    assert page.position == 2
 
 
 def test_rewind_reaches_the_first_page():
@@ -1676,3 +1776,66 @@ def test_a_real_end_of_book_still_exits_zero(tmp_path, monkeypatch):
     """最終ページまで撮れた本はこれまでどおり成功。"""
     code = _run_with_stop_reason("end_of_book", tmp_path, monkeypatch)
     assert code == 0
+
+
+def test_the_manifest_keeps_the_rewind_and_stop_results(tmp_path, monkeypatch):
+    """巻き戻しと停止の結果を manifest に残す (#72)。
+
+    標準出力にしか無いと、ログを捨てた時点で「どこで止まったか」を追えなくなる。
+    342 冊の蔵書に部分本が混じっていないかを事後に洗えるようにするのが目的。
+    """
+    import contextlib
+    import json as _json
+
+    from core import headless_browser
+    from core import headless_capture as hc
+    from core.capture_profiles import get_profile
+
+    page = FakePage([b"a", b"b"])
+
+    @contextlib.contextmanager
+    def fake_open_reader(*a, **kw):
+        yield page
+
+    def fake_rewind(_page, _forward, **kw):
+        kw["emit"]("rewound", ok=True, presses=7, position=2, total=3495, reason="ok")
+        return True, 7
+
+    def fake_capture(_page, _dir, **kw):
+        kw["emit"]("capture_stopped", page=5, reason="end_of_book", position=3400, book_total=3495)
+        return 5, "end_of_book"
+
+    monkeypatch.setattr(headless_browser, "open_reader", fake_open_reader)
+    monkeypatch.setattr(hc, "rewind_to_start", fake_rewind)
+    monkeypatch.setattr(hc, "capture_pages", fake_capture)
+    monkeypatch.setattr(hc, "_still_at_start", lambda *a, **kw: True)
+
+    hc.run_headless_capture(
+        get_profile("kindle_cloud"), "t", str(tmp_path), asin="B0TEST", page_turn="left"
+    )
+    manifest = _json.loads((tmp_path / "t" / hc.MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert manifest["rewind"]["position"] == 2
+    assert manifest["rewind"]["reason"] == "ok"
+    assert manifest["stopped_at"]["position"] == 3400
+    assert manifest["stopped_at"]["book_total"] == 3495
+
+
+def test_the_position_after_closing_the_dialog_is_the_one_adopted():
+    """閉じた拍子にさらに動いたら、**閉じたあとの**位置を基準にする。
+
+    閉じる前の値を基準にすると、そこから先の巻き戻しが実際の位置と食い違う。
+    #71 の Whispersync のダイアログは、閉じた拍子に位置が飛ぶ。
+    """
+    page = FakeReader(
+        forward="ArrowLeft",
+        position=50,
+        jump_to=200,
+        jump_revives_on_dismiss=True,
+        dismiss_jumps=[150],
+    )
+    events = []
+    ok, _ = rewind_to_start(page, "left", page_wait=0, emit=lambda n, **kw: events.append((n, kw)))
+    jumped = [kw for n, kw in events if n == "rewind_jumped"][0]
+    assert jumped["after"] == 150, "閉じる前の位置を基準にしている"
+    assert ok is True
+    assert page.position == 1

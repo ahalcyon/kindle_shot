@@ -151,9 +151,13 @@ REWIND_REREAD_ATTEMPTS = 3
 # 本を殺す**ことが分かったので外した。押すたびにラベルの描画が遅れる本は、
 # 読み直しては正しく戻っているのに回数だけが積み上がる。上限を「進んだら
 # 0 に戻す」形にすると、今度は stuck (3 回) が先に効くので到達しない。
-# 時間の上限は max_rewind (1000 押下) が持つ。最悪は 1 押下あたり
-# 0.6 + 5 + 1.5 = 7.1 秒 x 1000 = 約 2 時間で、1 冊としては長いが有限。
-# そこまで掛かる本が実在したら rewound の presses に出るので、数字を見てから決める。
+# 時間の上限は max_rewind (1000 押下) が持つ。ラベルを読み落とす本の最悪は
+# 1 押下あたり 0.6 + 5 + 1.5 = 7.1 秒 x 1000 = 約 2 時間。
+# **位置が飛び続ける本はこれより長い。** 飛びを検出した押下では
+# _stable_position_pair (最悪 7.5 秒) を 2 回と dismiss_dialogs (1.5 秒) と
+# キーの生存確認が乗るので、1 押下あたり約 17 秒 x 1000 = 約 4.7 時間になる (#72)。
+# どちらも 1 冊としては長いが有限。そこまで掛かる本が実在したら rewound の
+# presses と jumps に出るので、数字を見てから決める。
 
 # 読書位置の表示。実測で 2 形式ある:
 #     "6/339ページ ● 1%"   (ページ表示)
@@ -203,6 +207,31 @@ def _settled_position_pair(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=4):
         if i < attempts - 1:
             page.wait_for_timeout(int(page_wait * 1000))
     return None, None
+
+
+def _stable_position_pair(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=3):
+    """**同じ値を 2 回続けて**読めるまで待って (位置, 総量) を返す。
+
+    `_settled_position_pair` は「読めるまで待つ」であって「落ち着くまで待つ」では
+    ない。読めた時点で待ち時間ゼロで返るので、遷移中の一過性の値を掴んだ直後に
+    呼んでも**同じ一過性の値がそのまま返る**。一過性かどうかの判定には使えない。
+
+    押した直後に一瞬だけ別の値を返す本がある (#53)。巻き戻しで「先頭から
+    遠ざかった」を判定するとき、1 回の上振れで基準を取り直すと、**先頭にいる本が
+    失敗になる**（実測の再現: 先頭 位置 2 の本が一過性ラベル 1000 を拾って
+    ok=false reason=stopped_short）。
+
+    落ち着かなければ最後に読めた値を返す。判断材料が無いよりはましで、
+    呼び出し側は None でなければ従来どおり扱える。
+    """
+    last, last_total = _settled_position_pair(page, page_wait=page_wait)
+    for _ in range(attempts):
+        page.wait_for_timeout(int(page_wait * 1000))
+        current, current_total = _settled_position_pair(page, page_wait=page_wait)
+        if current is not None and current == last:
+            return current, current_total if current_total is not None else last_total
+        last, last_total = current, current_total
+    return last, last_total
 
 
 def _settled_position(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=4):
@@ -396,6 +425,8 @@ def build_manifest(
     shot_mode=None,
     shot_padding=None,
     shot_mode_changed=None,
+    rewind=None,
+    stopped_at=None,
 ):
     """run_capture が書くものと同じ形の manifest を組み立てる。"""
     return {
@@ -418,6 +449,12 @@ def build_manifest(
         # ヘッダーの写ったページが紛れ込むが、寸法が同じなので validate では
         # 拾えない。ここだけが手がかりになる
         "shot_mode_changed": shot_mode_changed or [],
+        # 巻き戻しの結果（位置・総量・理由）。**事後に部分本を洗うにはこれが要る。**
+        # 標準出力にしか無いと、ログを捨てた時点で追えなくなる (#72)
+        "rewind": rewind or {},
+        # 撮影が止まったときの位置。最終ページまで行った本は position が
+        # book_total の近くにあり、途中で止まった本は大きく手前にある (#76)
+        "stopped_at": stopped_at or {},
         "total_pages": total,
         "save_dir": save_dir,
         "stopped_reason": stopped_reason,
@@ -1040,6 +1077,7 @@ def rewind_to_start(
 
     pressed = 0
     stuck = 0
+    jumps = 0
     unreadable = 0
     at_start = before <= 1
     while pressed < max_rewind and not at_start:
@@ -1098,6 +1136,70 @@ def rewind_to_start(
         unreadable = 0
         if seen_total is not None:
             total = seen_total
+        if current > before:
+            # **先頭から遠ざかった。** 「押しても下がらない」とは別の事象。
+            # ここを stuck に数えて before を据え置くと、3 回で「先頭に着いた」と
+            # 結論しながら実際は遠くにいる、という**嘘の成功**になる
+            # （実測の再現で ok=true position=5 と報告して実際は 1654）。
+            # before はそれまでの最小値であって、今いる場所ではない (#72)。
+            #
+            # 一過性のラベルを拾っただけかもしれないので、落ち着いてから読み直す。
+            # 巻き戻しの刻み (0.6 秒) は遷移中の値を掴みやすい (#53)。
+            # **_settled_position_pair では落ち着かない**（読めた時点で即返る）ので
+            # 同じ値を 2 回続けて読めるまで待つ。1 回の上振れで基準を取り直すと、
+            # 先頭にいる本が失敗になる
+            settled, settled_total = _stable_position_pair(
+                page, page_wait=max(page_wait, DEFAULT_PAGE_WAIT)
+            )
+            if settled is not None:
+                current = settled
+                if settled_total is not None:
+                    total = settled_total
+            if current > before:
+                # 本当に遠ざかっている。**入力を飲むダイアログが出ていても
+                # 位置ラベルは読める**（text_content で読むので CSS で隠れていても
+                # 返る）。実測: 目次パネルを閉じた直後、位置ラベルは 1 と読めるのに
+                # 1 回目の押下だけ飲まれた。だから「読めない周回」だけで
+                # ダイアログを閉じていたのでは間に合わない
+                dismiss_dialogs(page)
+                moved, moved_total = _stable_position_pair(
+                    page, page_wait=max(page_wait, DEFAULT_PAGE_WAIT)
+                )
+                if moved is not None:
+                    current = moved
+                    if moved_total is not None:
+                        total = moved_total
+                emit(
+                    "rewind_jumped",
+                    human=f"巻き戻し中に位置が飛びました: {before} → {current}",
+                    before=before,
+                    after=current,
+                )
+                # 今いる場所を基準にする。嘘の位置を報告しない
+                before = current
+                stuck = 0
+                jumps += 1
+                # **飛び先が先頭付近でも黙って完成させない。** 飛んだあと入力が
+                # 飲まれたままだと、押しても動かないので stuck が 3 たまり、
+                # 飛び先が MAX_START_POSITION の枠内なら ok になる。
+                # 目次ジャンプで踏んだ穴と同じ故障なので、同じ門番を置く
+                if _keys_respond(page, forward, page_wait=page_wait) is False:
+                    where = f"位置 {before}" + (f"/{total}" if total is not None else "")
+                    emit(
+                        "rewound",
+                        human=(
+                            f"巻き戻し中に位置が飛び、以後ページ送りが効きません（{where}）。"
+                            "先頭に見えても途中の可能性があるため中止します"
+                        ),
+                        ok=False,
+                        presses=pressed,
+                        position=before,
+                        total=total,
+                        reason="keys_dead",
+                        via_toc=via_toc,
+                    )
+                    return False, pressed
+                continue
         if current >= before:
             stuck += 1
         else:
@@ -1141,6 +1243,9 @@ def rewind_to_start(
         reason=reason,
         # 目次を通った本とキーだけの本を、ログから切り分けるための主キー
         via_toc=via_toc,
+        # 巻き戻し中に位置が飛んだ回数。立て直したあとの position からは
+        # 飛んだ形跡が消えるので、これが唯一の目印になる (#72)
+        jumps=jumps,
     )
     return ok, pressed
 
@@ -1232,11 +1337,29 @@ def run_headless_capture(
     shot_mode = None
     shot_padding = None
     shot_mode_changed: list = []
+    rewind_info: dict = {}
+    stopped_at: dict = {}
 
     def note(event, human=None, **fields):
-        """撮影方式が途中で変わったページを控えつつ、そのまま emit する。"""
+        """manifest に残す情報を控えつつ、そのまま emit する。
+
+        イベントを横取りするのは、rewind_to_start / capture_pages の戻り値を
+        増やすと呼び出し側とテストに広く波及するため。出している情報は
+        すでに揃っているので、拾って manifest に入れるだけでよい。
+        """
         if event == "shot_mode_changed" and "page" in fields:
             shot_mode_changed.append(fields["page"])
+        if event == "rewound":
+            rewind_info.update(
+                {
+                    k: fields.get(k)
+                    for k in ("ok", "presses", "position", "total", "reason", "via_toc", "jumps")
+                }
+            )
+        if event == "capture_stopped":
+            stopped_at.update(
+                {k: fields.get(k) for k in ("page", "reason", "position", "book_total")}
+            )
         emit(event, human=human, **fields)
 
     def write_manifest():
@@ -1256,6 +1379,8 @@ def run_headless_capture(
             shot_mode=shot_mode,
             shot_padding=shot_padding,
             shot_mode_changed=shot_mode_changed,
+            rewind=rewind_info,
+            stopped_at=stopped_at,
         )
         path = os.path.join(save_dir, MANIFEST_NAME)
         with open(path, "w", encoding="utf-8") as f:
@@ -1342,6 +1467,9 @@ def run_headless_capture(
                         "--page-turn left / right で明示してください",
                     )
                     stopped_reason = "turn_key_undetected"
+                    # 巻き戻しの結果を一番残したいのがこの経路。書かずに返すと
+                    # manifest 自体が無い (#72)
+                    write_manifest()
                     return EXIT_ERROR
                 forward = detected
                 turn_source = "detected"
@@ -1352,7 +1480,7 @@ def run_headless_capture(
             emit("status", human=f"ページ送りキー: {key}", message=f"ページ送りキー: {key}")
 
             if not no_rewind:
-                rewound, _ = rewind_to_start(page, forward, max_rewind=max_rewind, emit=emit)
+                rewound, _ = rewind_to_start(page, forward, max_rewind=max_rewind, emit=note)
                 if not rewound:
                     emit_error(
                         emit,
@@ -1360,6 +1488,9 @@ def run_headless_capture(
                         "完成扱いになるため中止します（--no-rewind で無視できます）",
                     )
                     stopped_reason = "rewind_failed"
+                    # 巻き戻しの結果を一番残したいのがこの経路。書かずに返すと
+                    # manifest 自体が無い (#72)
+                    write_manifest()
                     return EXIT_ERROR
                 # ここで閉じるダイアログも位置を飛ばしうる（Whispersync の
                 # 「最後に読んでいたページへ移動しますか」）。巻き戻しが
@@ -1372,6 +1503,9 @@ def run_headless_capture(
                     # 「戻し切れなかった」と区別する。342 冊のログを原因別に
                     # 数えられるように
                     stopped_reason = "moved_after_rewind"
+                    # 巻き戻しの結果を一番残したいのがこの経路。書かずに返すと
+                    # manifest 自体が無い (#72)
+                    write_manifest()
                     return EXIT_ERROR
             total, stopped_reason = capture_pages(
                 page,
