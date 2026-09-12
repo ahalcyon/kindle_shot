@@ -458,6 +458,7 @@ class FakeReader:
         transient_ms=0,
         toc_start=None,
         jump_to=None,
+        jump_revives_on_dismiss=False,
         toc_empty=False,
         toc_raises=False,
         keys_die_after_toc=False,
@@ -495,6 +496,10 @@ class FakeReader:
         # 巻き戻し中に 1 度だけ位置が飛ぶ本（ダイアログが開いた形）。
         # 飛んだあとは入力を飲んで動かなくなる (#72)
         self.jump_to = jump_to
+        # ダイアログを閉じれば入力が戻る本。**これが実機に近い形**で、
+        # 「閉じて立て直す」経路を通すにはこちらが要る。飲みっぱなしの
+        # 模擬だけだと、閉じる処理を消してもテストが通ってしまう
+        self.jump_revives_on_dismiss = jump_revives_on_dismiss
         # 目次ボタンはあるが項目が出てこない本 / 項目のクリックが落ちる本
         self.toc_empty = toc_empty
         self.toc_raises = toc_raises
@@ -621,6 +626,14 @@ class FakeReader:
         """
         if js == LEAVE_BUTTON_JS:
             return False
+        if js == DISMISS_ALERTS_JS and self.jump_revives_on_dismiss and self.keys_dead:
+            self.keys_dead = False
+            # 閉じた拍子にさらに位置が動く本もある（#71 の Whispersync の形）
+            if self.dismiss_jumps:
+                jump = self.dismiss_jumps.pop(0)
+                if jump is not None:
+                    self.position = jump
+            return 1
         if js != DISMISS_ALERTS_JS:  # TOC_OPEN_JS（目次ボタンをセレクタで押す）
             if self.toc_start is None and not self.toc_empty:
                 return False
@@ -1058,15 +1071,50 @@ def test_a_jump_away_from_the_start_is_not_counted_as_stuck():
 def test_a_jump_within_the_start_window_also_fails_loudly():
     """飛び先が先頭付近でも、黙って冒頭を落とさない。
 
-    飛び先が MAX_START_POSITION 以下だと、嘘の位置を報告しても
-    ok = at_start and before <= 10 を通ってしまう。**冒頭数ページを黙って
-    落とす**のがこの経路。
+    飛び先が MAX_START_POSITION 以下だと、位置を正直に報告しても
+    `ok = at_start and before <= 10` を通ってしまう。飛んだあと入力が飲まれた
+    ままなら、押しても動かないので stuck が 3 たまり、**冒頭数ページが欠けた本が
+    完成扱いで確定する**（batch は出力があるとスキップする）。目次ジャンプで
+    踏んだ穴と同じ故障なので、同じ門番（キーの生存確認）を置く。
     """
     page = FakeReader(forward="ArrowLeft", position=5, min_position=5, jump_to=8)
     events = []
-    rewind_to_start(page, "left", page_wait=0, emit=lambda n, **kw: events.append((n, kw)))
+    ok, _ = rewind_to_start(page, "left", page_wait=0, emit=lambda n, **kw: events.append((n, kw)))
     rewound = [kw for n, kw in events if n == "rewound"][0]
     assert rewound["position"] == 8, "飛んだ先ではなく古い基準を報告している"
+    assert ok is False, "冒頭が欠けているのに完成扱いになっている"
+    assert rewound["reason"] == "keys_dead"
+
+
+def test_a_book_that_recovers_when_the_dialog_is_closed_is_rewound():
+    """ダイアログを閉じれば入力が戻る本は、立て直して最後まで巻き戻す。
+
+    **これが実機に近い形。** 飲みっぱなしの模擬だけで固めると、閉じる処理を
+    消してもテストが通ってしまう。
+    """
+    page = FakeReader(forward="ArrowLeft", position=50, jump_to=200, jump_revives_on_dismiss=True)
+    events = []
+    ok, _ = rewind_to_start(page, "left", page_wait=0, emit=lambda n, **kw: events.append((n, kw)))
+    assert ok is True
+    assert page.position == 1
+    jumped = [kw for n, kw in events if n == "rewind_jumped"]
+    assert [(kw["before"], kw["after"]) for kw in jumped] == [(50, 200)]
+    assert [kw for n, kw in events if n == "rewound"][0]["jumps"] == 1
+
+
+def test_a_transient_label_does_not_fail_a_book_at_the_start():
+    """押した直後の一過性の値で「遠ざかった」と決めない (#53)。
+
+    先頭にいる本が一過性の大きい値を 1 回返しただけで基準を取り直すと、
+    **先頭にいるのに失敗**になる（実測の再現: 位置 2 の見開き本が
+    ok=false reason=stopped_short）。342 冊すべての巻き戻し経路に入る判定なので、
+    ここで偽の失敗を作ると被害が大きい。
+    """
+    page = FakeReader(
+        forward="ArrowLeft", position=2, min_position=2, transient=1000, transient_ms=400
+    )
+    ok, _ = rewind_to_start(page, "left", page_wait=0)
+    assert ok is True
 
 
 def test_a_spread_page_book_is_still_detected_as_the_start():
@@ -1770,3 +1818,24 @@ def test_the_manifest_keeps_the_rewind_and_stop_results(tmp_path, monkeypatch):
     assert manifest["rewind"]["reason"] == "ok"
     assert manifest["stopped_at"]["position"] == 3400
     assert manifest["stopped_at"]["book_total"] == 3495
+
+
+def test_the_position_after_closing_the_dialog_is_the_one_adopted():
+    """閉じた拍子にさらに動いたら、**閉じたあとの**位置を基準にする。
+
+    閉じる前の値を基準にすると、そこから先の巻き戻しが実際の位置と食い違う。
+    #71 の Whispersync のダイアログは、閉じた拍子に位置が飛ぶ。
+    """
+    page = FakeReader(
+        forward="ArrowLeft",
+        position=50,
+        jump_to=200,
+        jump_revives_on_dismiss=True,
+        dismiss_jumps=[150],
+    )
+    events = []
+    ok, _ = rewind_to_start(page, "left", page_wait=0, emit=lambda n, **kw: events.append((n, kw)))
+    jumped = [kw for n, kw in events if n == "rewind_jumped"][0]
+    assert jumped["after"] == 150, "閉じる前の位置を基準にしている"
+    assert ok is True
+    assert page.position == 1
