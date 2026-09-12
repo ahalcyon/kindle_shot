@@ -23,6 +23,12 @@
 2. **行またぎで切れた語**。`アッ` と `プロード` は別々の連続として数える
 3. **少数の壊れ**。既定の ``--min-count 3`` では 1〜2 件の壊れは挙がらない
 
+**置換後にまだ誤読が残るもの**（#68）には ★ を付ける。大書きの 1 文字を小書きに
+直した形がコーパスに出てくれば、そちらが本来の綴り。ただし**コーパス全体に聞く**
+ので、別の本の綴りを勧めることがある。採用する前に、同じ本の中での出現数を見ること
+（`grep -c` で足りる）。実際 `ウエッジウッド` は 3 冊とも `ウェッジウッド` が
+圧倒的だったので直したが、逆の本があれば直してはいけない。
+
 読み込みの際、改行以外の空白を落とす (mine_misreads.load_corpus)。そのぶん
 空白で区切られたカタカナが 1 連続に融着するので、文字数は本番と一致しない。
 
@@ -68,9 +74,49 @@ def suspicious(runs, replacer, *, min_count):
         after = replacer.apply(run)
         if after == run or after in present:
             continue
-        found.append((count, run, after))
+        found.append((count, run, after, still_misread(after, present)))
     found.sort(reverse=True)
     return found
+
+
+# OCR が大書きに読み違える小書き文字。`ッ` を `ツ` と読むのが圧倒的に多いが、
+# 拗音・外来音（`ェ` を `エ` 等）も同じ形で起きる。
+SMALL_KANA = {
+    "ツ": "ッ",
+    "ヤ": "ャ",
+    "ユ": "ュ",
+    "ヨ": "ョ",
+    "ア": "ァ",
+    "イ": "ィ",
+    "ウ": "ゥ",
+    "エ": "ェ",
+    "オ": "ォ",
+}
+
+
+def still_misread(after, present):
+    """置換後の形にまだ誤読が残っていないか。残っていれば「あるべき形」を返す。
+
+    **長いキーの右辺に誤読が残り、短いキーが拾いきれない**形がある (#68)。
+
+        エデイプス・コンプレツクス -> エディプス・コンプレツクス   （コンプレツクス が残る）
+        キツトカツト               -> キツトカット                 （キツト が残る）
+
+    長いキーが先に当たるので、短いキーの出番が来ない。辞書のテストは規則の
+    右辺しか見ないので、この形は捕まえられなかった。
+
+    判定は**コーパスに聞く**。大書きの 1 文字を小書きに直した形がコーパスに
+    出てくるなら、そちらが本来の綴り。出てこなければ何も言わない（固有名詞や
+    造語を勝手に直さない）。
+    """
+    for i, ch in enumerate(after):
+        small = SMALL_KANA.get(ch)
+        if small is None:
+            continue
+        candidate = after[:i] + small + after[i + 1 :]
+        if candidate in present:
+            return candidate
+    return None
 
 
 def rule_detail(runs, replacer, key):
@@ -138,16 +184,21 @@ def main(argv=None):
     found = suspicious(runs, replacer, min_count=args.min_count)
     if args.as_json:
         json.dump(
-            [{"count": c, "before": b, "after": a} for c, b, a in found],
+            [{"count": c, "before": b, "after": a, "should_be": fix} for c, b, a, fix in found],
             sys.stdout,
             ensure_ascii=False,
             indent=2,
         )
         print()
         return 0
+    half = [row for row in found if row[3]]
     print(f"要確認 {len(found)} 件（置換後の形がコーパスに出てこないもの）")
-    for c, b, a in found:
-        print(f"{c:6d}  {b}  ->  {a}")
+    for c, b, a, fix in found:
+        note = f"   ★まだ誤読が残る（コーパスは {fix}）" if fix else ""
+        print(f"{c:6d}  {b}  ->  {a}{note}")
+    if half:
+        print()
+        print(f"★ {len(half)} 件は置換後にまだ誤読が残っている。規則を足すこと (#68)")
     return 0
 
 
