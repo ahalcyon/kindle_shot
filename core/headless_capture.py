@@ -748,6 +748,47 @@ CATCHUP_WAITS = 3
 CATCHUP_WAIT = 5.0
 
 
+# 最終ページに達したとみなす条件 (#79)。不足量が**どちらの上限も超えたら**途中。
+#
+# **実測 8 冊で決めた。** 最後まで撮れた本の「総量 - 位置」は絶対量で小さい:
+#
+#     713/713  1731/1731  1387/1387  582/582  917/917  537/537   不足 0（6 冊）
+#     1458/1459                                                  不足 1
+#     10882/10891                                                不足 9
+#
+# 途中で止まった本は桁が違う:
+#
+#     1446/2999   不足 1553      15916/58503   不足 42587
+#
+# **割合だけでは駄目。** 不足は最終画面 1 枚ぶんのラグに見え、本の長さに比例しない。
+# 割合だけにすると短い本ほど厳しくなり、不足 9 は総量 450 を切った時点で 2% を
+# 超える。この標本は蔵書の**最長側**から採ったもので（12 冊中の 8 冊）、実際の
+# 蔵書は中央値 106 ページ・最小 11 ページなので、効くかどうかを決めるのは短い本。
+# そこは 1 冊も測れていない。だから絶対量の下駄を併用する。
+#
+# 100 は実測の最大ラグ 9 の 10 倍。10% は、途中で止まった 2 冊（48% と 27%）に
+# 42 ポイント以上の余裕を残しつつ、正常側の最悪値 99.9% から 10 ポイント下げた値。
+#
+# 割合は**整数の百分率**で持つ。0.9 を掛けると 10000 * (1 - 0.9) が
+# 999.9999999999998 になり、境界が浮動小数の誤差でぶれる
+# **偽陽性が最悪のケース**なので、正常側に余裕を寄せてある（失敗した本は中間
+# ファイルが残るため、毎回 GB 単位を置いていくことになる）。
+# 次のバッチで capture_stopped の position/book_total を必ず集計すること。
+END_OF_BOOK_SHORT_PERCENT = 10
+END_OF_BOOK_SLACK = 100
+
+
+def short_of_end(position, book_total):
+    """読み手側の位置が本の終わりに達していないか。
+
+    判断材料が無ければ False（従来どおり最終ページとして扱う）。
+    """
+    if position is None or not book_total:
+        return False
+    allowed = max(END_OF_BOOK_SLACK, book_total * END_OF_BOOK_SHORT_PERCENT // 100)
+    return (book_total - position) > allowed
+
+
 def capture_pages(
     page,
     save_dir,
@@ -770,6 +811,7 @@ def capture_pages(
         max_pages       上限に達した
         end_of_book     送っても変わらなくなった（最終ページ到達とみなす）
         no_change       1 ページも進めなかった（送りキーの向き違い・モーダル等）
+        short_of_end    読み手側の位置が本の終わりに達していない。最終ページではない
         reader_error    リーダーが落ちた。最終ページではないので完成扱いにしない
         signin_required 途中でセッションが切れた
 
@@ -886,7 +928,15 @@ def capture_pages(
                 # 大きく手前にある。上の 2 つの検出はどちらも取り逃しうる
                 # （viewport 撮影の本でダイアログが読めない場合など）ので、
                 # 検出できなかったぶんはログから拾い直すしかない
-                position, book_total = read_position_pair(page)
+                # **落ち着いてから読む。** 直前に最大 max_retries 回キーを押して
+                # いるので、一過性のラベルを掴みやすい (#53)。生読みで判断すると、
+                # 最後まで撮れた本が 1 回の上振れ／下振れで失敗する
+                position, book_total = _stable_position_pair(
+                    page, page_wait=max(page_wait, DEFAULT_PAGE_WAIT)
+                )
+                if reason == "end_of_book" and short_of_end(position, book_total):
+                    # **読み手側がまだ終わりに達していない。最終ページではない。**
+                    reason = "short_of_end"
                 emit(
                     "capture_stopped",
                     human=f"{total} ページで停止しました（{reason}、位置 {position}/{book_total}）",
@@ -1625,6 +1675,15 @@ def run_headless_capture(
         return EXIT_ERROR
     if stopped_reason == "signin_required":
         emit_error(emit, f"{total} ページでセッションが切れたため中断しました")
+        return EXIT_ERROR
+    if stopped_reason == "short_of_end":
+        # **完成扱いにしない。** 0 で返すと batch が出力を見てスキップし、
+        # 途中までの本がそのまま確定する (#79)
+        emit_error(
+            emit,
+            f"{total} ページで止まりましたが、読み手側の位置は本の終わりに達していません。"
+            "最終ページではないので、この本は撮り直しが要ります",
+        )
         return EXIT_ERROR
     if stopped_reason == "reader_error":
         # **完成扱いにしない。** 0 で返すと batch が出力を見てスキップし、
