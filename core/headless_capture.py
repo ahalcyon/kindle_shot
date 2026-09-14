@@ -62,11 +62,33 @@ SIGNIN_MARKER = "/ap/signin"
 # いません」）に一致してしまう。それは全冊に同じように起きる種類の障害なのに、
 # 1 冊ずつ「この本は非対応」として片付けられ、しかも非対応は終了コードに出ない
 # ので、405 冊すべてを黙って取りこぼす。
-UNSUPPORTED_MARKERS = (
-    "kindle app is required",
-    "can only be opened using kindle app",
+#
+# **同じ状態が言語で違う文言になる (#92)。** 実測では、同じバッチの中で 24 冊が
+# 英語のダイアログを出し、1 冊だけ日本語で出た。日本語版を持っていなかったので
+# その 1 冊だけ素通りし、「ページ送りの向きを判定できない」という無関係な失敗に
+# なっていた。非対応は終了コード 8 で読み飛ばすものなので、取りこぼすと
+# 毎回 50 秒かけて開いて失敗するうえ、失敗の内訳が実態とずれる。
+# 文言を足すときは**日英を対にする**こと。
+# 対にできているもの。**足すときはここか下のどちらかに必ず入れる。**
+# UNSUPPORTED_MARKERS はこの 2 つから導出するので、片方の言語だけを
+# こっそり足すことができない形にしてある。
+UNSUPPORTED_MARKER_PAIRS = (
+    ("kindle app is required", "kindleアプリが必要です"),
+    ("can only be opened using kindle app", "kindleアプリでのみ開くことができます"),
+)
+
+# **相方の文言を実機で見ていないもの。** /manga/<ASIN> 経由で日本語に出た
+# ダイアログ。ここには #92 とちょうど鏡像の穴が残っていて、英語で出れば
+# 同じように素通りする。**推測の英訳を足さない**（裏の取れていない対策は
+# 入れない）。英語で出るのを実機で見たら上のペアへ移すこと。
+UNPAIRED_UNSUPPORTED_MARKERS = (
     "cloud reader でサポートされていません",
     "この本は現在読むことができません",
+)
+
+UNSUPPORTED_MARKERS = (
+    tuple(marker for pair in UNSUPPORTED_MARKER_PAIRS for marker in pair)
+    + UNPAIRED_UNSUPPORTED_MARKERS
 )
 
 # リーダー自身が落ちたときのダイアログ。**「最終ページ」と区別するために要る。**
