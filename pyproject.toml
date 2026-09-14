@@ -23,6 +23,9 @@ dependencies = [
     "Pillow==12.1.1",
     "reportlab==4.2.5",
     "pypdfium2==4.30.0",
+    # 出来上がった PDF を読み直す側。テキスト層の剥がし (core/text_layer.py) と
+    # 旧蔵書の判定 (core/book_format.py) が使う
+    "pypdf>=6,<7",
     "customtkinter>=5.2.2",
 ]
 

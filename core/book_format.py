@@ -45,6 +45,9 @@ SEARCHABLE = "searchable_pdf"
 # 谷の真ん中。実測の漫画側の最大が 110.3、文章側の最小が 249.2
 DEFAULT_THRESHOLD = 150.0
 
+# 系列を根拠にするのに要る実測の冊数。1 冊では series_key の衝突と区別できない
+MIN_SERIES_BOOKS = 2
+
 # シリーズ名を作るときに落とすもの。巻数・レーベル・版の表記が違うだけの本を
 # 同じ系列として扱う
 _BRACKETS = re.compile(r"[（(\[【][^）)\]】]*[）)\]】]")
@@ -112,6 +115,12 @@ def library_labels(folder):
             reader = PdfReader(os.path.join(folder, name))
             n = len(reader.pages)
             picks = [k for k in (0, n // 4, n // 2, (3 * n) // 4, n - 1) if 0 <= k < n]
+            if not picks:
+                # 0 ページの PDF。**「文字が無い」と「読めなかった」を混ぜない。**
+                # 中断したバッチの書きかけが蔵書フォルダに残ることがあり、
+                # それを「テキスト層なし」の根拠にすると、その本が撮り直しの要る
+                # image_pdf 側（高いほうの間違い）へ倒れる
+                continue
             chars = sum(len((reader.pages[k].extract_text() or "").strip()) for k in picks)
         except Exception:  # noqa: BLE001 - 読めない本は判定材料にしないだけ
             continue
@@ -136,7 +145,17 @@ def series_labels(labels):
     counts: dict = collections.defaultdict(collections.Counter)
     for title, fmt in labels.items():
         counts[series_key(title)][fmt] += 1
-    return {k: (next(iter(c)) if len(c) == 1 else None) for k, c in counts.items()}
+    # **1 冊だけの系列は根拠にしない。** len(c) == 1 は「判定が 1 種類」であって
+    # 「複数冊が一致した」ではない。series_key は全角含む数字・括弧内・
+    # 巻/話/第/上/中/下 などを落とすので 1 文字違いで衝突する
+    # （「下町ロケット」と「町ロケット」、「空の中」と「空の上」が同じキーになる）。
+    # 割れの検出は実測済みのタイトル同士でしか効かないため、未実測の本が
+    # 衝突して入ってくる経路は素通りする。しかもこれは撮り直しの要る高い側の
+    # 間違い。2 冊以上が一致したときだけ採るのが安い保険になる。
+    return {
+        k: (next(iter(c)) if len(c) == 1 and sum(c.values()) >= MIN_SERIES_BOOKS else None)
+        for k, c in counts.items()
+    }
 
 
 def decide(title, *, measured, series, genre, library):

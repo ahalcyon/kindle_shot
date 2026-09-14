@@ -68,8 +68,12 @@ def main(argv=None):
             continue
         fmt, reason = decide(title, measured=measured, series=series, genre=genre, library=library)
         why[(reason, fmt)] += 1
-        entry = {k: v for k, v in book.items() if k in ("asin", "url", "title")}
-        entry["format"] = fmt
+        # **本ごとの設定を落とさない。** make_books.py は page_turn / split_words /
+        # max_pages などを本ごとに書く（selection.example.json の「横書きは
+        # page_turn: right」がまさにそれ）。拾う鍵を並べる形にすると、
+        # ここを通した books.json から黙って消える。入力は元々
+        # load_batch_file の検証を通せる形なので、そのまま持ち回って format だけ上書きする
+        entry = {**book, "format": fmt}
         out.append(entry)
 
     import json

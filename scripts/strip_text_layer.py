@@ -27,7 +27,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.book_format import IMAGE, measured_labels  # noqa: E402
+from core.book_format import DEFAULT_THRESHOLD, IMAGE, measured_labels  # noqa: E402
 from core.text_layer import strip_file  # noqa: E402
 
 
@@ -44,7 +44,9 @@ def main(argv=None):
     p.add_argument("--folder", required=True, help="PDF の入っているフォルダ")
     p.add_argument("--books", help="format 付きの books.json（image_pdf の本を剥がす）")
     p.add_argument("--measured", action="append", default=[], help="バッチログ（複数可）")
-    p.add_argument("--threshold", type=float, default=150.0, help="文字数/ページの閾値")
+    p.add_argument(
+        "--threshold", type=float, default=DEFAULT_THRESHOLD, help="文字数/ページの閾値"
+    )
     p.add_argument("--dry-run", action="store_true", help="対象を出すだけで書き換えない")
     p.add_argument("--no-verify", action="store_true", help="検証を省く（推奨しない）")
     p.add_argument("--json", action="store_true", help="1 冊 1 行の JSON で出す")

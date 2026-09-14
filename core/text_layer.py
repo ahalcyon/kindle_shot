@@ -55,7 +55,10 @@ def strip_text_operations(page, writer):
     page.replace_contents(stream)
 
     # フォントを残すと、文字が無いのにサブセットフォントだけ抱えた PDF になる
-    resources = page.get("/Resources")
+    # page.get は pypdf の DictionaryObject では dict.get そのままで、間接参照を
+    # 解決しない。/Resources が間接参照の PDF だと "/Font" in resources は True
+    # なのに del が TypeError になる。page[...] は解決する
+    resources = page["/Resources"] if "/Resources" in page else None
     if resources is not None and "/Font" in resources:
         del resources[NameObject("/Font")]
     return removed

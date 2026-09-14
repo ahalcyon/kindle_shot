@@ -15,6 +15,7 @@ from core.book_format import (
     SEARCHABLE,
     decide,
     genre_labels,
+    library_labels,
     measured_labels,
     series_key,
     series_labels,
@@ -180,3 +181,136 @@ def test_genre_labels_are_flattened(tmp_path):
         encoding="utf-8",
     )
     assert genre_labels(str(path)) == {"漫画": "コミック"}
+
+
+def test_a_series_seen_only_once_is_not_evidence():
+    """**1 冊だけの系列は根拠にしない。**
+
+    `len(c) == 1` は「判定が 1 種類」であって「複数冊が一致した」ではない。
+    series_key は数字・括弧内・巻/話/第/上/中/下 を落とすので 1 文字違いで
+    衝突する（「下町ロケット」と「町ロケット」が同じキーになる）。
+    割れの検出は実測済みのタイトル同士でしか効かないので、未実測の本が
+    衝突して入ってくる経路は素通りする。しかもこれは撮り直しの要る高い側の間違い。
+    """
+    assert series_labels({"A 1": IMAGE})[series_key("A 1")] is None
+
+
+def test_two_agreeing_books_are_evidence():
+    assert series_labels({"A 1": IMAGE, "A 2": IMAGE})[series_key("A 1")] == IMAGE
+
+
+def test_the_series_key_really_does_collide():
+    """衝突が机上の心配でないことを示す。ここが崩れたら上の 2 件の根拠も消える。"""
+    assert series_key("下町ロケット") == series_key("町ロケット")
+    assert series_key("空の中") == series_key("空の上")
+
+
+def test_a_single_book_series_cannot_reach_decide():
+    """1 冊だけの系列は decide まで届かない（既定の searchable に落ちる）。"""
+    measured = {"下町ロケット": IMAGE}
+    series = series_labels(measured)
+    assert decide(
+        "町ロケット", measured=measured, series=series, genre={}, library={}
+    ) == (SEARCHABLE, "default")
+
+
+# ------------------------------------------------------------
+# 旧蔵書の読み取り
+# ------------------------------------------------------------
+
+
+def _pdf(path, pages, text=None):
+    """ページ数を指定した PDF を作る。text を渡すとテキストを載せる。"""
+    from reportlab.pdfgen import canvas
+
+    c = canvas.Canvas(str(path))
+    for i in range(pages):
+        c.setPageSize((200, 200))
+        if text:
+            c.drawString(20, 100, f"{text} {i}")
+        c.showPage()
+    c.save()
+
+
+def test_a_zero_page_pdf_is_not_called_image_pdf(tmp_path):
+    """**「文字が無い」と「読めなかった」を混ぜない。**
+
+    中断したバッチの書きかけが蔵書フォルダに残ることがある。0 ページの PDF を
+    「テキスト層なし」の根拠にすると、その本が撮り直しの要る image_pdf 側
+    （高いほうの間違い）へ倒れる。
+    """
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    with (tmp_path / "空.pdf").open("wb") as f:
+        writer.write(f)
+    assert library_labels(str(tmp_path)) == {}
+
+
+def test_a_pdf_without_text_is_image_pdf(tmp_path):
+    _pdf(tmp_path / "絵だけ.pdf", 3)
+    assert library_labels(str(tmp_path)) == {"絵だけ": IMAGE}
+
+
+def test_a_pdf_with_text_is_searchable(tmp_path):
+    _pdf(tmp_path / "文章.pdf", 3, text="hello")
+    assert library_labels(str(tmp_path)) == {"文章": SEARCHABLE}
+
+
+def test_an_unreadable_file_is_skipped_not_guessed(tmp_path):
+    (tmp_path / "壊れ.pdf").write_bytes(b"not a pdf")
+    assert library_labels(str(tmp_path)) == {}
+
+
+# ------------------------------------------------------------
+# books.json の書き出し
+# ------------------------------------------------------------
+
+
+def test_per_book_settings_survive(tmp_path):
+    """**本ごとの設定を落とさない。**
+
+    make_books.py は page_turn / split_words / max_pages を本ごとに書く
+    （selection.example.json の「横書きは page_turn: right」）。ここで落とすと、
+    横書きの本が既定のページ送りで撮られる。
+    """
+    from scripts.classify_formats import main
+
+    books = tmp_path / "books.json"
+    books.write_text(
+        json.dumps(
+            [{"asin": "A", "title": "本", "page_turn": "right", "split_words": 450000}],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.json"
+    assert main(["--books", str(books), "--out", str(out)]) == 0
+
+    written = json.loads(out.read_text(encoding="utf-8"))[0]
+    assert written["page_turn"] == "right"
+    assert written["split_words"] == 450000
+    assert written["format"] == SEARCHABLE
+
+
+def test_the_written_file_is_accepted_by_the_batch_loader(tmp_path):
+    """書き出したものが cli.py batch にそのまま渡せること。
+
+    format を足したせいで未知キー扱いになったり、拾い落としで asin が
+    消えたりしていないかを、本物の検証器で見る。
+    """
+    from core.pipeline import load_batch_file
+    from scripts.classify_formats import main
+
+    books = tmp_path / "books.json"
+    books.write_text(
+        json.dumps([{"asin": "A", "title": "本", "page_turn": "right"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.json"
+    main(["--books", str(books), "--out", str(out)])
+
+    loaded, code = load_batch_file(str(out))
+    assert code is None, "書き出した books.json が batch に渡せない"
+    assert loaded[0]["fmt"] == SEARCHABLE
+    assert loaded[0]["page_turn"] == "right"
