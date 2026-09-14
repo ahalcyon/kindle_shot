@@ -28,6 +28,8 @@ from core.headless_capture import (
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
     TOC_ITEM_SELECTOR,
+    UNPAIRED_UNSUPPORTED_MARKERS,
+    UNSUPPORTED_MARKER_PAIRS,
     UNSUPPORTED_MARKERS,
     _keys_respond,
     _still_at_start,
@@ -1745,20 +1747,44 @@ def test_the_japanese_kindle_app_dialog_is_detected():
     assert "Kindleアプリが必要です" in reason
 
 
-def test_every_english_marker_has_a_japanese_partner():
-    """**文言を足すときは日英を対にする。**
+def test_the_marker_list_is_only_derived_from_the_two_declarations():
+    """**UNSUPPORTED_MARKERS に直接足せないようにする (#92)。**
 
-    片方だけ足すと、同じ状態が表示言語によって「非対応（読み飛ばす）」と
-    「原因不明の失敗」に分かれる。#92 はそれで 1 冊が失敗に化けていた。
-    ここが落ちたら、足した文言の相方が無い。
+    足すならペアか「相方を実機で見ていないもの」のどちらかに入れる。
+    導出をやめて直接並べられるようにすると、英語だけ足して日本語を忘れる形
+    （#92 そのもの）が黙って戻ってくる。
     """
-    pairs = (
-        ("kindle app is required", "kindleアプリが必要です"),
-        ("can only be opened using kindle app", "kindleアプリでのみ開くことができます"),
+    declared = (
+        tuple(marker for pair in UNSUPPORTED_MARKER_PAIRS for marker in pair)
+        + UNPAIRED_UNSUPPORTED_MARKERS
     )
-    for english, japanese in pairs:
-        assert english in UNSUPPORTED_MARKERS, f"英語の文言が無い: {english}"
-        assert japanese in UNSUPPORTED_MARKERS, f"日本語の文言が無い: {japanese}"
+    assert declared == UNSUPPORTED_MARKERS
+
+
+@pytest.mark.parametrize(("english", "japanese"), UNSUPPORTED_MARKER_PAIRS)
+def test_both_languages_of_a_pair_are_detected(english, japanese):
+    """**対の両方が実際に検出に効くこと (#92)。**
+
+    片方だけ効く状態を作らない。405 冊のバッチで 24 冊は英語のダイアログを出し、
+    1 冊だけ日本語で出た。日本語版が無かったのでその 1 冊だけ素通りし、
+    その先で「ページ送りの向きを判定できない」という無関係な失敗になっていた。
+
+    **ペアを足せば自動で検査される形にしてある。** 定数どうしを突き合わせる
+    書き方だと、新しく足した文言が検査対象から外れて、守りたい回帰
+    （英語だけ足して日本語を忘れる）をちょうど取り逃がす。
+    """
+    assert unsupported_reason(AlertPage(alert=english)) is not None
+    assert unsupported_reason(AlertPage(alert=japanese)) is not None
+
+
+@pytest.mark.parametrize("marker", UNPAIRED_UNSUPPORTED_MARKERS)
+def test_unpaired_markers_are_still_detected(marker):
+    """相方を実機で見ていないものも、それ自体は効いていること。
+
+    ここに残っているのは #92 と鏡像の穴（英語で出れば素通りする）。
+    穴があること自体は、この定数を分けて持つことで見えるようにしてある。
+    """
+    assert unsupported_reason(AlertPage(alert=marker)) is not None
 
 
 def test_the_japanese_dialog_does_not_catch_a_browser_level_message():
