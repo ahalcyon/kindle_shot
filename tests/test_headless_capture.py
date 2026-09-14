@@ -28,6 +28,7 @@ from core.headless_capture import (
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
     TOC_ITEM_SELECTOR,
+    UNSUPPORTED_MARKERS,
     _keys_respond,
     _still_at_start,
     _wait_for_position_change,
@@ -1721,6 +1722,53 @@ def test_japanese_dialog_is_detected_too():
         )
     )
     assert unsupported_reason(page) is not None
+
+
+def test_the_japanese_kindle_app_dialog_is_detected():
+    """**同じ状態が言語で違う文言になる (#92)。**
+
+    405 冊のバッチで 24 冊は英語のダイアログを出し、1 冊だけ日本語で出た。
+    日本語版のマーカーが無かったのでその 1 冊だけ素通りし、その先で
+    「ページ送りの向きを判定できない」という無関係な失敗になっていた。
+
+    実機の DOM から採った文言（世界で闘うプログラミング力を鍛える本, B071GN3JN2）:
+    """
+    page = AlertPage(
+        alert=(
+            "Kindleアプリが必要です\n"
+            "読もうとしている本は、Kindleアプリでのみ開くことができます。\n"
+            "ライブラリに戻る"
+        )
+    )
+    reason = unsupported_reason(page)
+    assert reason is not None
+    assert "Kindleアプリが必要です" in reason
+
+
+def test_every_english_marker_has_a_japanese_partner():
+    """**文言を足すときは日英を対にする。**
+
+    片方だけ足すと、同じ状態が表示言語によって「非対応（読み飛ばす）」と
+    「原因不明の失敗」に分かれる。#92 はそれで 1 冊が失敗に化けていた。
+    ここが落ちたら、足した文言の相方が無い。
+    """
+    pairs = (
+        ("kindle app is required", "kindleアプリが必要です"),
+        ("can only be opened using kindle app", "kindleアプリでのみ開くことができます"),
+    )
+    for english, japanese in pairs:
+        assert english in UNSUPPORTED_MARKERS, f"英語の文言が無い: {english}"
+        assert japanese in UNSUPPORTED_MARKERS, f"日本語の文言が無い: {japanese}"
+
+
+def test_the_japanese_dialog_does_not_catch_a_browser_level_message():
+    """日本語のマーカーでも、本ではなく環境を指す文言を拾わない。
+
+    「Kindleアプリ」という語だけで照合すると、アプリを勧める告知バナーで
+    全冊が非対応にされる。非対応は終了コードに出ないので気づけない。
+    """
+    page = AlertPage(alert="Kindleアプリをダウンロードすると、続きをスマホで読めます")
+    assert unsupported_reason(page) is None
 
 
 def test_library_url_alone_is_not_enough():
