@@ -27,7 +27,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.book_format import DEFAULT_THRESHOLD, IMAGE, measured_labels  # noqa: E402
+from core.book_format import (  # noqa: E402
+    DEFAULT_THRESHOLD,
+    IMAGE,
+    book_pdf_path,
+    measured_labels,
+)
 from core.text_layer import strip_file  # noqa: E402
 
 
@@ -60,13 +65,32 @@ def main(argv=None):
         print("対象がありません（--books か --measured を指定してください）", file=sys.stderr)
         return 2
 
-    present = {
-        n[:-4]: os.path.join(args.folder, n)
-        for n in os.listdir(args.folder)
-        if n.lower().endswith(".pdf")
-    }
-    todo = sorted(t for t in targets if t in present)
+    # **正引きで探す (#95)。** 蔵書の名前は book_path_name を通っていて、
+    # 長いタイトルは _<8桁hash> で切り詰められる。ファイル名から逆引きすると、
+    # 切り詰められた本が黙って対象から外れ、誤った OCR テキスト層が残る
+    present = {}
+    for title in targets:
+        path = book_pdf_path(args.folder, title)
+        if os.path.isfile(path):
+            present[title] = path
+    todo = sorted(present)
     print(f"対象 {len(targets)} 冊のうち {len(todo)} 冊がフォルダにあります", file=sys.stderr)
+
+    # **1 冊も一致しないまま成功で終わらない (#95)。** 突き合わせが外れる形
+    # （--folder が撮影時の --out と違う、books.json のタイトルが別物）は
+    # 黙って「0 冊」になるだけで、剥がし漏れに気づけない。PDF はあるのに
+    # 1 冊も当たらないなら、それは突き合わせの失敗として扱う。
+    if not todo:
+        in_folder = sum(1 for n in os.listdir(args.folder) if n.lower().endswith(".pdf"))
+        if in_folder:
+            print(
+                f"フォルダには PDF が {in_folder} 個ありますが 1 冊も一致しませんでした。"
+                "--folder が撮影時の --out と同じか、books.json のタイトルが"
+                "蔵書と揃っているかを確かめてください",
+                file=sys.stderr,
+            )
+            return 1
+
     if args.dry_run:
         for t in todo:
             print(t)

@@ -39,6 +39,8 @@ import json
 import os
 import re
 
+from core.safe_names import book_file_name
+
 IMAGE = "image_pdf"
 SEARCHABLE = "searchable_pdf"
 
@@ -103,28 +105,58 @@ def measured_labels(paths, threshold):
     return labels, values
 
 
-def library_labels(folder):
-    """旧蔵書のテキスト層の有無から {タイトル: 形式} を作る。"""
+def book_pdf_path(folder, title):
+    """蔵書フォルダの中で、その本の PDF があるべきパスを返す。
+
+    **ファイル名からタイトルを逆引きしない (#95)。** 蔵書の名前は
+    `book_path_name` を通っていて、出力先が深いと長いタイトルは
+    `_<8桁hash>` で切り詰められる。ハッシュは元のタイトルから作るので
+    逆引きできず、素朴に `ファイル名[:-4] == title` で比べると
+    切り詰められた本が黙って外れる（剥がし漏れ／完成済みの撮り直し）。
+
+    **folder は撮影時の `--out` と同じでなければならない。** 切り詰めの
+    しきい値は `name_budget(folder)`（パスの長さ）で決まるので、別の場所へ
+    移した蔵書に当てると切り詰めの有無がずれて見つからない。
+    """
+    return os.path.join(folder, book_file_name(title, folder, ".pdf"))
+
+
+def text_layer_format(path):
+    """PDF のテキスト層の有無から形式を推定する。読めなければ None。
+
+    **「文字が無い」と「読めなかった」を混ぜない。** 中断したバッチの
+    書きかけが蔵書フォルダに残ることがあり、それを「テキスト層なし」の
+    根拠にすると、その本が撮り直しの要る image_pdf 側（高いほうの
+    間違い）へ倒れる。
+    """
     from pypdf import PdfReader
 
+    try:
+        reader = PdfReader(path)
+        n = len(reader.pages)
+        picks = [k for k in (0, n // 4, n // 2, (3 * n) // 4, n - 1) if 0 <= k < n]
+        if not picks:
+            return None
+        chars = sum(len((reader.pages[k].extract_text() or "").strip()) for k in picks)
+    except Exception:  # noqa: BLE001 - 読めない本は判定材料にしないだけ
+        return None
+    return IMAGE if chars == 0 else SEARCHABLE
+
+
+def library_labels(folder, titles):
+    """旧蔵書のテキスト層の有無から {タイトル: 形式} を作る。
+
+    titles から**正引き**で探す。フォルダを走査してファイル名を
+    タイトル扱いすると、切り詰められた本を取り違える (#95)。
+    """
     labels = {}
-    for name in sorted(os.listdir(folder)):
-        if not name.lower().endswith(".pdf"):
+    for title in titles:
+        path = book_pdf_path(folder, title)
+        if not os.path.isfile(path):
             continue
-        try:
-            reader = PdfReader(os.path.join(folder, name))
-            n = len(reader.pages)
-            picks = [k for k in (0, n // 4, n // 2, (3 * n) // 4, n - 1) if 0 <= k < n]
-            if not picks:
-                # 0 ページの PDF。**「文字が無い」と「読めなかった」を混ぜない。**
-                # 中断したバッチの書きかけが蔵書フォルダに残ることがあり、
-                # それを「テキスト層なし」の根拠にすると、その本が撮り直しの要る
-                # image_pdf 側（高いほうの間違い）へ倒れる
-                continue
-            chars = sum(len((reader.pages[k].extract_text() or "").strip()) for k in picks)
-        except Exception:  # noqa: BLE001 - 読めない本は判定材料にしないだけ
-            continue
-        labels[name[:-4]] = IMAGE if chars == 0 else SEARCHABLE
+        fmt = text_layer_format(path)
+        if fmt is not None:
+            labels[title] = fmt
     return labels
 
 

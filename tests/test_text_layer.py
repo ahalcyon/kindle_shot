@@ -205,3 +205,95 @@ def test_sample_of_a_short_book_is_every_page():
 
 def test_sample_of_an_empty_book_is_empty():
     assert text_layer._sample_indexes(0) == []
+
+
+# ------------------------------------------------------------
+# 蔵書との突き合わせ (#95)
+# ------------------------------------------------------------
+
+
+def test_strip_finds_a_book_whose_name_was_truncated(tmp_path):
+    """**剥がす対象も正引きで探す (#95)。**
+
+    蔵書の名前は book_path_name を通っていて、長いタイトルは `_<8桁hash>` で
+    切り詰められる。ファイル名から逆引きすると切り詰められた本が黙って外れ、
+    漫画に誤った OCR テキスト層が残ったままになる。
+    """
+    import importlib.util
+    import json
+
+    from core.safe_names import book_path_name
+
+    script = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts",
+        "strip_text_layer.py",
+    )
+    spec = importlib.util.spec_from_file_location("strip_text_layer", script)
+    assert spec is not None and spec.loader is not None
+    strip_text_layer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(strip_text_layer)
+
+    images = tmp_path / "images"
+    images.mkdir()
+    names = []
+    for i in range(1, PAGES + 1):
+        name = f"{i:03d}.png"
+        _patterned(images / name, i)
+        names.append(name)
+
+    library = tmp_path / "library"
+    library.mkdir()
+    long_title = "あ" * 300
+    stored = book_path_name(long_title, str(library))
+    assert stored != long_title, "この長さでは切り詰めが起きない。前提が崩れている"
+
+    results = [(name, f"page {i} sample text") for i, name in enumerate(names, 1)]
+    ok, message = images_to_searchable_pdf(str(images), results, str(library / f"{stored}.pdf"))
+    assert ok, message
+    assert _all_text(library / f"{stored}.pdf") != ""
+
+    books = tmp_path / "books.json"
+    books.write_text(
+        json.dumps([{"asin": "A", "title": long_title, "format": "image_pdf"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert strip_text_layer.main(["--folder", str(library), "--books", str(books), "--json"]) == 0
+    assert _all_text(library / f"{stored}.pdf") == "", "切り詰められた本が剥がし漏れた"
+
+
+def test_strip_fails_loudly_when_nothing_matches(tmp_path, capsys):
+    """**1 冊も一致しないまま成功で終わらない (#95)。**
+
+    突き合わせが外れる形（--folder が撮影時の --out と違う、books.json の
+    タイトルが別物）は黙って「0 冊」になるだけで、剥がし漏れに気づけない。
+    """
+    import importlib.util
+    import json
+
+    script = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts",
+        "strip_text_layer.py",
+    )
+    spec = importlib.util.spec_from_file_location("strip_text_layer_2", script)
+    assert spec is not None and spec.loader is not None
+    strip_text_layer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(strip_text_layer)
+
+    library = tmp_path / "library"
+    library.mkdir()
+    images = tmp_path / "images"
+    images.mkdir()
+    _patterned(images / "001.png", 1)
+    ok, message = images_to_pdf(str(images), str(library), "よその本.pdf")
+    assert ok, message
+
+    books = tmp_path / "books.json"
+    books.write_text(
+        json.dumps([{"asin": "A", "title": "持っていない本", "format": "image_pdf"}]),
+        encoding="utf-8",
+    )
+    code = strip_text_layer.main(["--folder", str(library), "--books", str(books)])
+    assert code != 0, "1 冊も一致しなかったのに成功で終わった"
+    assert "1 冊も一致しませんでした" in capsys.readouterr().err
