@@ -24,6 +24,7 @@ from core.headless_capture import (
     END_OF_BOOK_SHORT_PERCENT,
     END_OF_BOOK_SLACK,
     LEAVE_BUTTON_JS,
+    MAX_RELOADS,
     MAX_START_POSITION,
     POSITION_SELECTOR,
     SHOT_ELEMENT,
@@ -79,6 +80,9 @@ class FakePage:
         lag_from_index=None,
         lag_shots=0,
         read_positions=None,
+        stall_at=None,
+        reload_fixes=True,
+        reload_redraws_only=False,
     ):
         self.frames = list(frames)
         # 要素撮影で返す内容。省略時は frames と同じ（方式を変えても中身は同じ）
@@ -108,6 +112,17 @@ class FakePage:
         self.read_positions = list(read_positions) if read_positions else None
         # 位置ラベルを読んだ回数。停止判定が「落ち着くまで読む」かを見るのに使う
         self.position_reads = 0
+        # この index に来るとページ送りが効かなくなる (#91)。
+        # 画面も位置も動かない。リーダーのエラーではない。
+        # リストを渡すと**何度も止まる本**になる（開き直すたびに次の点へ）
+        self.stall_points = [stall_at] if isinstance(stall_at, int) else list(stall_at or [])
+        self.stalled = False
+        # 開き直すと止まりが解けるか。False なら本当の最終ページの形
+        self.reload_fixes = reload_fixes
+        # 開き直すと画面は変わるが**位置は動かない**本。
+        # 「進んだ」を画面で判定していると復帰と誤認する形 (#91)
+        self.reload_redraws_only = reload_redraws_only
+        self.reloads = 0
 
         page = self
 
@@ -116,6 +131,11 @@ class FakePage:
                 page.pressed.append(key)
                 if page.swallow > 0:
                     page.swallow -= 1
+                    return
+                if page.stalled:
+                    return
+                if page.stall_points and page.index >= page.stall_points[0]:
+                    page.stalled = True
                     return
                 if page.index < len(page.frames) - 1:
                     page.index += 1
@@ -185,6 +205,20 @@ class FakePage:
 
     def add_style_tag(self, **_kw):
         """UI を隠す CSS の注入。撮影内容には影響しないので何もしない。"""
+
+    def reload(self, **_kw):
+        """リーダーを開き直す (#91)。止まりが解ける本と解けない本がある。"""
+        self.reloads += 1
+        if self.reload_redraws_only:
+            # 画面だけ変えて位置は動かさない。復帰を画面で判定していると
+            # ここで誤って「進んだ」と数える
+            self.frames.append(f"redraw-{self.reloads}".encode())
+            self.index = len(self.frames) - 1
+            return
+        if self.reload_fixes:
+            self.stalled = False
+            if self.stall_points:
+                self.stall_points.pop(0)
 
     def evaluate(self, js, arg=None):
         """alert_text / dismiss_dialogs / ボタン判定の代役。
@@ -434,7 +468,7 @@ def test_a_stopped_book_is_still_pressed(tmp_path):
     total, _ = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
     assert total == 3, "飲まれた本が撮れていない"
     # 位置が動いていないなら待っても仕方がない。押すのが正しい
-    assert [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000] == [], (
+    assert [ms for ms in page.waits if ms == CATCHUP_WAIT * 1000] == [], (
         "止まっている本で描画を待っている"
     )
 
@@ -454,7 +488,7 @@ def test_waiting_for_the_screen_has_a_bound(tmp_path):
         lag_shots=999,
     )
     total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
-    long_waits = [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000]
+    long_waits = [ms for ms in page.waits if ms == CATCHUP_WAIT * 1000]
     assert len(long_waits) == CATCHUP_WAITS, f"待った回数が上限と違う: {len(long_waits)}"
     assert reason == "end_of_book"
     assert total >= 1
@@ -525,7 +559,7 @@ def test_a_book_whose_position_goes_backwards_is_pressed(tmp_path):
         lag_shots=2,
     )
     capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
-    assert [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000] == [], (
+    assert [ms for ms in page.waits if ms == CATCHUP_WAIT * 1000] == [], (
         "位置が減っているのに待っている"
     )
 
@@ -545,7 +579,7 @@ def test_the_position_is_read_again_on_every_turn_of_the_loop(tmp_path):
         read_positions=[10, 10, 90, 90, 90, 90, 90, 90, 90, 90],
     )
     capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
-    assert [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000] != [], (
+    assert [ms for ms in page.waits if ms == CATCHUP_WAIT * 1000] != [], (
         "位置を読み直していないため、あとから進んだ本で待てていない"
     )
 
@@ -564,7 +598,7 @@ def test_the_press_budget_is_separate_from_the_wait_budget(tmp_path):
         lag_shots=999,
     )
     capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=1)
-    long_waits = [ms for ms in page.waits if ms >= CATCHUP_WAIT * 1000]
+    long_waits = [ms for ms in page.waits if ms == CATCHUP_WAIT * 1000]
     assert len(long_waits) == CATCHUP_WAITS, f"待った回数が押す予算に引きずられている: {long_waits}"
     assert page.pressed.count("ArrowLeft") >= 1
 
@@ -2475,3 +2509,144 @@ def test_the_stop_event_and_manifest_carry_short_of_end(tmp_path, monkeypatch):
     assert [kw["reason"] for kw in stopped] == ["short_of_end"]
     assert stopped[0]["position"] == 1446
     assert stopped[0]["book_total"] == 2999
+
+
+# ------------------------------------------------------------
+# ページ送りが効かなくなったら開き直す (#91)
+# ------------------------------------------------------------
+
+
+def test_a_stalled_book_is_reloaded_and_keeps_going(tmp_path):
+    """**「最終ページ」と決める前に開き直す (#91)。**
+
+    長い本ではリーダーがページ送りを受け付けなくなることがある。そのときの画面は
+    正常な本文ページなので、画面だけでは end_of_book と区別がつかない。
+    開き直すと止まりが解けて続きが撮れる（実測: 合本を 1895 ページ・
+    位置 58503/58503 まで撮り切った）。
+    """
+    page = FakePage(
+        [b"a", b"b", b"c", b"d", b"e"], stall_at=2, positions=[1, 2, 3, 4, 5], book_total=5
+    )
+    events = []
+    total, reason = capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        emit=lambda e, human=None, **kw: events.append((e, kw)),
+    )
+    # 2 回になるのは、止まったとき 1 回と、本当の最終ページで 1 回
+    # （最終ページかどうかは開き直してみないと分からない）
+    assert page.reloads == 2, "開き直していない"
+    assert total == 5, f"開き直したのに最後まで撮れていない: {total} ページ"
+    assert reason == "end_of_book"
+    assert [kw for e, kw in events if e == "reader_reloaded"], "開き直しを記録していない"
+
+
+def test_a_book_that_reload_cannot_help_stops(tmp_path):
+    """開き直しても進まないなら本当の最終ページ。
+
+    実測でも、位置 58503/58503 では開き直しても進まなかった。
+    """
+    page = FakePage(
+        [b"a", b"b", b"c"], stall_at=1, reload_fixes=False, positions=[1, 2, 3], book_total=3
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert page.reloads >= 1, "開き直しを試していない"
+    assert reason == "end_of_book"
+
+
+def test_a_redraw_without_movement_is_not_a_recovery(tmp_path):
+    """**「進んだ」は画面ではなく位置で判定する (#91)。**
+
+    開き直して画面が変わっても、読書位置が動いていなければ復帰していない。
+    実際に踏んだ: ページ画像に focus() したとき画面のダイジェストは変わったが、
+    位置は 16928 から 1 も動かず、以後 3 回とも復帰しなかった。
+
+    画面で判定していると、ここで無限に「復帰した」と数えて回り続ける。
+    """
+    page = FakePage(
+        [b"a", b"b", b"c"],
+        stall_at=1,
+        reload_redraws_only=True,
+        positions=[1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+        book_total=99,
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert page.reloads <= MAX_RELOADS, "位置が動いていないのに復帰扱いして回り続けている"
+    assert reason in ("end_of_book", "short_of_end")
+
+
+def test_the_reload_bound_is_a_real_number():
+    """**上限が現実的な値であること。**
+
+    「上限がある」だけを見ると、定数を 10000 にしても素通りする。それは
+    実質的に上限が無いのと同じで、1 冊が一晩回り続ける。実測では合本
+    1 冊（1895 ページ）で 4 回だったので、その数倍で足りる。
+    """
+    assert 1 <= MAX_RELOADS <= 50, f"上限が現実的な範囲にない: {MAX_RELOADS}"
+
+
+def test_reloading_stops_at_the_bound(tmp_path, monkeypatch):
+    """上限に達したら打ち切る。上限の無いやり直しは「終わらない」であって
+    「丁寧」ではない。"""
+    monkeypatch.setattr(headless_capture, "MAX_RELOADS", 3)
+    # 何度でも止まる本。開き直すたびに進むが、すぐまた止まる
+    frames = [bytes([i]) for i in range(40)]
+    page = FakePage(
+        frames, stall_at=list(range(1, 40)), positions=list(range(1, 41)), book_total=400
+    )
+    capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert page.reloads == 3, f"上限で打ち切っていない: {page.reloads}"
+
+
+def test_a_crashed_reader_is_not_reloaded(tmp_path):
+    """リーダーが落ちているときは開き直さない。
+
+    あちらは「開けたが途中で落ちた」で中断するもの (#76) で、意味も対処も違う。
+    黙って開き直して続けると、落ちた本を部分本として完成させてしまう。
+    """
+    page = FakePage(
+        [b"a", b"b", b"b"],
+        alert="申し訳ありません。問題が発生しました",
+        positions=[1, 2, 2],
+        book_total=99,
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert reason == "reader_error"
+    assert page.reloads == 0, "落ちたリーダーを開き直している"
+
+
+def test_the_reload_is_recorded_in_the_manifest():
+    """開き直した箇所を manifest に残す。
+
+    ここが空でない本は、開き直しをまたいだ継ぎ目があるので中身を見る価値がある。
+    標準出力にしか無いと、ログを捨てた時点で追えなくなる。
+    """
+    manifest = build_manifest(
+        title="本",
+        profile_key="kindle_cloud",
+        profile=None,
+        total=3,
+        save_dir="d",
+        stopped_reason="end_of_book",
+        started=datetime.datetime(2026, 1, 1),
+        finished=datetime.datetime(2026, 1, 1),
+        reloads=[{"before": 28689, "reopened": 28688, "after": 28731, "advanced": True}],
+    )
+    assert manifest["reloads"][0]["after"] == 28731
+    assert manifest["reloads"][0]["advanced"] is True
+
+
+def test_the_last_page_costs_exactly_one_reload(tmp_path):
+    """**最終ページでも 1 回だけ開き直して確かめる。**
+
+    止まっているのか終わっているのかは、開き直してみないと区別できない
+    （どちらも画面が変わらず、正常な本文ページに見える）。だから最後に
+    1 回ぶんの費用がかかる。**これは払う。** 黙って欠けた本は気づけないが、
+    15 秒は後から買える（AGENTS.md「計算コストと時間は惜しまない」）。
+
+    逆に**それ以上は払わない**。1 回で済むことをここで固定する。
+    """
+    page = FakePage([b"a", b"b", b"c"], positions=[1, 2, 3], book_total=3)
+    capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert page.reloads == 1
