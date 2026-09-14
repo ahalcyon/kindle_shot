@@ -27,7 +27,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.book_format import DEFAULT_THRESHOLD, IMAGE, measured_labels  # noqa: E402
+from core.book_format import (  # noqa: E402
+    DEFAULT_THRESHOLD,
+    IMAGE,
+    book_pdf_path,
+    measured_labels,
+)
 from core.text_layer import strip_file  # noqa: E402
 
 
@@ -60,12 +65,15 @@ def main(argv=None):
         print("対象がありません（--books か --measured を指定してください）", file=sys.stderr)
         return 2
 
-    present = {
-        n[:-4]: os.path.join(args.folder, n)
-        for n in os.listdir(args.folder)
-        if n.lower().endswith(".pdf")
-    }
-    todo = sorted(t for t in targets if t in present)
+    # **正引きで探す (#95)。** 蔵書の名前は book_path_name を通っていて、
+    # 長いタイトルは _<8桁hash> で切り詰められる。ファイル名から逆引きすると、
+    # 切り詰められた本が黙って対象から外れ、誤った OCR テキスト層が残る
+    present = {}
+    for title in targets:
+        path = book_pdf_path(args.folder, title)
+        if os.path.isfile(path):
+            present[title] = path
+    todo = sorted(present)
     print(f"対象 {len(targets)} 冊のうち {len(todo)} 冊がフォルダにあります", file=sys.stderr)
     if args.dry_run:
         for t in todo:

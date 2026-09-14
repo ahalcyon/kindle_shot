@@ -32,6 +32,7 @@ from core.book_format import (
     series_key,
     series_labels,
 )
+from core.safe_names import book_path_name
 
 
 def _log(tmp_path, entries):
@@ -257,22 +258,22 @@ def test_a_zero_page_pdf_is_not_called_image_pdf(tmp_path):
     writer = PdfWriter()
     with (tmp_path / "空.pdf").open("wb") as f:
         writer.write(f)
-    assert library_labels(str(tmp_path)) == {}
+    assert library_labels(str(tmp_path), ["空"]) == {}
 
 
 def test_a_pdf_without_text_is_image_pdf(tmp_path):
     _pdf(tmp_path / "絵だけ.pdf", 3)
-    assert library_labels(str(tmp_path)) == {"絵だけ": IMAGE}
+    assert library_labels(str(tmp_path), ["絵だけ"]) == {"絵だけ": IMAGE}
 
 
 def test_a_pdf_with_text_is_searchable(tmp_path):
     _pdf(tmp_path / "文章.pdf", 3, text="hello")
-    assert library_labels(str(tmp_path)) == {"文章": SEARCHABLE}
+    assert library_labels(str(tmp_path), ["文章"]) == {"文章": SEARCHABLE}
 
 
 def test_an_unreadable_file_is_skipped_not_guessed(tmp_path):
     (tmp_path / "壊れ.pdf").write_bytes(b"not a pdf")
-    assert library_labels(str(tmp_path)) == {}
+    assert library_labels(str(tmp_path), ["壊れ"]) == {}
 
 
 # ------------------------------------------------------------
@@ -324,3 +325,54 @@ def test_the_written_file_is_accepted_by_the_batch_loader(tmp_path):
     assert code is None, "書き出した books.json が batch に渡せない"
     assert loaded[0]["fmt"] == SEARCHABLE
     assert loaded[0]["page_turn"] == "right"
+
+
+# ------------------------------------------------------------
+# 名前を切り詰められた本 (#95)
+# ------------------------------------------------------------
+
+
+def test_a_truncated_name_is_still_found(tmp_path):
+    """**ファイル名からタイトルを逆引きしない (#95)。**
+
+    蔵書の名前は book_path_name を通っていて、長いタイトルは `_<8桁hash>` で
+    切り詰められる。ハッシュは元のタイトルから作るので逆引きできない。
+    素朴に `ファイル名[:-4] == title` で比べると、切り詰められた本が黙って外れる:
+
+    - strip_text_layer なら剥がし漏れ（誤った OCR テキスト層が残る）
+    - --only-missing なら完成済みの本を 1 冊 10 分かけて撮り直す
+    """
+    long_title = "あ" * 300
+    stored = book_path_name(long_title, str(tmp_path))
+    assert stored != long_title, "この長さでは切り詰めが起きない。前提が崩れている"
+
+    _pdf(tmp_path / f"{stored}.pdf", 3)
+    assert library_labels(str(tmp_path), [long_title]) == {long_title: IMAGE}
+
+
+def test_the_pdf_path_goes_through_the_sanitiser(tmp_path):
+    """Windows のファイル名に使えない文字を含む本も正引きできる。"""
+    title = "本: その 1 / 続き"
+    stored = book_path_name(title, str(tmp_path))
+    _pdf(tmp_path / f"{stored}.pdf", 2, text="hello")
+    assert library_labels(str(tmp_path), [title]) == {title: SEARCHABLE}
+
+
+def test_a_title_with_no_file_is_not_labelled(tmp_path):
+    assert library_labels(str(tmp_path), ["持っていない本"]) == {}
+
+
+def test_only_missing_skips_a_truncated_name(tmp_path):
+    """完成済みの判定も正引きで行う。切り詰められた本を撮り直さない。"""
+    out = tmp_path / "library"
+    out.mkdir()
+    long_title = "い" * 300
+    _pdf(out / f"{book_path_name(long_title, str(out))}.pdf", 2)
+
+    books = tmp_path / "books.json"
+    books.write_text(
+        json.dumps([{"asin": "A", "title": long_title}], ensure_ascii=False), encoding="utf-8"
+    )
+    result = tmp_path / "typed.json"
+    classify_formats.main(["--books", str(books), "--out", str(result), "--only-missing", str(out)])
+    assert json.loads(result.read_text(encoding="utf-8")) == [], "完成済みなのに撮り直しに回った"

@@ -25,6 +25,7 @@ from core.book_format import (  # noqa: E402
     DEFAULT_THRESHOLD,
     IMAGE,
     SEARCHABLE,
+    book_pdf_path,
     decide,
     genre_labels,
     library_labels,
@@ -54,11 +55,16 @@ def main(argv=None):
     measured, _ = measured_labels(args.measured, args.threshold)
     series = series_labels(measured)
     genre = genre_labels(args.buckets) if args.buckets else {}
-    library = library_labels(args.library) if args.library else {}
+    titles = [b.get("title") for b in books if b.get("title")]
+    library = library_labels(args.library, titles) if args.library else {}
 
+    # **完成済みの判定も正引きで行う (#95)。** ファイル名から逆引きすると、
+    # 名前を切り詰められた本を「未処理」と見なして 1 冊 10 分かけて撮り直す
     done = set()
     if args.only_missing and os.path.isdir(args.only_missing):
-        done = {n[:-4] for n in os.listdir(args.only_missing) if n.lower().endswith(".pdf")}
+        for title in titles:
+            if os.path.isfile(book_pdf_path(args.only_missing, title)):
+                done.add(title)
 
     out = []
     why: collections.Counter = collections.Counter()

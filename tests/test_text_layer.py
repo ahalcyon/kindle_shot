@@ -205,3 +205,59 @@ def test_sample_of_a_short_book_is_every_page():
 
 def test_sample_of_an_empty_book_is_empty():
     assert text_layer._sample_indexes(0) == []
+
+
+# ------------------------------------------------------------
+# 蔵書との突き合わせ (#95)
+# ------------------------------------------------------------
+
+
+def test_strip_finds_a_book_whose_name_was_truncated(tmp_path):
+    """**剥がす対象も正引きで探す (#95)。**
+
+    蔵書の名前は book_path_name を通っていて、長いタイトルは `_<8桁hash>` で
+    切り詰められる。ファイル名から逆引きすると切り詰められた本が黙って外れ、
+    漫画に誤った OCR テキスト層が残ったままになる。
+    """
+    import importlib.util
+    import json
+    import os
+
+    from core.safe_names import book_path_name
+
+    script = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts",
+        "strip_text_layer.py",
+    )
+    spec = importlib.util.spec_from_file_location("strip_text_layer", script)
+    assert spec is not None and spec.loader is not None
+    strip_text_layer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(strip_text_layer)
+
+    images = tmp_path / "images"
+    images.mkdir()
+    names = []
+    for i in range(1, PAGES + 1):
+        name = f"{i:03d}.png"
+        _patterned(images / name, i)
+        names.append(name)
+
+    library = tmp_path / "library"
+    library.mkdir()
+    long_title = "あ" * 300
+    stored = book_path_name(long_title, str(library))
+    assert stored != long_title, "この長さでは切り詰めが起きない。前提が崩れている"
+
+    results = [(name, f"page {i} sample text") for i, name in enumerate(names, 1)]
+    ok, message = images_to_searchable_pdf(str(images), results, str(library / f"{stored}.pdf"))
+    assert ok, message
+    assert _all_text(library / f"{stored}.pdf") != ""
+
+    books = tmp_path / "books.json"
+    books.write_text(
+        json.dumps([{"asin": "A", "title": long_title, "format": "image_pdf"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert strip_text_layer.main(["--folder", str(library), "--books", str(books), "--json"]) == 0
+    assert _all_text(library / f"{stored}.pdf") == "", "切り詰められた本が剥がし漏れた"
