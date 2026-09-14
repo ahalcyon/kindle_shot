@@ -27,6 +27,8 @@ from core.headless_capture import (
     MAX_RELOADS,
     MAX_START_POSITION,
     POSITION_SELECTOR,
+    RELOAD_FAILED,
+    RELOAD_JUMPED,
     SHOT_ELEMENT,
     SHOT_VIEWPORT,
     TOC_ITEM_SELECTOR,
@@ -83,6 +85,10 @@ class FakePage:
         stall_at=None,
         reload_fixes=True,
         reload_redraws_only=False,
+        reload_shift=0,
+        reload_signs_out=False,
+        reload_raises=False,
+        reload_swallows=0,
     ):
         self.frames = list(frames)
         # 要素撮影で返す内容。省略時は frames と同じ（方式を変えても中身は同じ）
@@ -123,6 +129,16 @@ class FakePage:
         # 「進んだ」を画面で判定していると復帰と誤認する形 (#91)
         self.reload_redraws_only = reload_redraws_only
         self.reloads = 0
+        # 開き直したときに index がずれる量 (#91)。実測では 1 位置ぶん
+        # 手前に戻る（28689 → 28688）。正の値にすると先へ飛ぶ本になり、
+        # 間のページが抜ける形を作れる
+        self.reload_shift = reload_shift
+        # 開き直した先がサインイン画面になる本（セッション切れ）
+        self.reload_signs_out = reload_signs_out
+        # 開き直し自体が落ちる本（タイムアウト等）
+        self.reload_raises = reload_raises
+        # 開き直した直後に飲まれるキー入力の回数
+        self.reload_swallows = reload_swallows
 
         page = self
 
@@ -209,6 +225,16 @@ class FakePage:
     def reload(self, **_kw):
         """リーダーを開き直す (#91)。止まりが解ける本と解けない本がある。"""
         self.reloads += 1
+        if self.reload_raises:
+            raise RuntimeError("Timeout 30000ms exceeded")
+        if self.reload_signs_out:
+            self.url = "https://www.amazon.co.jp/ap/signin"
+            return
+        if self.reload_swallows:
+            self.swallow += self.reload_swallows
+        if self.reload_shift:
+            # 実測では 1 位置ぶん手前に戻る。先へ飛ぶ本も作れるようにする
+            self.index = max(0, min(len(self.frames) - 1, self.index + self.reload_shift))
         if self.reload_redraws_only:
             # 画面だけ変えて位置は動かさない。復帰を画面で判定していると
             # ここで誤って「進んだ」と数える
@@ -584,12 +610,15 @@ def test_the_position_is_read_again_on_every_turn_of_the_loop(tmp_path):
     )
 
 
-def test_the_press_budget_is_separate_from_the_wait_budget(tmp_path):
+def test_the_press_budget_is_separate_from_the_wait_budget(tmp_path, monkeypatch):
     """押す予算と待つ予算は別。max_retries を変えても待ちは CATCHUP_WAITS のまま。
 
     テストの max_retries を CATCHUP_WAITS と同じ値だけにしていると、
     ループ条件を壊しても気づけない。
     """
+    # 見たいのは 1 周ぶんの予算。開き直し (#91) を挟むと新しい周回になって
+    # 予算が入り直すので、ここでは開き直しを外して数える
+    monkeypatch.setattr(headless_capture, "MAX_RELOADS", 0)
     page = FakePage(
         [b"a", b"b", b"c", b"d", b"e"],
         positions=[10, 20, 30, 40, 50],
@@ -2572,7 +2601,10 @@ def test_a_redraw_without_movement_is_not_a_recovery(tmp_path):
         book_total=99,
     )
     total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
-    assert page.reloads <= MAX_RELOADS, "位置が動いていないのに復帰扱いして回り続けている"
+    # **<= MAX_RELOADS では意味が無い。** 実装が reloads < MAX_RELOADS で
+    # 回している以上その不等式は常に真で、画面で判定する実装でも通ってしまう。
+    # 「1 回試して、進んでいないから止めた」を数で押さえる
+    assert page.reloads == 1, f"位置が動いていないのに復帰扱いして回り続けている: {page.reloads} 回"
     assert reason in ("end_of_book", "short_of_end")
 
 
@@ -2650,3 +2682,129 @@ def test_the_last_page_costs_exactly_one_reload(tmp_path):
     page = FakePage([b"a", b"b", b"c"], positions=[1, 2, 3], book_total=3)
     capture_pages(page, str(tmp_path), key="ArrowLeft")
     assert page.reloads == 1
+
+
+def test_a_reload_that_jumps_ahead_does_not_finish_the_book(tmp_path):
+    """**開き直して先へ飛んだら、間が抜けたまま完成扱いにしない (#91)。**
+
+    reload_reader はダイアログを閉じる。ダイアログを閉じた拍子に位置が飛ぶ本が
+    ある（Whispersync の「最後に読んでいたページへ移動しますか」に「はい」を
+    押した形。#69）。飛んだ先から撮り続けると、**間のページが黙って抜けたまま**
+    最終位置に着いて end_of_book で確定する。最終位置なので short_of_end でも
+    拾えず、batch は出力があるとスキップするので二度と気づけない。
+    """
+    page = FakePage(
+        [bytes([i]) for i in range(10)],
+        stall_at=4,
+        reload_shift=5,
+        positions=list(range(1, 11)),
+        book_total=10,
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert reason != "end_of_book", "間を飛ばしたのに完成扱いになった"
+    assert reason == RELOAD_JUMPED
+
+
+def test_a_reload_that_lands_on_signin_stops_the_batch(tmp_path):
+    """**開き直した先がサインイン画面なら中断する (#91)。**
+
+    開き直しはリーダーから離れる操作なので、セッションが切れていれば
+    サインイン画面に着地する。そのまま撮ると本文の代わりにサインイン画面を
+    保存し、しかも end_of_book で完成扱いになって #15 を迂回する。
+    """
+    page = FakePage(
+        [bytes([i]) for i in range(6)],
+        stall_at=2,
+        reload_signs_out=True,
+        positions=list(range(1, 7)),
+        book_total=6,
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert reason == "signin_required", f"サインイン切れを見落とした: {reason}"
+
+
+def test_a_failed_reload_is_still_recorded(tmp_path):
+    """**開き直しに失敗したことも残す (#91)。**
+
+    manifest の reloads が空のとき、「開き直す必要が無かった本」と
+    「開き直せなかった本」を区別できないと、事後に部分本を洗えない。
+    """
+    page = FakePage(
+        [bytes([i]) for i in range(6)],
+        stall_at=2,
+        reload_raises=True,
+        positions=list(range(1, 7)),
+        book_total=6,
+    )
+    events = []
+    capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        emit=lambda e, human=None, **kw: events.append((e, kw)),
+    )
+    reported = [kw for e, kw in events if e == "reader_reloaded"]
+    assert reported, "開き直しの失敗が記録されていない"
+    assert reported[0]["outcome"] == RELOAD_FAILED
+
+
+def test_a_swallowed_press_after_reload_is_not_the_end(tmp_path):
+    """**開き直した直後の 1 押しは飲まれる (#91)。**
+
+    reload_reader はダイアログを閉じてから戻る。閉じた直後の 1 回目が飲まれるのは
+    このファイルが繰り返し実測している挙動（TURN_PROBE_PRESSES / KEY_PROBE_ATTEMPTS が
+    同じ理由で 3 回押す）。1 回で決めると、復帰しているのに部分本で確定する。
+    """
+    page = FakePage(
+        [bytes([i]) for i in range(10)],
+        stall_at=4,
+        reload_swallows=1,
+        positions=list(range(1, 11)),
+        book_total=10,
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert total == 10, f"復帰しているのに部分本で終わった: {total} ページ"
+    assert reason == "end_of_book"
+
+
+def test_a_reload_that_steps_back_does_not_pile_up_duplicates(tmp_path):
+    """**開き直しで 1 位置手前に戻っても同じページを積まない (#91)。**
+
+    実測では開き直すと 1 位置ぶん手前に戻る（28689 → 28688）。ここで prev を
+    消すと次の 1 枚が無条件に保存され、最終ページで「戻る → 進む」を
+    繰り返して同じページを上限まで積む。prev を持ったまま戻れば、
+    同じ絵は既存のダイジェスト判定が弾く。
+    """
+    frames = [bytes([i]) for i in range(8)]
+    page = FakePage(
+        frames,
+        stall_at=3,
+        reload_shift=-1,
+        positions=list(range(1, 9)),
+        book_total=8,
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    saved = sorted(os.listdir(tmp_path))
+    assert total == len(saved)
+    assert total <= len(frames), f"同じページを積んでいる: {total} 枚 / 本文 {len(frames)} 枚"
+
+
+def test_a_transient_label_after_reload_is_not_progress(tmp_path):
+    """**開き直した直後のラベルは一過性の値を返しうる (#91)。**
+
+    `_settled_position_pair` は読めた時点で返るので、遷移中の値を掴む。
+    それを「再開位置」にすると、実際には 1 も進んでいないのに
+    `after > reopened` が成立して「復帰した」と数え続ける。
+    判定に使う値は `_stable_position_pair` で読む。
+    """
+    # 開き直し直後に 1 回だけ 1 を返し、そのあとは本当の位置に戻るラベル
+    page = FakePage(
+        [bytes([i]) for i in range(6)],
+        stall_at=2,
+        positions=list(range(1, 7)),
+        book_total=6,
+        reload_fixes=False,
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert reason == "end_of_book"
+    assert page.reloads == 1, f"進んでいないのに開き直しを繰り返した: {page.reloads}"
