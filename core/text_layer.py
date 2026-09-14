@@ -58,7 +58,10 @@ def strip_text_operations(page, writer):
     # page.get は pypdf の DictionaryObject では dict.get そのままで、間接参照を
     # 解決しない。/Resources が間接参照の PDF だと "/Font" in resources は True
     # なのに del が TypeError になる。page[...] は解決する
-    resources = page["/Resources"] if "/Resources" in page else None
+    # SIM401 の提案する page.get(...) にはしない。pypdf の DictionaryObject は
+    # get を override しておらず（= dict.get）間接参照を解決しないため、ここでは
+    # 添字アクセスでなければならない
+    resources = page["/Resources"] if "/Resources" in page else None  # noqa: SIM401
     if resources is not None and "/Font" in resources:
         del resources[NameObject("/Font")]
     return removed

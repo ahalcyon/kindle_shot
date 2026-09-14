@@ -6,9 +6,21 @@
 根拠の優先順位と、迷ったときに searchable へ倒れることを見る。
 """
 
+import importlib.util
 import json
+import os
 
 import pytest
+
+_SCRIPT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts",
+    "classify_formats.py",
+)
+_spec = importlib.util.spec_from_file_location("classify_formats", _SCRIPT)
+assert _spec is not None and _spec.loader is not None
+classify_formats = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(classify_formats)
 
 from core.book_format import (
     IMAGE,
@@ -209,9 +221,10 @@ def test_a_single_book_series_cannot_reach_decide():
     """1 冊だけの系列は decide まで届かない（既定の searchable に落ちる）。"""
     measured = {"下町ロケット": IMAGE}
     series = series_labels(measured)
-    assert decide(
-        "町ロケット", measured=measured, series=series, genre={}, library={}
-    ) == (SEARCHABLE, "default")
+    assert decide("町ロケット", measured=measured, series=series, genre={}, library={}) == (
+        SEARCHABLE,
+        "default",
+    )
 
 
 # ------------------------------------------------------------
@@ -274,8 +287,6 @@ def test_per_book_settings_survive(tmp_path):
     （selection.example.json の「横書きは page_turn: right」）。ここで落とすと、
     横書きの本が既定のページ送りで撮られる。
     """
-    from scripts.classify_formats import main
-
     books = tmp_path / "books.json"
     books.write_text(
         json.dumps(
@@ -285,7 +296,7 @@ def test_per_book_settings_survive(tmp_path):
         encoding="utf-8",
     )
     out = tmp_path / "out.json"
-    assert main(["--books", str(books), "--out", str(out)]) == 0
+    assert classify_formats.main(["--books", str(books), "--out", str(out)]) == 0
 
     written = json.loads(out.read_text(encoding="utf-8"))[0]
     assert written["page_turn"] == "right"
@@ -300,7 +311,6 @@ def test_the_written_file_is_accepted_by_the_batch_loader(tmp_path):
     消えたりしていないかを、本物の検証器で見る。
     """
     from core.pipeline import load_batch_file
-    from scripts.classify_formats import main
 
     books = tmp_path / "books.json"
     books.write_text(
@@ -308,7 +318,7 @@ def test_the_written_file_is_accepted_by_the_batch_loader(tmp_path):
         encoding="utf-8",
     )
     out = tmp_path / "out.json"
-    main(["--books", str(books), "--out", str(out)])
+    classify_formats.main(["--books", str(books), "--out", str(out)])
 
     loaded, code = load_batch_file(str(out))
     assert code is None, "書き出した books.json が batch に渡せない"
