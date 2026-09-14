@@ -698,6 +698,7 @@ class FakeReader:
         toc_empty=False,
         toc_raises=False,
         keys_die_after_toc=False,
+        ceiling=None,
     ):
         self.forward = forward
         self.position = position
@@ -742,6 +743,10 @@ class FakeReader:
         # 目次から飛ぶとキーが死に、パネルを閉じても戻らない本。
         # これが silent partial book の種になる (#70 のレビュー指摘)
         self.keys_die_after_toc = keys_die_after_toc
+        # 本の最終位置。ここから前へは進めない (#90)。実機では位置は総量を
+        # 超えないが、既定を total にすると既存のテストの前提が変わるので、
+        # 要るテストだけ明示する
+        self.ceiling = ceiling
         self.keys_dead = False
         self.toc_opened = False
         self.closed_with: list[str] = []
@@ -780,7 +785,8 @@ class FakeReader:
                     page.swallow -= 1
                     return
                 if key == page.forward:
-                    page.position += 1
+                    if page.ceiling is None or page.position < page.ceiling:
+                        page.position += 1
                 elif page.position > floor:
                     page.position -= 1
 
@@ -1174,6 +1180,59 @@ def test_the_key_probe_over_presses_backwards_rather_than_under():
     page = CoarsePositionReader()
     _keys_respond(page, "left", page_wait=0)
     assert page.presses.count("ArrowRight") > page.presses.count("ArrowLeft")
+
+
+def test_a_book_opened_at_its_last_position_is_not_called_dead():
+    """**前進しないことはキーが死んでいる証拠にならない (#90)。**
+
+    read.amazon.co.jp は前回の読書位置で本を開く。最後まで読んだ本は最終位置で
+    開くので、定義上そこから前へは進めない。前進だけで生死を見ると、巻き戻せる
+    本を「キーが死んだ」と切り捨てる。洋書 5 冊がこれで失敗していた。
+
+    実測（Mobile Edge Computing, B09HNLCCBZ）:
+
+        開いた直後 (114, 114)
+        right を 3 回: 114 → 114 → 114 → 114
+        left  を 3 回: 114 → 114 → 113 → 112
+    """
+    page = FakeReader(forward="ArrowRight", position=114, total=114, ceiling=114)
+    assert _keys_respond(page, "right", page_wait=0) is True
+
+
+def test_the_backward_probe_leaves_the_page_rewound():
+    """後退で確かめたぶんは戻さない。巻き戻しの向きそのものなので害が無い。
+
+    前進で確かめたときは戻す（表紙が落ちるため）。向きが逆なのでここは別。
+    """
+    page = FakeReader(forward="ArrowRight", position=114, total=114, ceiling=114)
+    _keys_respond(page, "right", page_wait=0)
+    assert page.position < 114, "後退で確かめたのに位置が戻っている"
+
+
+def test_keys_that_move_in_neither_direction_are_dead():
+    """前にも後ろにも動かないなら本当に死んでいる。ここは落とす。"""
+    page = FakeReader(forward="ArrowRight", position=114, total=114, ceiling=114)
+    page.keys_dead = True
+    assert _keys_respond(page, "right", page_wait=0) is False
+
+
+def test_the_backward_probe_also_survives_a_swallowed_press():
+    """後退側でも 1 回目が飲まれる。1 回で決めない。"""
+    page = FakeReader(forward="ArrowRight", position=114, total=114, ceiling=114, swallow=1)
+    assert _keys_respond(page, "right", page_wait=0) is True
+
+
+def test_a_book_at_its_last_position_still_rewinds_to_the_start():
+    """#90 の本が通しで先頭まで戻ること。keys_dead で打ち切られない。"""
+    page = FakeReader(forward="ArrowRight", position=114, total=114, ceiling=114)
+    events = []
+    ok, presses = rewind_to_start(
+        page, "right", page_wait=0, emit=lambda e, human=None, **kw: events.append((e, kw))
+    )
+    assert ok, [e for e in events if e[0] == "rewound"]
+    assert page.position <= 1
+    reasons = [kw.get("reason") for e, kw in events if e == "rewound"]
+    assert "keys_dead" not in reasons
 
 
 def test_a_swallowed_first_press_is_not_mistaken_for_dead_keys():

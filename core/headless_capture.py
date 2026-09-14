@@ -1059,10 +1059,27 @@ def jump_to_start_via_toc(page, *, page_wait=DEFAULT_REWIND_WAIT, emit=null_emit
     return True
 
 
+def _press_until_moved(page, key, before, *, page_wait):
+    """key を KEY_PROBE_ATTEMPTS 回まで押して位置が動くか見る。
+
+    **1 回で決めない。** パネルやダイアログを閉じた直後の 1 回目は飲まれる (#53)。
+    1 回で決めると、生きているキーを死んだと誤判定して全部の本が巻き戻せなくなる。
+
+    Returns:
+        動いたときは押した回数、動かなければ None。
+    """
+    for presses in range(1, KEY_PROBE_ATTEMPTS + 1):
+        page.keyboard.press(key)
+        if _wait_for_position_change(page, before, page_wait=page_wait) is not None:
+            return presses
+    return None
+
+
 def _keys_respond(page, forward, *, page_wait):
     """ページ送りキーが効いているか。効けば True、効かなければ False。
 
-    判断できなければ None（位置が読めない本）。確かめたら位置は元へ戻す。
+    判断できなければ None（位置が読めない本）。**前進で確かめられたときだけ**
+    位置を元へ戻す。後退で確かめたときは戻さない（下の #90 の項を見よ）。
 
     目次から飛んだあとに要る。飛んだ先が位置 2〜10 に着地し、かつパネルを
     閉じてもキーが戻っていなかった場合、巻き戻しのループは 3 回押して
@@ -1094,27 +1111,40 @@ def _keys_respond(page, forward, *, page_wait):
     if before is None:
         return None
     wait = max(page_wait, DEFAULT_PAGE_WAIT)
-    forward_presses = 0
-    moved = None
-    for _ in range(KEY_PROBE_ATTEMPTS):
-        page.keyboard.press(turn_key(forward))
-        forward_presses += 1
-        moved = _wait_for_position_change(page, before, page_wait=wait)
-        if moved is not None:
-            break
-    if moved is None:
-        return False
-    # **押した回数だけ戻す。位置の数値が戻ったかでは判断しない。**
-    # 位置はページより粗く、表紙と扉が同じ「位置 1」になる本がある。
-    # 数値が戻ったことを条件にすると、見た目は戻ったのに 1 ページ進んだままになり、
-    # **表紙が落ちる**。実機で踏んだ: 探りを入れた回の 1 ページ目が、入れなかった回の
-    # 2 ページ目とバイト単位で一致した。
-    # 先頭で余分に戻しても何も起きないので、飲まれる 1 回ぶん多めに押す。
-    back = turn_key(reverse_of(forward))
-    for _ in range(forward_presses + 1):
-        page.keyboard.press(back)
-        page.wait_for_timeout(int(wait * 1000))
-    return True
+
+    presses = _press_until_moved(page, turn_key(forward), before, page_wait=wait)
+    if presses is not None:
+        # **押した回数だけ戻す。位置の数値が戻ったかでは判断しない。**
+        # 位置はページより粗く、表紙と扉が同じ「位置 1」になる本がある。
+        # 数値が戻ったことを条件にすると、見た目は戻ったのに 1 ページ進んだままになり、
+        # **表紙が落ちる**。実機で踏んだ: 探りを入れた回の 1 ページ目が、入れなかった回の
+        # 2 ページ目とバイト単位で一致した。
+        # 先頭で余分に戻しても何も起きないので、飲まれる 1 回ぶん多めに押す。
+        back = turn_key(reverse_of(forward))
+        for _ in range(presses + 1):
+            page.keyboard.press(back)
+            page.wait_for_timeout(int(wait * 1000))
+        return True
+
+    # **前進しないことは「キーが死んでいる」の証拠にならない (#90)。**
+    # 本の最終位置で開いた本は、定義上そこから前へ進めない。実測:
+    #
+    #     開いた直後 (114, 114)
+    #     right を 3 回: 114 → 114 → 114 → 114   （もう先が無い）
+    #     left  を 3 回: 114 → 114 → 113 → 112   （効く。1 回目は飲まれる）
+    #
+    # 洋書 5 冊がこれで巻き戻せず失敗していた。前進で確かめられないときは
+    # **後退で確かめる**。巻き戻しに要るのは後退のほうなので、それが効くなら
+    # 先へ進んでよい。
+    #
+    # 動かした分を戻さないのは、動いた向きが巻き戻しの向きそのものだから。
+    # 前進のときと違って表紙を落とす心配が無く、むしろ巻き戻しが 1 歩進む。
+    before = read_position(page)
+    if before is None:
+        return None
+    return (
+        _press_until_moved(page, turn_key(reverse_of(forward)), before, page_wait=wait) is not None
+    )
 
 
 def rewind_to_start(
