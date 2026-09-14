@@ -451,6 +451,7 @@ def build_manifest(
     stopped_at=None,
     waits=None,
     gap_risks=None,
+    reloads=None,
 ):
     """run_capture が書くものと同じ形の manifest を組み立てる。"""
     return {
@@ -484,6 +485,10 @@ def build_manifest(
         # 待っても追いつかず押し直した箇所。**中抜けの疑いがある本の目印**。
         # ここが空でない本は、撮り直すか中身を見る価値がある
         "gap_risks": gap_risks or [],
+        # リーダーがページ送りを受け付けなくなって開き直した箇所 (#91)。
+        # **長い本ほど起きる。** ここが空でない本は、開き直しをまたいだ
+        # 継ぎ目があるので、中身を見る価値がある
+        "reloads": reloads or [],
         "total_pages": total,
         "save_dir": save_dir,
         "stopped_reason": stopped_reason,
@@ -811,6 +816,137 @@ def short_of_end(position, book_total):
     return (book_total - position) > allowed
 
 
+# リーダーが**ページ送りを受け付けなくなる**ことがある (#91)。合本のような
+# 長い本で、400〜1900 ページのどこかで起きる。画面は正常な本文ページのままで、
+# リーダーのエラーでもダイアログでもなく、ページ画像の要素も残っている。
+# ただキーだけが通らず、読書位置も 1 も動かない。
+#
+# **リーダーを開き直すと直る。** Kindle は前回の読書位置で開くので、
+# 止まった位置のまま復帰して続きが撮れる（実測: 位置 28689 で止まり、
+# 開き直して 28688 から再開、28731 まで進んだ）。1 位置ぶん手前に戻るので
+# 同じページをもう一度撮りうるが、同じ絵はダイジェストで弾かれる。
+#
+# **本当の最終ページでは開き直しても進まない**（実測: 58503/58503 で
+# 進まなかった）。だから最終ページ判定にもそのまま使える。
+#
+# 上限を置く。上限の無いやり直しは「終わらない」であって「丁寧」ではない。
+# 合本 1 冊（1895 ページ）で 4 回だったので、その 2 倍以上を見ておく。
+MAX_RELOADS = 10
+RELOAD_WAIT = 15.0
+
+
+def reload_reader(page, *, load_wait=RELOAD_WAIT):
+    """リーダーを開き直す。読書位置は Kindle 側が覚えている。
+
+    開き直すと UI を隠した CSS も、閉じたダイアログも元に戻るので
+    どちらも入れ直す。失敗したら False を返して呼び出し側に任せる。
+    """
+    try:
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_timeout(int(load_wait * 1000))
+        dismiss_dialogs(page)
+        page.add_style_tag(content=hide_ui_css())
+        return True
+    except Exception:  # noqa: BLE001 - 開き直せないなら従来どおり止まる
+        return False
+
+
+# 開き直した結果。**「進んだ / 進まなかった」の 2 値にしない。**
+# 2 値にすると、位置が飛んだ・サインインが切れた・そもそも開き直せなかった、を
+# 全部「進まなかった」に丸めて end_of_book にしてしまう。どれも意味が違う。
+RELOAD_ADVANCED = "advanced"  # 復帰した。続けてよい
+RELOAD_STUCK = "stuck"  # 開き直しても進まない。本当の最終ページ
+RELOAD_JUMPED = "reload_jumped"  # 別の場所へ飛んだ。間が抜ける
+RELOAD_SIGNIN = "signin_required"  # 開き直した先がサインイン画面
+RELOAD_FAILED = "reload_failed"  # 開き直せなかった
+
+# 開き直した先が元の位置からどれだけ離れていたら「飛んだ」とみなすか。
+# 実測では 1 位置ぶん手前に戻るだけだった（28689 → 28688）。手前側は
+# 撮り直しになるだけなので広めに、**先へ進む側は厳しく**する。
+# 先へ飛ぶと、間のページが黙って抜けたまま end_of_book で確定する。
+RELOAD_BACK_SLACK = 50
+RELOAD_AHEAD_SLACK = 0
+
+
+def _reload_and_advance(page, key, *, page_wait, emit=null_emit):
+    """開き直してページを送り、**読書位置がどうなったか**を返す。
+
+    **進んだかどうかを画面で見ない (#91)。** 再描画されただけのものを
+    復帰と読み違える。実際に踏んだ: ページ画像に focus() したとき画面の
+    ダイジェストは変わったが、位置は 1 も動いていなかった。
+
+    位置は `_stable_position_pair` で読む。開き直した直後は遷移として最も
+    荒れる瞬間で、**読めた時点で返す読み方では一過性の値を掴む**（#69 で
+    実測がある）。判定を左右する値ほど強く読む。
+    """
+    before, _ = _stable_position_pair(page, page_wait=page_wait)
+
+    def report(outcome, reopened=None, after=None, human=None):
+        emit(
+            "reader_reloaded",
+            human=human
+            or (
+                "ページ送りが効かなくなったのでリーダーを開き直しました"
+                f"（位置 {before} → 再開 {reopened} → {after}、{outcome}）"
+            ),
+            before=before,
+            reopened=reopened,
+            after=after,
+            outcome=outcome,
+            advanced=outcome == RELOAD_ADVANCED,
+        )
+        return outcome
+
+    if not reload_reader(page):
+        # **失敗も必ず残す。** ここで黙って返すと manifest の reloads が空になり、
+        # 「開き直す必要が無かった本」と「開き直せなかった本」を区別できない。
+        # 事後に部分本を洗うという設計の土台が抜ける
+        return report(RELOAD_FAILED, human="リーダーを開き直せませんでした")
+
+    # **開き直しはリーダーから離れる操作。** セッションが切れていれば
+    # サインイン画面に着地する。そのまま撮ると本文の代わりにサインイン画面を
+    # 保存し、しかも end_of_book で完成扱いになる（#15 を迂回する）
+    if not is_signed_in(page.url):
+        return report(RELOAD_SIGNIN, human="開き直した先がサインイン画面でした")
+
+    reopened, _ = _stable_position_pair(page, page_wait=page_wait)
+
+    # **元いた場所へ戻ってきたかを確かめる。** ダイアログを閉じた拍子に
+    # 位置が飛ぶ本がある（Whispersync の「最後に読んでいたページへ移動しますか」に
+    # 「はい」を押した形。#69）。飛んだ先から撮り続けると、間のページが
+    # 黙って抜けたまま最終位置に着いて end_of_book で確定する。
+    if (
+        before is not None
+        and reopened is not None
+        and not (before - RELOAD_BACK_SLACK <= reopened <= before + RELOAD_AHEAD_SLACK)
+    ):
+        return report(RELOAD_JUMPED, reopened=reopened)
+
+    # **1 回で決めない。** reload_reader はダイアログを閉じてから戻る。
+    # 閉じた直後の 1 回目は飲まれる（TURN_PROBE_PRESSES / KEY_PROBE_ATTEMPTS が
+    # 同じ理由で 3 回押している）。1 回で決めると、復帰しているのに
+    # 部分本で確定する
+    after = reopened
+    for _ in range(KEY_PROBE_ATTEMPTS):
+        page.keyboard.press(key)
+        page.wait_for_timeout(int(page_wait * 1000))
+        after, _ = _stable_position_pair(page, page_wait=page_wait)
+        if after is not None and reopened is not None and after > reopened:
+            return report(RELOAD_ADVANCED, reopened=reopened, after=after)
+
+    if after is None or reopened is None:
+        # **「進まなかった」と「読めなかった」を混ぜない。** 合本は巻の境目で
+        # ラベルが数秒消える（#69）。読めないだけなら続けてよい。実際に
+        # 進んでいなければ次の周回で同じ絵になり、上限まで来て止まる
+        return report(
+            RELOAD_ADVANCED,
+            reopened=reopened,
+            after=after,
+            human="開き直しましたが読書位置を読めませんでした。続けます",
+        )
+    return report(RELOAD_STUCK, reopened=reopened, after=after)
+
+
 def capture_pages(
     page,
     save_dir,
@@ -851,6 +987,8 @@ def capture_pages(
     # 最後に保存したページを撮ったときの読書位置。本が先へ進んでしまっているかの
     # 判断に使う (#81)
     last_position = None
+    # リーダーを開き直した回数 (#91)。上限を超えたら従来どおり最終ページとして扱う
+    reloads = 0
     while True:
         # 途中でセッションが切れると、サインイン画面を本文として保存してしまう
         if not is_signed_in(page.url):
@@ -941,6 +1079,51 @@ def capture_pages(
                     # 文言が変わっていてもこれで拾える。最終ページに達しただけなら
                     # ページ画像の要素は残っている
                     trouble = "ページ画像の要素が消えました"
+                # **「最終ページ」と決める前に開き直してみる (#91)。**
+                # 長い本ではリーダーがページ送りを受け付けなくなることがあり、
+                # そのときの画面は正常な本文ページなので end_of_book と区別が
+                # つかない。開き直して**位置が進めば**まだ途中で、
+                # 進まなければ本当の最終ページ（実測: 58503/58503 で進まなかった）。
+                #
+                # リーダーが落ちているとき (trouble) は開き直さない。あちらは
+                # 「開けたが途中で落ちた」で中断するもので、意味も対処も違う。
+                #
+                # **本当の最終ページでも 1 回ぶんの費用がかかる。** 止まって
+                # いるのか終わっているのかは開き直してみないと区別できない
+                # （どちらも正常な本文ページに見える）。1 冊あたり 15 秒ほど
+                # 増えるが、これは払う。黙って欠けた本は気づけないが、
+                # 時間は後から買える（#79 で同じ天秤を誤った）。
+                if not trouble and total > 1 and reloads < MAX_RELOADS:
+                    reloads += 1
+                    outcome = _reload_and_advance(
+                        page,
+                        key,
+                        page_wait=max(page_wait, DEFAULT_PAGE_WAIT),
+                        emit=emit,
+                    )
+                    if outcome == RELOAD_SIGNIN:
+                        emit(
+                            "signin_required",
+                            human="開き直した先がサインイン画面でした",
+                        )
+                        return total, "signin_required"
+                    if outcome == RELOAD_JUMPED:
+                        # **間が抜けたまま完成扱いにしない。** 飛んだ先から
+                        # 撮り続けると最終位置に着いて end_of_book になり、
+                        # short_of_end でも拾えない
+                        emit_error(
+                            emit,
+                            f"{total} ページで開き直したところ別の位置へ飛びました。"
+                            "間のページが抜けるため中止します",
+                        )
+                        return total, RELOAD_JUMPED
+                    if outcome == RELOAD_ADVANCED:
+                        # **prev は消さない。** 消すと次の 1 枚が無条件に
+                        # 保存され、開き直しで 1 位置ぶん手前に戻ったときに
+                        # 同じページを積む。prev を持ったまま戻れば、
+                        # 同じ絵は既存のダイジェスト判定が弾き、
+                        # 押し直しのループが先へ送る
+                        continue
                 reason = (
                     "reader_error" if trouble else ("end_of_book" if total > 1 else "no_change")
                 )
@@ -1538,6 +1721,7 @@ def run_headless_capture(
     stopped_at: dict = {}
     waits: list = []
     gap_risks: list = []
+    reloads: list = []
 
     def note(event, human=None, **fields):
         """manifest に残す情報を控えつつ、そのまま emit する。
@@ -1561,6 +1745,8 @@ def run_headless_capture(
             # **中抜けの疑いがある箇所。** 押さずに打ち切ると白紙が続く本を
             # 切ってしまうので押すが、黙って進めない (#81)
             gap_risks.append({k: fields.get(k) for k in ("page", "position", "last_position")})
+        if event == "reader_reloaded":
+            reloads.append({k: fields.get(k) for k in ("before", "reopened", "after", "advanced")})
         if event == "capture_stopped":
             stopped_at.update(
                 {k: fields.get(k) for k in ("page", "reason", "position", "book_total")}
@@ -1588,6 +1774,7 @@ def run_headless_capture(
             stopped_at=stopped_at,
             waits=waits,
             gap_risks=gap_risks,
+            reloads=reloads,
         )
         path = os.path.join(save_dir, MANIFEST_NAME)
         with open(path, "w", encoding="utf-8") as f:
