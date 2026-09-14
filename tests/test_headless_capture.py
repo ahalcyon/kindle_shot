@@ -15,6 +15,7 @@ import os
 
 import pytest
 
+from core import headless_capture
 from core.headless_capture import (
     CATCHUP_WAIT,
     CATCHUP_WAITS,
@@ -778,7 +779,13 @@ class FakeReader:
                 # 「位置は min_position を下回らない」と書くと、飛んだ先で
                 # 戻れなくなり実機と食い違う
                 floor = page.min_position if page.position >= page.min_position else 1
-                moves = key == page.forward or page.position > floor
+                # 天井（本の最終位置）にいるときの前進は動けない押下なので、
+                # 下の swallow を消費しない。ここを見落とすと「後退側の 1 回目が
+                # 飲まれる」耐性がテストで検査されなくなる (#90)
+                at_ceiling = page.ceiling is not None and page.position >= page.ceiling
+                moves = (key == page.forward and not at_ceiling) or (
+                    key != page.forward and page.position > floor
+                )
                 # 動けない押下（先頭で戻ろうとする等）は「飲まれた 1 回」を
                 # 消費しない。実測ではそうなっている（#53 のログ）
                 if page.swallow > 0 and moves:
@@ -1222,9 +1229,84 @@ def test_the_backward_probe_also_survives_a_swallowed_press():
     assert _keys_respond(page, "right", page_wait=0) is True
 
 
+def test_a_transient_blank_label_does_not_open_the_gate():
+    """**読み落としを「位置が読めない本」と同じに扱わない (#90 のレビュー指摘)。**
+
+    後退を試す前に位置を読み直す。そこを一発読みにすると、ラベルが一瞬読めない
+    回（合本の巻の境目で数秒消える。#69）に None が返る。呼び出し元は
+    `is False` で判定しているので None は門番を素通りし、**キーが死んでいるのに
+    巻き戻しループへ入る**。着地点が MAX_START_POSITION の枠内なら ok で確定し、
+    #70 / #72 が塞いだのと同じ silent partial book になる。
+
+    入口では位置が読めている（読めなければそこで None を返している）ので、
+    ここで読めないのは一過性。前進が動かないことも既に分かっている。保守側へ倒す。
+    """
+    # 読み落とす回を総当たりする。どの回で落としても門番は開いてはいけない
+    for blank in range(1, 90):
+        page = FakeReader(
+            forward="ArrowRight", position=114, total=114, ceiling=114, blank_at=[blank]
+        )
+        page.keys_dead = True
+        assert _keys_respond(page, "ArrowRight", page_wait=0) is not True, (
+            f"{blank} 回目の読み落としで門番が開いた"
+        )
+
+
+def test_dead_keys_with_a_blank_label_are_still_reported_as_dead():
+    """読み落としがあっても False を返す。None だと呼び出し元が素通りする。"""
+    for blank in range(1, 90):
+        page = FakeReader(
+            forward="ArrowRight", position=114, total=114, ceiling=114, blank_at=[blank]
+        )
+        page.keys_dead = True
+        assert _keys_respond(page, "ArrowRight", page_wait=0) is False, (
+            f"{blank} 回目の読み落としで None が返った"
+        )
+
+
+def test_a_blank_label_does_not_turn_dead_keys_into_a_finished_book():
+    """通しで見る。ラベルを 1 回読み落としても ok=True にしてはいけない。"""
+    for blank in range(1, 90):
+        page = FakeReader(
+            forward="ArrowRight",
+            position=3,
+            total=900,
+            toc_start=3,
+            keys_die_after_toc=True,
+            blank_at=[blank],
+        )
+        ok, _ = rewind_to_start(page, "ArrowRight", page_wait=0)
+        assert not ok, f"{blank} 回目の読み落としで部分本が完成扱いになった"
+
+
+def test_an_unreadable_label_before_the_backward_probe_closes_the_gate(monkeypatch):
+    """後退を試す直前に位置が読めなくなったら **False**。None を返してはいけない。
+
+    呼び出し元は `is False` で判定しているので、None は門番を素通りして
+    巻き戻しループへ入る。入口では読めていた以上ここで読めないのは異常側なので、
+    保守に倒す。
+    """
+    page = FakeReader(forward="ArrowRight", position=114, total=114, ceiling=114)
+    page.keys_dead = True
+
+    real = headless_capture._settled_position
+    calls = []
+
+    def only_the_first_read_works(target, **kwargs):
+        calls.append(1)
+        return real(target, **kwargs) if len(calls) == 1 else None
+
+    monkeypatch.setattr(headless_capture, "_settled_position", only_the_first_read_works)
+    assert _keys_respond(page, "ArrowRight", page_wait=0) is False
+    assert len(calls) >= 2, "後退の手前で読み直していない"
+
+
 def test_a_book_at_its_last_position_still_rewinds_to_the_start():
     """#90 の本が通しで先頭まで戻ること。keys_dead で打ち切られない。"""
-    page = FakeReader(forward="ArrowRight", position=114, total=114, ceiling=114)
+    # toc_start を渡さないと jump_to_start_via_toc が False を返し、_keys_respond が
+    # 一度も呼ばれない（門番は目次ジャンプ成功後にしか通らない）。実機では
+    # 「目次ジャンプは成功を返したが位置は 114 から動かなかった」形だった
+    page = FakeReader(forward="ArrowRight", position=114, total=114, ceiling=114, toc_start=114)
     events = []
     ok, presses = rewind_to_start(
         page, "right", page_wait=0, emit=lambda e, human=None, **kw: events.append((e, kw))

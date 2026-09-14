@@ -1107,10 +1107,13 @@ def _keys_respond(page, forward, *, page_wait):
     目次パネルでも同じだった。1 回で決めると、生きているキーを死んだと誤判定して
     **全部の本が巻き戻せなくなる**（実機で踏んだ）。
     """
-    before = read_position(page)
+    # **入口も一発読みにしない。** 一過性の読み落とし（#69）で None を返すと、
+    # 呼び出し元の `is False` を素通りして門番が開く。_settled_position は
+    # 数回読み直すので、本当に位置を持たない本だけが None になる
+    wait = max(page_wait, DEFAULT_PAGE_WAIT)
+    before = _settled_position(page, page_wait=wait)
     if before is None:
         return None
-    wait = max(page_wait, DEFAULT_PAGE_WAIT)
 
     presses = _press_until_moved(page, turn_key(forward), before, page_wait=wait)
     if presses is not None:
@@ -1137,11 +1140,23 @@ def _keys_respond(page, forward, *, page_wait):
     # **後退で確かめる**。巻き戻しに要るのは後退のほうなので、それが効くなら
     # 先へ進んでよい。
     #
-    # 動かした分を戻さないのは、動いた向きが巻き戻しの向きそのものだから。
-    # 前進のときと違って表紙を落とす心配が無く、むしろ巻き戻しが 1 歩進む。
-    before = read_position(page)
+    # 動かした分を戻さないのは、動く向きが巻き戻しの向きだから。前進のときと
+    # 違って表紙を落とす心配が無く、むしろ巻き戻しが 1 歩進む。
+    # （_wait_for_position_change は「値が変わったか」しか見ないので、まれに
+    #  上向きに動いた場合もここを通る。その場合は下のループの current > before が
+    #  rewind_jumped として拾い、before を取り直して門番を通し直す。
+    #  ここで押した 1〜3 回は rewound の presses に計上されない）
+    #
+    # **読み直しは一発読みにしない。** 入口では位置が読めていたので、ここで
+    # 読めないのは「位置が読めない本」ではなく一過性の読み落とし
+    # （合本の巻の境目でラベルが数秒消える。#69）。そこで None を返すと、
+    # 呼び出し元の `is False` を素通りして**キーが死んでいるのに巻き戻しループへ**
+    # 入る。着地点が MAX_START_POSITION の枠内なら ok で確定し、
+    # silent partial book になる（#70 / #72 が塞いだのと同じ穴）。
+    # 前進が動かないことは既に分かっているので、保守側の False に倒す。
+    before = _settled_position(page, page_wait=wait)
     if before is None:
-        return None
+        return False
     return (
         _press_until_moved(page, turn_key(reverse_of(forward)), before, page_wait=wait) is not None
     )
