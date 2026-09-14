@@ -75,6 +75,22 @@ def main(argv=None):
             present[title] = path
     todo = sorted(present)
     print(f"対象 {len(targets)} 冊のうち {len(todo)} 冊がフォルダにあります", file=sys.stderr)
+
+    # **1 冊も一致しないまま成功で終わらない (#95)。** 突き合わせが外れる形
+    # （--folder が撮影時の --out と違う、books.json のタイトルが別物）は
+    # 黙って「0 冊」になるだけで、剥がし漏れに気づけない。PDF はあるのに
+    # 1 冊も当たらないなら、それは突き合わせの失敗として扱う。
+    if not todo:
+        in_folder = sum(1 for n in os.listdir(args.folder) if n.lower().endswith(".pdf"))
+        if in_folder:
+            print(
+                f"フォルダには PDF が {in_folder} 個ありますが 1 冊も一致しませんでした。"
+                "--folder が撮影時の --out と同じか、books.json のタイトルが"
+                "蔵書と揃っているかを確かめてください",
+                file=sys.stderr,
+            )
+            return 1
+
     if args.dry_run:
         for t in todo:
             print(t)

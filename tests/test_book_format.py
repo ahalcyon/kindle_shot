@@ -25,6 +25,7 @@ _spec.loader.exec_module(classify_formats)
 from core.book_format import (
     IMAGE,
     SEARCHABLE,
+    book_pdf_path,
     decide,
     genre_labels,
     library_labels,
@@ -376,3 +377,33 @@ def test_only_missing_skips_a_truncated_name(tmp_path):
     result = tmp_path / "typed.json"
     classify_formats.main(["--books", str(books), "--out", str(result), "--only-missing", str(out)])
     assert json.loads(result.read_text(encoding="utf-8")) == [], "完成済みなのに撮り直しに回った"
+
+
+def test_the_lookup_path_matches_what_the_batch_actually_writes(tmp_path):
+    """**本番の出力パスと 1 文字も違わないこと (#95)。**
+
+    突き合わせ側が出力名の決め方を書き写すと、静かにずれる。実際にずれた:
+    `book_path_name(...) + ".pdf"` と素朴に繋いでいたため、`sample.pdf` のように
+    拡張子で終わる書名で、本番は `sample.pdf` に書くのに突き合わせ側は
+    `sample.pdf.pdf` を探していた。「batch はスキップするのにこちらは作り直す」が
+    そのまま起きる（`scripts/convert_2nd.py` のコメントが警告しているとおり）。
+
+    片方だけを見るテストでは、2 つの実装がずれていること自体は捕まえられない。
+    **本番の関数と突き合わせる。**
+    """
+    from core.pipeline import _batch_output_path
+
+    titles = [
+        "ふつうの本",
+        "本: その 1 / 続き",  # Windows で使えない文字
+        "あ" * 300,  # 切り詰めが起きる長さ
+        "sample.pdf",  # 拡張子で終わる書名
+        "Effective Python.PDF",  # 大文字の拡張子
+        "末尾にピリオド.",
+    ]
+    out = str(tmp_path)
+    for title in titles:
+        expected = _batch_output_path(out, title, "image_pdf")
+        assert book_pdf_path(out, title) == expected, title
+        # image_pdf と searchable_pdf で出力名は変わらない
+        assert _batch_output_path(out, title, "searchable_pdf") == expected, title

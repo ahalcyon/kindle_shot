@@ -30,7 +30,7 @@ from PIL import Image
 
 from core.capture_profiles import PAGE_TURN_KEYS
 from core.image_files import clear_images, list_images
-from core.safe_names import MIN_NAME_CHARS, book_path_name, name_budget
+from core.safe_names import MIN_NAME_CHARS, book_path_name, ensure_ext, name_budget
 
 # 終了コード (cli.py の契約。README の CLI セクション参照)
 EXIT_OK = 0
@@ -89,11 +89,9 @@ def phase_progress(emit, phase):
     return cb
 
 
-def _ensure_ext(filename, ext):
-    """ファイル名に拡張子がなければ付与する。"""
-    if not filename.lower().endswith(ext):
-        filename += ext
-    return filename
+# 出力名の決め方は core/safe_names.py が唯一の定義 (#95)。
+# ここは既存の呼び出し向けの別名。
+_ensure_ext = ensure_ext
 
 
 def _margins_str(margins):
@@ -1362,7 +1360,7 @@ def _batch_output_path(out, title, fmt):
     """
     ext = ".md" if fmt == "markdown" else ".pdf"
     name = book_path_name(title, out)
-    path = os.path.join(out, _ensure_ext(name, ext))
+    path = os.path.join(out, ensure_ext(name, ext))
     if fmt == "markdown" and not os.path.exists(path):
         part1 = os.path.join(out, _ensure_ext(f"{name}_1", ext))
         if os.path.exists(part1):

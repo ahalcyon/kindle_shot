@@ -100,3 +100,22 @@ def book_path_name(title, out):
 
 def _digest(title):
     return hashlib.sha1(title.encode("utf-8")).hexdigest()[:_DIGEST_LEN]
+
+
+def ensure_ext(filename, ext):
+    """ファイル名に拡張子がなければ付与する。"""
+    if not filename.lower().endswith(ext):
+        filename += ext
+    return filename
+
+
+def book_file_name(title, out, ext=".pdf"):
+    """蔵書フォルダ out の中で、その本が持つファイル名。
+
+    **出力名の決め方をここ以外に書き写さない (#95)。** 書き写すとずれる。
+    実際にずれた: 突き合わせ側が book_path_name(...) + ".pdf" と素朴に
+    繋いでいたため、`sample.pdf` のように拡張子で終わる書名で、本番が
+    `sample.pdf` に書くのに突き合わせ側は `sample.pdf.pdf` を探していた。
+    「batch はスキップするのにこちらは作り直す」がそのまま起きる。
+    """
+    return ensure_ext(book_path_name(title, out), ext)

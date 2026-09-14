@@ -39,7 +39,7 @@ import json
 import os
 import re
 
-from core.safe_names import book_path_name
+from core.safe_names import book_file_name
 
 IMAGE = "image_pdf"
 SEARCHABLE = "searchable_pdf"
@@ -113,8 +113,12 @@ def book_pdf_path(folder, title):
     `_<8桁hash>` で切り詰められる。ハッシュは元のタイトルから作るので
     逆引きできず、素朴に `ファイル名[:-4] == title` で比べると
     切り詰められた本が黙って外れる（剥がし漏れ／完成済みの撮り直し）。
+
+    **folder は撮影時の `--out` と同じでなければならない。** 切り詰めの
+    しきい値は `name_budget(folder)`（パスの長さ）で決まるので、別の場所へ
+    移した蔵書に当てると切り詰めの有無がずれて見つからない。
     """
-    return os.path.join(folder, book_path_name(title, folder) + ".pdf")
+    return os.path.join(folder, book_file_name(title, folder, ".pdf"))
 
 
 def text_layer_format(path):
