@@ -926,15 +926,20 @@ def _reload_and_advance(page, key, *, page_wait, emit=null_emit):
     # 閉じた直後の 1 回目は飲まれる（TURN_PROBE_PRESSES / KEY_PROBE_ATTEMPTS が
     # 同じ理由で 3 回押している）。1 回で決めると、復帰しているのに
     # 部分本で確定する
+    # **基準は開き直す前の位置 (#102)。** 開き直すと 1 位置ぶん手前に戻るので、
+    # reopened と比べると「戻った分を押し返しただけ」を復帰と数えてしまう。
+    # 本当の最終ページはまさにその形になり、上限まで空回りする（実測:
+    # before=438 reopened=436 after=438 を 10 回繰り返して 2.5 分を捨てた）。
+    baseline = before if before is not None else reopened
     after = reopened
     for _ in range(KEY_PROBE_ATTEMPTS):
         page.keyboard.press(key)
         page.wait_for_timeout(int(page_wait * 1000))
         after, _ = _stable_position_pair(page, page_wait=page_wait)
-        if after is not None and reopened is not None and after > reopened:
+        if after is not None and baseline is not None and after > baseline:
             return report(RELOAD_ADVANCED, reopened=reopened, after=after)
 
-    if after is None or reopened is None:
+    if after is None or baseline is None:
         # **「進まなかった」と「読めなかった」を混ぜない。** 合本は巻の境目で
         # ラベルが数秒消える（#69）。読めないだけなら続けてよい。実際に
         # 進んでいなければ次の周回で同じ絵になり、上限まで来て止まる

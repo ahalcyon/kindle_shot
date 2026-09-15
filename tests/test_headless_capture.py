@@ -2808,3 +2808,52 @@ def test_a_transient_label_after_reload_is_not_progress(tmp_path):
     total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
     assert reason == "end_of_book"
     assert page.reloads == 1, f"進んでいないのに開き直しを繰り返した: {page.reloads}"
+
+
+def test_the_last_page_does_not_spin_on_reloads(tmp_path):
+    """**最終ページで上限まで空回りしない (#102)。**
+
+    開き直すと 1 位置ぶん手前に戻る（実測）。押すと元の位置に戻るだけなのに、
+    基準を「開き直した直後の位置」にすると `after > reopened` が成立して
+    「復帰した」と数え、上限まで繰り返す。
+
+    実機で踏んだ（洋書 3 冊）:
+
+        reader_reloaded  before=438 reopened=436 after=438 advanced=True  × 10 回
+        capture_stopped  223 ページ end_of_book 位置 438/438
+
+    出力は正しかったが 1 冊あたり 2.5 分を捨てていた。405 冊なら 17 時間になる。
+    基準は**開き直す前の位置**でなければならない。
+
+    最終ページで 1 回だけ開き直すのは意図どおり（止まっているのか終わって
+    いるのかは開き直してみないと区別できない）。2 回目以降が無駄。
+    """
+    frames = [bytes([i]) for i in range(6)]
+    page = FakePage(
+        frames,
+        reload_shift=-1,
+        positions=list(range(1, 7)),
+        book_total=6,
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert reason == "end_of_book"
+    assert page.reloads == 1, f"最終ページで空回りしている: {page.reloads} 回"
+    assert total == len(frames), f"ページ数が合わない: {total}"
+
+
+def test_a_real_recovery_is_still_detected_with_the_new_baseline(tmp_path):
+    """基準を変えても、本当の復帰は復帰として数える。
+
+    実測の合本: 15858 で止まり、15857 で再開し、15862 まで進んだ。
+    開き直す前 (15858) より先へ行っているので復帰。
+    """
+    page = FakePage(
+        [bytes([i]) for i in range(10)],
+        stall_at=4,
+        reload_shift=-1,
+        positions=list(range(1, 11)),
+        book_total=10,
+    )
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert total == 10, f"復帰しているのに部分本で終わった: {total} ページ"
+    assert reason == "end_of_book"
