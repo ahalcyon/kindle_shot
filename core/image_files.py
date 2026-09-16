@@ -11,21 +11,39 @@ ui/trim_tab.py / ocr_engine.py / pdf_builder.py に別々に定義されてお�
 """
 
 import os
+import re
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif")
 OCR_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif")
 PDF_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 
 
-def list_images(folder, extensions=IMAGE_EXTENSIONS):
-    """フォルダ内の画像ファイル名をページ順 (名前昇順) で返す。
+def page_order_key(name):
+    """ファイル名をページ順に並べるためのキー。数字の並びは数値として比べる。
 
-    os.listdir は順序保証がないため、必ずソートして返す。
+    **名前の辞書順で並べない (#107)。** 撮影は ``f"{n:03d}.png"`` で書くので、
+    1000 枚を超えると辞書順では ``1000.png`` が ``100.png`` の直後に来る。
+    枚数も validate も正常に見えたまま PDF のページ順だけが崩れ、実際に
+    2004 ページの本が壊れていた。
+    """
+    return [
+        (0, int(part), part) if part.isdigit() else (1, 0, part)
+        for part in re.split(r"(\d+)", name)
+    ]
+
+
+def list_images(folder, extensions=IMAGE_EXTENSIONS):
+    """フォルダ内の画像ファイル名をページ順で返す。
+
+    os.listdir は順序保証がないため、必ずソートして返す。並びは
+    page_order_key（数字を数値として比べる）。
 
     Raises:
         FileNotFoundError: フォルダが存在しない場合
     """
-    return sorted(f for f in os.listdir(folder) if f.lower().endswith(extensions))
+    return sorted(
+        (f for f in os.listdir(folder) if f.lower().endswith(extensions)), key=page_order_key
+    )
 
 
 def clear_images(folder, extensions=IMAGE_EXTENSIONS):

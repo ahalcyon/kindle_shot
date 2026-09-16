@@ -9,6 +9,7 @@ from core.image_files import (
     PDF_IMAGE_EXTENSIONS,
     clear_images,
     list_images,
+    page_order_key,
 )
 
 
@@ -49,3 +50,28 @@ def test_extension_sets_are_intentionally_different():
     assert ".gif" not in OCR_IMAGE_EXTENSIONS
     assert ".tiff" in OCR_IMAGE_EXTENSIONS
     assert ".bmp" not in PDF_IMAGE_EXTENSIONS
+
+
+def test_list_images_orders_pages_past_999_numerically(tmp_path):
+    # 撮影は 3 桁ゼロ埋めで書く。辞書順だと 1000.png が 100.png の直後に来る (#107)
+    names = [
+        "000.png",
+        "099.png",
+        "100.png",
+        "101.png",
+        "999.png",
+        "1000.png",
+        "1001.png",
+        "2004.png",
+    ]
+    for name in reversed(names):
+        (tmp_path / name).write_bytes(b"x")
+    assert list_images(str(tmp_path)) == names
+
+
+def test_page_order_key_keeps_non_numeric_names_stable():
+    assert sorted(["b.png", "a10.png", "a9.png"], key=page_order_key) == [
+        "a9.png",
+        "a10.png",
+        "b.png",
+    ]
