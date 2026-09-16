@@ -713,9 +713,11 @@ def alert_text(page, *, selector=ALERT_SELECTOR):
         ion-alert      display: none  (overlay-hidden が付く)
         └ .alert-wrapper display: flex  ← これだけ見ると「表示中」
 
-    先祖まで遡って見るのが checkVisibility。取り逃すと、閉じた残骸の文言で
-    unsupported_reason が本を非対応と断じたり、reader_error_text が
-    撮影中の本を打ち切ったりする。
+    先祖まで遡って見るのが checkVisibility。**遡るのは引数なしの既定の動き**で、
+    渡している checkVisibilityCSS は visibility:hidden も見るための上乗せ
+    （このバグを直しているのは引数ではなく既定の動きのほう）。取り逃すと、
+    閉じた残骸の文言で unsupported_reason が本を非対応と断じたり、
+    reader_error_text が撮影中の本を打ち切ったりする。
     """
     try:
         return page.evaluate(
