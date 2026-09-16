@@ -26,9 +26,11 @@ def page_order_key(name):
     枚数も validate も正常に見えたまま PDF のページ順だけが崩れ、実際に
     2004 ページの本が壊れていた。
     """
+    # re.split にキャプチャ付きで渡すと、奇数番目が必ず \d+ の塊になる。
+    # isdigit() で判定しない: "①" や "²" は isdigit() が True だが int() で落ちる
     return [
-        (0, int(part), part) if part.isdigit() else (1, 0, part)
-        for part in re.split(r"(\d+)", name)
+        (0, int(part), part) if i % 2 else (1, 0, part)
+        for i, part in enumerate(re.split(r"(\d+)", name))
     ]
 
 
