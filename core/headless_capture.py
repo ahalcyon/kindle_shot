@@ -695,19 +695,36 @@ def alert_text(page, *, selector=ALERT_SELECTOR):
     DOM にテキストが無いが、将来テキストレンダラの本が出てきたときに本文の
     言い回しを非対応の目印と取り違えないようにするため。
 
-    閉じたあとも DOM に残るダイアログがあるので display:none は除く
-    (DISMISS_ALERTS_JS が同じ理由で同じ判定をしている)。innerText は
-    表示されていない要素では textContent と同じになり、残骸まで読んでしまう。
-    最初の 1 つだけでなく全部を見る。残骸が先に並んでいると本命を取り逃す。
+    閉じたあとも DOM に残るダイアログがあるので、見えていないものは除く。
+    innerText は表示されていない要素では textContent と同じになり、
+    残骸まで読んでしまう。最初の 1 つだけでなく全部を見る。残骸が先に
+    並んでいると本命を取り逃す。
 
     入れ子になった一致 (.alert-wrapper は ion-alert の子孫) は外側だけ残す。
     両方読むと同じ文言が二重に入る。
+
+    **自分の display だけを見てはいけない。** ion-alert は閉じると自分が
+    display:none になるが、**中の .alert-wrapper は display:flex のまま**
+    残る。自分だけを見ると、この子が生き残って「閉じたはずのダイアログが
+    まだ出ている」と読める。実測 (#104、ハリー・ポッターの読書位置同期
+    ダイアログ): dismiss_dialogs が「いいえ」を押して閉じた直後でも、
+    alert_text は同じ文言を返し続けた。
+
+        ion-alert      display: none  (overlay-hidden が付く)
+        └ .alert-wrapper display: flex  ← これだけ見ると「表示中」
+
+    先祖まで遡って見るのが checkVisibility。取り逃すと、閉じた残骸の文言で
+    unsupported_reason が本を非対応と断じたり、reader_error_text が
+    撮影中の本を打ち切ったりする。
     """
     try:
         return page.evaluate(
             "(sel) => {"
-            "  const all = Array.from(document.querySelectorAll(sel))"
-            "      .filter(a => getComputedStyle(a).display !== 'none');"
+            "  const shown = (el) =>"
+            "      typeof el.checkVisibility === 'function'"
+            "        ? el.checkVisibility({checkVisibilityCSS: true})"
+            "        : getComputedStyle(el).display !== 'none';"
+            "  const all = Array.from(document.querySelectorAll(sel)).filter(shown);"
             "  return all.filter(a => !all.some(b => b !== a && b.contains(a)))"
             "      .map(a => a.innerText).join('\\n');"
             "}",
