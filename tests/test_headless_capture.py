@@ -2038,6 +2038,11 @@ def test_alert_text_asks_only_for_visible_dialogs():
 
     innerText は非表示の要素では textContent と同じになり、閉じた残骸まで
     読んでしまう。DOM が要るので実際の絞り込みはここでは検証できない。
+
+    **先祖まで遡って見ているか**も見る。自分の display だけで判定すると、
+    閉じた ion-alert (display:none) の中に display:flex のまま残る
+    .alert-wrapper を「表示中」と読む (#104 で実測)。checkVisibility は
+    先祖の display:none を見てくれる。
     """
     sent = {}
 
@@ -2049,6 +2054,7 @@ def test_alert_text_asks_only_for_visible_dialogs():
     alert_text(ScriptCapturingPage())
     assert "querySelectorAll" in sent["script"]
     assert "display" in sent["script"]
+    assert "checkVisibility" in sent["script"]
 
 
 def test_open_book_is_not_reported_as_unsupported():
