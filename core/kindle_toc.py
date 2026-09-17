@@ -11,10 +11,17 @@ Kindle Cloud Reader の描画 API（``renderer/render``）の応答には、本�
 
 ページへの対応づけ（実測で決めた規則。#114 のコメントに目視の結果がある）:
 
-- 描画のページと撮影したページは同じ並び。PDF の先頭に表紙を足した本は 1 ページずらす
-- 既存の PDF には余分なページ・欠けたページがあり、位置だけだと数ページずれる本がある。
-  PDF のテキスト層で、推定の**後ろ** ``SEARCH_AHEAD`` ページまでに章名があればそこへ動かす
-- **前へは動かさない。** 前への補正は目次ページや本文中の言及に当たっていて、目視で全部誤りだった
+- 描画のページと撮影したページはおおむね同じ並び。ただし位置の範囲にはすき間があり、
+  **すき間にある目次の位置は次のページの始まり**を指している（目視 7/7、漫画 10/10。
+  テキストで後ろへ補正した項目の 9 割がすき間の項目で、補正幅はほぼ +1）
+- 撮影した PDF には余分なページ・欠けたページがあり、**ずれ幅は本の途中で変わる**
+  （ハリー・ポッター全 7 巻: 第 1 巻 +2、第 2 巻 0、第 3 巻の途中から +2）。本全体で 1 つの
+  ずれ幅を選ぶと、少ない側の区間が全部ずれる。そこで、各項目で章名がテキストに見つかる
+  ずれ幅を出し、**続けて何項目も同じずれ幅で見つかるときだけ**ずれ幅を切り替える
+  （``SWITCH_COST``）。1 項目だけの一致は目次ページ・柱・本文中の言及であることが多く、
+  それで前へ動かすと誤る（初期の目視で前への補正 4 件がすべて誤りだった）
+- 決めたずれ幅のページに章名が無ければ、後ろ ``SEARCH_AHEAD`` ページまで探す。
+  すき間の項目で、次のページに無く 1 つ前のページにだけあれば 1 つ前にする（目視 6/8）
 - 章名は番号（「第1章」「1-2-3」「Chapter 4」）を落とした部分で探す。番号は OCR が崩しやすい。
   1 文字の章名は本文のどこにでも当たるので探さない
 """
@@ -29,6 +36,13 @@ from typing import Any
 
 # テキストで補正するときに見る、推定より後ろのページ数。実測のずれは +1〜+3 だった
 SEARCH_AHEAD = 3
+# ずれ幅の候補を、描画と PDF のページ数の差の外側へ広げる幅。区間ごとのずれは差の範囲を
+# 前後に数ページはみ出す（ハリー・ポッターは差 +2 で、区間のずれは 0〜+2 に加えすき間で +1）
+SHIFT_MARGIN = 3
+# ずれ幅を切り替える費用。章名が見つからない項目 1 件を 1 とする。2.5 なら、新しいずれ幅で
+# 続けて 3 項目以上見つかるときだけ切り替わる。1〜2 項目の一致（目次ページ・柱・本文中の言及）
+# では切り替えない。先頭の項目も、既定のずれ幅（表紙の分）からの切り替えとして数える
+SWITCH_COST = 2.5
 # 章名で探すときに使う長さ。長すぎると OCR の読み違いで当たらず、短すぎると本文に当たる
 PROBE_LEN = 10
 MIN_PROBE_LEN = 2
@@ -48,6 +62,7 @@ class TocEntry:
     position: int
     page: int = 0
     estimated: int = 0
+    shift: int = 0  # 描画のページ番号（すき間は次のページ）から PDF のページへのずれ幅
     how: str = UNSEARCHED
 
 
@@ -131,48 +146,107 @@ def page_offset(pdf_pages: int, render_pages: int) -> int | None:
     return diff if diff in (0, 1) else None
 
 
-def map_to_pages(entries, page_starts, pdf_pages, page_text=None, offset=0):
+def map_to_pages(entries, page_ranges, pdf_pages, page_text=None, offset=0):
     """各しおりに PDF のページを割り当てる（entries を書き換えて返す）。
 
-    前提: ``positions_in_order(entries)`` が真で、``page_starts`` が空でない。
+    前提: ``positions_in_order(entries)`` が真で、``page_ranges`` が空でない。
     呼び出し側で確かめること（崩れていると全部のしおりが誤ったページに付く）。
 
     Args:
         entries: ``flatten_toc`` の結果
-        page_starts: 描画の各ページの ``startPositionId``（昇順）
+        page_ranges: 描画の各ページの ``[startPositionId, endPositionId]``（昇順）
         pdf_pages: PDF のページ数
         page_text: ``page_text(i)`` で i ページ目のテキストを返す関数。None ならテキストで補正しない
-        offset: PDF の先頭に足したページ数（表紙）
+        offset: 既定のずれ幅（PDF の先頭に足した表紙の数）。テキストで区間ごとに変わりうる
     """
-    if not page_starts:
+    if not page_ranges:
         raise ValueError("描画のページ範囲がありません")
+    if not entries:
+        return entries
     last = max(pdf_pages - 1, 0)
-    prev = 0
+    starts = [r[0] for r in page_ranges]
+
+    bases, gaps, probes = [], [], []
     for entry in entries:
-        index = max(bisect.bisect_right(page_starts, entry.position) - 1, 0)
-        estimated = min(index + offset, last)
-        # 前の項目をテキストで後ろへ補正した結果、位置の順では後ろの項目が前に来ることがある。
-        # そのときだけ前の項目に揃える（位置の順は呼び出し側で確かめてある）
-        estimated = max(estimated, prev)
-        entry.estimated = estimated
-        entry.page = estimated
-        entry.how = UNSEARCHED
+        index = max(bisect.bisect_right(starts, entry.position) - 1, 0)
+        gap = entry.position > page_ranges[index][1] and index + 1 < len(page_ranges)
+        bases.append(index + 1 if gap else index)
+        gaps.append(gap)
         probe = title_probe(entry.title)
-        if page_text is not None and len(probe) >= MIN_PROBE_LEN:
-            found = None
-            for p in range(estimated, min(estimated + SEARCH_AHEAD, last) + 1):
-                if probe in _norm(page_text(p)):
-                    found = p
+        usable = page_text is not None and len(probe) >= MIN_PROBE_LEN
+        probes.append(probe if usable else None)
+
+    def found(k, page):
+        return probes[k] is not None and 0 <= page <= last and probes[k] in _norm(page_text(page))
+
+    diff = pdf_pages - len(page_ranges)
+    shifts = list(
+        range(min(diff, 0, offset) - SHIFT_MARGIN, max(diff, 0, offset) + SHIFT_MARGIN + 1)
+    )
+    shift = _choose_shifts(len(entries), shifts, offset, lambda k, s: found(k, bases[k] + s))
+
+    prev = 0
+    for k, entry in enumerate(entries):
+        # 補正の結果、位置の順では後ろの項目が前に来ることがある。そのときだけ前の項目に揃える
+        estimated = min(max(bases[k] + shift[k], prev), last)
+        entry.estimated = estimated
+        entry.shift = shift[k]
+        entry.page = estimated
+        if probes[k] is None:
+            entry.how = UNSEARCHED
+        elif found(k, estimated):
+            entry.how = CONFIRMED
+        else:
+            entry.how = UNCONFIRMED
+            for p in range(estimated + 1, min(estimated + SEARCH_AHEAD, last) + 1):
+                if found(k, p):
+                    entry.page, entry.how = p, MOVED
                     break
-            if found is None:
-                entry.how = UNCONFIRMED
-            elif found == estimated:
-                entry.how = CONFIRMED
             else:
-                entry.page = found
-                entry.how = MOVED
+                if gaps[k] and estimated - 1 >= prev and found(k, estimated - 1):
+                    entry.page, entry.how = estimated - 1, MOVED
         prev = entry.page
     return entries
+
+
+def _choose_shifts(count, shifts, default, matches):
+    """項目ごとのずれ幅を、区間ごとに一定になるように選ぶ（動的計画法）。
+
+    費用は「章名が見つからない項目の数」+「ずれ幅を切り替えた回数 × SWITCH_COST」。
+    同じ費用なら既定のずれ幅に近いほう。テキストが無ければ全項目が既定のずれ幅になる。
+    """
+    tie = 1e-3  # 既定から離れるほどわずかに不利にする（同点を決めるだけの大きさ）
+    local = [
+        [(0.0 if matches(k, s) else 1.0) + tie * abs(s - default) for s in shifts]
+        for k in range(count)
+    ]
+    # 探す章名が無い項目（テキスト無し・短い名前）はどのずれ幅でも同じ費用にする
+    for k in range(count):
+        if all(v >= 1.0 for v in local[k]):
+            local[k] = [tie * abs(s - default) for s in shifts]
+    total = [local[0][j] + (0.0 if s == default else SWITCH_COST) for j, s in enumerate(shifts)]
+    back: list[list[int]] = []
+    for k in range(1, count):
+        best_j = min(range(len(shifts)), key=lambda j: total[j])
+        row, nxt = [], []
+        for j in range(len(shifts)):
+            stay = total[j]
+            move = total[best_j] + SWITCH_COST
+            if stay <= move:
+                row.append(j)
+                nxt.append(stay + local[k][j])
+            else:
+                row.append(best_j)
+                nxt.append(move + local[k][j])
+        back.append(row)
+        total = nxt
+    j = min(range(len(shifts)), key=lambda x: total[x])
+    chosen = [0] * count
+    for k in range(count - 1, -1, -1):
+        chosen[k] = shifts[j]
+        if k > 0:
+            j = back[k - 1][j]
+    return chosen
 
 
 # ---------------------------------------------------------------------------

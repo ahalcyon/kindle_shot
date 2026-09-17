@@ -33,7 +33,6 @@ Cloud Reader で開き、描画 API から目次と全ページの位置範囲�
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
 import json
 import os
@@ -57,8 +56,6 @@ from core.kindle_toc import (  # noqa: E402
 
 # テキスト層があるとみなす、抜き取りページの合計文字数
 TEXT_LAYER_MIN_CHARS = 50
-# ずらし幅を試す上限。差し込んだページの数ぶん。大きい差は別の原因なので試さない
-MAX_OFFSET_TRIAL = 3
 # 並びから外れた項目を除いてよい上限。実測では外れるのは「目次」「Cover」の 1 項目だった。
 # これを超えて外れる目次は、対応づけの前提（目次の順＝ページの順）が崩れている
 MAX_ORDER_OUTLIERS = 2
@@ -138,20 +135,13 @@ def count_outline(reader):
         return 0
 
 
-def choose_offset(entries, starts, pdf_pages, page_text, candidates):
-    """テキストで章名を確かめられた項目が最も多いずらし幅を返す。
-
-    点数が同じなら小さいほう。テキストが無ければ 0。
-    """
-    if page_text is None or not entries or not starts:
-        return 0
-    best, best_score = 0, -1
-    for offset in candidates:
-        trial = map_to_pages(copy.deepcopy(entries), starts, pdf_pages, page_text, offset)
-        score = sum(1 for e in trial if e.how == CONFIRMED)
-        if score > best_score:
-            best, best_score = offset, score
-    return best
+def shift_summary(entries):
+    """区間ごとのずれ幅を、本の先頭からの並びで返す（例: ``2→0→2``）。"""
+    out: list[str] = []
+    for e in entries:
+        if not out or out[-1] != str(e.shift):
+            out.append(str(e.shift))
+    return "→".join(out)
 
 
 def plan_book(pdf_path, structure):
@@ -166,14 +156,14 @@ def plan_book(pdf_path, structure):
 
     reader = PdfReader(pdf_path)
     pdf_pages = len(reader.pages)
-    starts = [p[0] for p in structure.get("pages") or []]
-    render_pages = len(starts)
+    ranges = structure.get("pages") or []
+    render_pages = len(ranges)
     flags = []
 
     entries = flatten_toc(structure.get("toc"))
     if not entries:
         flags.append(FLAG_NO_TOC)
-    if not starts:
+    if not ranges:
         flags.append(FLAG_NO_PAGES)
     dropped = 0
     if entries:
@@ -209,17 +199,13 @@ def plan_book(pdf_path, structure):
     text = page_text if has_text else None
     mappable = not (BLOCKING_FLAGS & set(flags))
     if mappable:
-        if offset is None:
-            # 差が表紙で説明できない本（途中に画像を差し込んだ本など）。ずらし幅の候補を
-            # 全部試し、テキストで章名を確かめられた項目が最も多いものを採る
-            candidates = range(0, min(max(pdf_pages - render_pages, 0), MAX_OFFSET_TRIAL) + 1)
-            offset = choose_offset(entries, starts, pdf_pages, text, candidates)
-        map_to_pages(entries, starts, pdf_pages, text, offset)
+        # ずれ幅は区間ごとにテキストで決まる（core.kindle_toc.map_to_pages）。表紙の分は既定値
+        map_to_pages(entries, ranges, pdf_pages, text, offset or 0)
     hows = Counter(e.how for e in entries) if mappable else Counter()
     row = {
         "pdf_pages": pdf_pages,
         "render_pages": render_pages,
-        "offset": offset if offset is not None else "",
+        "offset": shift_summary(entries) if mappable else "",
         "toc_entries": len(entries),
         "dropped": dropped,
         "old_bookmarks": count_outline(reader),
