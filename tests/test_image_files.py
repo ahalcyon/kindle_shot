@@ -9,6 +9,7 @@ from core.image_files import (
     PDF_IMAGE_EXTENSIONS,
     clear_images,
     list_images,
+    page_order_key,
 )
 
 
@@ -49,3 +50,39 @@ def test_extension_sets_are_intentionally_different():
     assert ".gif" not in OCR_IMAGE_EXTENSIONS
     assert ".tiff" in OCR_IMAGE_EXTENSIONS
     assert ".bmp" not in PDF_IMAGE_EXTENSIONS
+
+
+def test_list_images_orders_pages_past_999_numerically(tmp_path):
+    # 撮影は 3 桁ゼロ埋めで書く。辞書順だと 1000.png が 100.png の直後に来る (#107)
+    names = [
+        "000.png",
+        "099.png",
+        "100.png",
+        "101.png",
+        "999.png",
+        "1000.png",
+        "1001.png",
+        "2004.png",
+    ]
+    for name in reversed(names):
+        (tmp_path / name).write_bytes(b"x")
+    assert list_images(str(tmp_path)) == names
+
+
+def test_page_order_key_compares_digit_runs_numerically():
+    assert sorted(["b.png", "a10.png", "a9.png"], key=page_order_key) == [
+        "a9.png",
+        "a10.png",
+        "b.png",
+    ]
+
+
+def test_page_order_key_is_deterministic_for_equal_numbers():
+    # 数値が同じでも表記が違えば順序は決まる（入力の順に依存しない）
+    names = ["1.png", "001.png", "01.png", "001.jpg"]
+    assert sorted(names, key=page_order_key) == sorted(reversed(names), key=page_order_key)
+
+
+def test_page_order_key_does_not_raise_on_non_ascii_digit_like_chars():
+    # "①" "²" は str.isdigit() が True だが int() に通らない
+    assert sorted(["①1.png", "²3.png", "002.png"], key=page_order_key)
