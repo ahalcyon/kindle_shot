@@ -2958,6 +2958,17 @@ def test_an_unsettled_stop_does_not_exit_zero(tmp_path, monkeypatch):
     assert _run_with_stop_reason("unsettled", tmp_path, monkeypatch) == EXIT_ERROR
 
 
+def test_a_jumped_reload_does_not_exit_zero(tmp_path, monkeypatch):
+    """開き直して別の位置へ飛んだ本を完成扱いにしない。
+
+    間のページが抜けているので、0 で返すと batch が出力を見てスキップし、
+    中抜けの本がそのまま確定する。
+    """
+    from core.pipeline import EXIT_ERROR
+
+    assert _run_with_stop_reason("reload_jumped", tmp_path, monkeypatch) == EXIT_ERROR
+
+
 def test_an_unsettled_stop_records_where_it_stopped(tmp_path):
     """unsettled で止めたときも、止まった位置を capture_stopped で残す (#109)。
 

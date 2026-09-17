@@ -2049,6 +2049,11 @@ def run_headless_capture(
             "最終ページではないので、この本は撮り直しが要ります",
         )
         return EXIT_ERROR
+    if stopped_reason == RELOAD_JUMPED:
+        # **完成扱いにしない。** 開き直したら別の位置へ飛んだので間のページが抜けている。
+        # capture_pages が理由を emit_error で出している。ここで 0 を返すと batch が
+        # 出力を見てスキップし、中抜けの本がそのまま確定する
+        return EXIT_ERROR
     if stopped_reason == UNSETTLED:
         # **完成扱いにしない。** 読み込み待ちのまま止まった。0 で返すと batch が
         # 出力を見てスキップし、途中までの本がそのまま確定する (#109)
