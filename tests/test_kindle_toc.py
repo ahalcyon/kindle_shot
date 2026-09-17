@@ -313,11 +313,12 @@ def test_write_outline_keeps_the_file_when_the_readback_differs(tmp_path, monkey
 
 def test_scan_keeps_pages_whose_ranges_overlap():
     """隣り合うページの位置の範囲が少し重なっても、重複として捨てない。"""
-    pages = [[0, 10], [8, 20], [21, 30]]
+    # 1 回の要求は 4 ページ。4 ページ目の [30, 40] と次の要求で返る [38, 50] が重なる
+    pages = [[0, 9], [10, 19], [20, 29], [30, 40], [38, 50], [51, 60]]
 
     def get(num_pages, position):
         out = [p for p in pages if p[1] >= position][:num_pages]
-        meta = {"lastPositionId": 30}
+        meta = {"lastPositionId": 60}
         return ([{"startPositionId": a, "endPositionId": b} for a, b in out], None, meta)
 
     got = scan_positions(get)
