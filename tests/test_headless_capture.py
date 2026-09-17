@@ -54,6 +54,7 @@ from core.headless_capture import (
     resolve_shot_mode,
     reverse_of,
     rewind_to_start,
+    settled_shot,
     short_of_end,
     turn_key,
     unsupported_reason,
@@ -89,8 +90,13 @@ class FakePage:
         reload_signs_out=False,
         reload_raises=False,
         reload_swallows=0,
+        animating=None,
     ):
         self.frames = list(frames)
+        # {index: n}。その index に来てから n 回の撮影は、毎回違う画像を返す
+        # （読み込み中のスピナーが回っている形。#109）。n を大きくすると止まらない
+        self.animating = dict(animating or {})
+        self.spin = 0
         # 要素撮影で返す内容。省略時は frames と同じ（方式を変えても中身は同じ）
         self.element_frames = list(element_frames) if element_frames else None
         self.index = 0
@@ -111,7 +117,9 @@ class FakePage:
         # 読み手側が出す位置。index ごとに引く
         self.positions = list(positions) if positions else None
         self.book_total = book_total
-        # この index 以降、画面が lag_shots 回ぶん遅れて見える（本は進んでいる）
+        # この index 以降、画面が lag_shots 回ぶん遅れて見える（本は進んでいる）。
+        # 撮影は止まったのを確かめるため 1 回の観測で 2 回撮る (#109) ので、
+        # 観測 n 回ぶん遅らせたいときは 2n を渡す
         self.lag_from_index = lag_from_index
         self.lag_shots = lag_shots
         # 読むたびに変わる位置。「押した結果あとから ahead に転じる」形を作る
@@ -169,9 +177,17 @@ class FakePage:
             return self.lag_from_index
         return self.index
 
+    def _spinning(self, index):
+        if self.animating.get(index, 0) > 0:
+            self.animating[index] -= 1
+            self.spin += 1
+            return f"spinner-{self.spin}".encode()
+        return None
+
     def screenshot(self):
         self.shots.append("viewport")
-        return self.frames[self._visible_index()]
+        index = self._visible_index()
+        return self._spinning(index) or self.frames[index]
 
     def locator(self, selector):
         page = self
@@ -212,7 +228,8 @@ class FakePage:
             def screenshot(self):
                 page.shots.append("element")
                 frames = page.element_frames or page.frames
-                return frames[page._visible_index()]
+                index = page._visible_index()
+                return page._spinning(index) or frames[index]
 
         return Loc()
 
@@ -471,7 +488,7 @@ def test_a_lagging_screen_does_not_lose_pages(tmp_path):
         positions=[10, 20, 30, 40, 50],
         book_total=1000,
         lag_from_index=1,
-        lag_shots=3,
+        lag_shots=6,
     )
     total, _ = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
     saved = [(tmp_path / n).read_bytes() for n in sorted(p.name for p in tmp_path.iterdir())]
@@ -528,7 +545,7 @@ def test_the_wait_is_reported(tmp_path):
         positions=[10, 20, 30, 40],
         book_total=1000,
         lag_from_index=1,
-        lag_shots=2,
+        lag_shots=4,
     )
     capture_pages(
         page,
@@ -556,7 +573,7 @@ def test_a_gap_risk_is_recorded_when_waiting_did_not_help(tmp_path):
         positions=[10, 20, 30, 40, 50, 60, 70, 80],
         book_total=1000,
         lag_from_index=1,
-        lag_shots=6,
+        lag_shots=12,
     )
     capture_pages(
         page,
@@ -582,7 +599,7 @@ def test_a_book_whose_position_goes_backwards_is_pressed(tmp_path):
         positions=[40, 30, 20, 10],
         book_total=1000,
         lag_from_index=1,
-        lag_shots=2,
+        lag_shots=4,
     )
     capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
     assert [ms for ms in page.waits if ms == CATCHUP_WAIT * 1000] == [], (
@@ -600,7 +617,7 @@ def test_the_position_is_read_again_on_every_turn_of_the_loop(tmp_path):
         [b"a", b"b", b"c"],
         book_total=1000,
         lag_from_index=0,
-        lag_shots=5,
+        lag_shots=10,
         # 1 ページ目保存時 10 → 停滞 1 周目も 10（押す）→ 2 周目に 90（待つ）
         read_positions=[10, 10, 90, 90, 90, 90, 90, 90, 90, 90],
     )
@@ -2863,3 +2880,74 @@ def test_a_real_recovery_is_still_detected_with_the_new_baseline(tmp_path):
     total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
     assert total == 10, f"復帰しているのに部分本で終わった: {total} ページ"
     assert reason == "end_of_book"
+
+
+def _saved(tmp_path):
+    return [p.read_bytes() for p in sorted(tmp_path.glob("*.png"))]
+
+
+def test_a_spinner_is_not_saved_as_a_page(tmp_path):
+    """読み込み中のスピナーを新しいページとして保存しない (#109)。
+
+    スピナーは回るので撮るたびに違う画像になる。前のページとは違うので、
+    止まるのを待たずに撮ると「新しいページ」として保存していた。
+    """
+    events = []
+    page = FakePage([b"a", b"b", b"c", b"d"], animating={2: 5})
+    total, reason = capture_pages(
+        page, str(tmp_path), key="ArrowLeft", emit=lambda name, **kw: events.append((name, kw))
+    )
+    saved = _saved(tmp_path)
+    assert not [s for s in saved if s.startswith(b"spinner")], saved
+    assert saved == [b"a", b"b", b"c", b"d"]
+    assert total == 4
+    assert not [n for n, _ in events if n == "capture_unsettled"]
+
+
+def test_a_screen_that_never_settles_stops_without_pressing(tmp_path):
+    """上限まで止まらない画面は保存せず、**キーを押さずに** unsettled で止める (#109)。
+
+    止まらない間に押すと、押した分だけ本が先へ進み、読み込み待ちのページが
+    黙って抜ける。このテストの模擬ではキーが効くので、押していれば b を飛ばして
+    c を保存する。
+    """
+    events = []
+    page = FakePage([b"a", b"b", b"c"], animating={1: 10_000})
+    total, reason = capture_pages(
+        page, str(tmp_path), key="ArrowLeft", emit=lambda name, **kw: events.append((name, kw))
+    )
+    assert (total, reason) == (1, "unsettled")
+    assert _saved(tmp_path) == [b"a"]
+    assert len(page.pressed) == 1, page.pressed
+    assert len([n for n, _ in events if n == "capture_unsettled"]) == 3
+
+
+def test_a_spinner_during_the_retry_does_not_press_again(tmp_path):
+    """押し直しの途中で読み込みに入っても、止まるまで押さない (#109)。"""
+    page = FakePage([b"a", b"a", b"b", b"c"], animating={2: 5})
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft", max_retries=3)
+    saved = _saved(tmp_path)
+    assert not [s for s in saved if s.startswith(b"spinner")], saved
+    assert saved == [b"a", b"b", b"c"]
+
+
+def test_the_first_page_that_never_settles_fails_loudly(tmp_path):
+    page = FakePage([b"a", b"b"], animating={0: 10_000})
+    total, reason = capture_pages(page, str(tmp_path), key="ArrowLeft")
+    assert (total, reason) == (0, "unsettled")
+    assert _saved(tmp_path) == []
+    assert page.pressed == []
+
+
+def test_settled_shot_waits_until_two_shots_match():
+    page = FakePage([b"a"], animating={0: 3})
+    shot, mode, settled = settled_shot(page)
+    assert (shot, settled) == (b"a", True)
+    assert page.waits and all(w == 500 for w in page.waits)
+
+
+def test_an_unsettled_stop_does_not_exit_zero(tmp_path, monkeypatch):
+    """画面が止まらずに止めた本を完成扱いにしない (#109)。"""
+    from core.pipeline import EXIT_ERROR
+
+    assert _run_with_stop_reason("unsettled", tmp_path, monkeypatch) == EXIT_ERROR

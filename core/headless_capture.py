@@ -793,6 +793,43 @@ def resolve_shot_mode(page, *, selector=PAGE_IMAGE_SELECTOR):
 CATCHUP_WAITS = 3
 CATCHUP_WAIT = 5.0
 
+# 撮る前に**画面が止まるのを待つ** (#109)。ページ送りのあと一定時間待ってから撮るだけ
+# だと、描画が終わっていない画面を「新しいページ」として保存する。実測で 2 種類あった:
+#
+#   - 読み込み中のスピナーだけの画面。先読みが尽きてリーダーが描画要求の応答を
+#     待っている間に出る。蔵書 349 冊の中に 3 冊・9 ページ紛れていた（OCR は "11" と読む）
+#   - スライドの途中で前後のページが重なった画面
+#
+# どちらも**動いている**（スピナーは回る、スライドは流れる）ので、間を置いて 2 回撮って
+# 同じになるまで待てば見分けられる。実機で、描画要求を保留してスピナーを出し続けると
+# 0.5 秒おきの撮影が毎回違うことを確かめた。静止したページは同じバイト列になる。
+#
+# 止まらない間は**キーを押さない**。実機ではスピナーの間に押したキーは飲まれていたが、
+# 飲まれなければ押した分だけ本が先へ進み、読み込み待ちのページが黙って抜ける。
+# 上限（60 秒 × 3 回）まで止まらなければ保存せず `unsettled` で止める。完成扱いにはしない。
+SETTLE_INTERVAL = 0.5
+SETTLE_MAX_WAIT = 60.0
+SETTLE_ROUNDS = 3
+UNSETTLED = "unsettled"
+
+
+def settled_shot(page, *, interval=SETTLE_INTERVAL, max_wait=SETTLE_MAX_WAIT):
+    """画面が止まってから撮る。(バイト列, 撮影方式, 止まったか) を返す。
+
+    間を置いて 2 回続けて同じ画像になったら止まったとみなす。上限までに止まらなければ
+    最後に撮ったものを返し、3 つ目を False にする（呼び出し側は保存しないこと）。
+    """
+    shot, mode = page_shot(page)
+    waited = 0.0
+    while waited < max_wait:
+        page.wait_for_timeout(int(interval * 1000))
+        waited += interval
+        again, again_mode = page_shot(page)
+        if again == shot and again_mode == mode:
+            return again, again_mode, True
+        shot, mode = again, again_mode
+    return shot, mode, False
+
 
 # 最終ページに達したとみなす条件 (#79)。不足量が**どちらの上限も超えたら**途中。
 #
@@ -971,6 +1008,27 @@ def _reload_and_advance(page, key, *, page_wait, emit=null_emit):
     return report(RELOAD_STUCK, reopened=reopened, after=after)
 
 
+def _wait_until_settled(page, total, emit):
+    """止まった画面を (バイト列, 撮影方式) で返す。上限まで止まらなければ None。
+
+    止まらない間はキーを押さない (#109)。待つだけにする。
+    """
+    for round_no in range(1, SETTLE_ROUNDS + 1):
+        shot, mode, settled = settled_shot(page)
+        if settled:
+            return shot, mode
+        emit(
+            "capture_unsettled",
+            human=(
+                f"{total} ページまで保存済み。画面が {SETTLE_MAX_WAIT:.0f} 秒たっても止まりません"
+                f"（読み込み中の可能性。{round_no}/{SETTLE_ROUNDS}）"
+            ),
+            page=total,
+            round=round_no,
+        )
+    return None
+
+
 def capture_pages(
     page,
     save_dir,
@@ -995,6 +1053,7 @@ def capture_pages(
         no_change       1 ページも進めなかった（送りキーの向き違い・モーダル等）
         short_of_end    読み手側の位置が本の終わりに達していない。最終ページではない
         reader_error    リーダーが落ちた。最終ページではないので完成扱いにしない
+        unsettled       画面が止まらない（読み込み中のまま）。完成扱いにしない (#109)
         signin_required 途中でセッションが切れた
 
     expect_mode を渡すと、途中で撮影方式が変わったページを警告し、そのページ
@@ -1019,7 +1078,10 @@ def capture_pages(
             emit("signin_required", human="キャプチャ中にセッションが切れました")
             return total, "signin_required"
 
-        shot, mode = page_shot(page)
+        settled = _wait_until_settled(page, total, emit)
+        if settled is None:
+            return total, UNSETTLED
+        shot, mode = settled
         current = digest(shot)
 
         if prev is not None and current == prev:
@@ -1092,7 +1154,10 @@ def capture_pages(
                     page.wait_for_timeout(int(page_wait * 1000))
                 else:
                     break
-                shot, mode = page_shot(page)
+                settled = _wait_until_settled(page, total, emit)
+                if settled is None:
+                    return total, UNSETTLED
+                shot, mode = settled
                 current = digest(shot)
             if current == prev:
                 # **「変わらない」の理由を確かめてから最終ページと呼ぶ。**
@@ -1960,6 +2025,15 @@ def run_headless_capture(
         emit_error(
             emit,
             f"{total} ページで止まりましたが、読み手側の位置は本の終わりに達していません。"
+            "最終ページではないので、この本は撮り直しが要ります",
+        )
+        return EXIT_ERROR
+    if stopped_reason == UNSETTLED:
+        # **完成扱いにしない。** 読み込み待ちのまま止まった。0 で返すと batch が
+        # 出力を見てスキップし、途中までの本がそのまま確定する (#109)
+        emit_error(
+            emit,
+            f"{total} ページで画面が止まらなくなったため中断しました（読み込み中のまま）。"
             "最終ページではないので、この本は撮り直しが要ります",
         )
         return EXIT_ERROR
