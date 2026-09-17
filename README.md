@@ -1389,7 +1389,7 @@ Cloud Reader で本を開くところから全自動で 3 ページ取得し、P
 
 既定の headless は**画面キャプチャ経路（ウィンドウ検出・前面化・画面の撮影・
 キーストローク送出）を 1 行も実行しない**。そちらを通すには `--screen` を付ける。
-どのファイルがどちらの経路かは AGENTS.md「実機スモーク」の一覧が正典
+どのファイルがどちらの経路かは `.githooks/pre-push`（`WATCH_RE` と `UNVERIFIABLE`）が正典
 （ここに書き写すとずれる）。
 
 ```
@@ -1426,7 +1426,7 @@ git config kindleshot.smokeAsin B0XXXXXXXX
 - 実測で 4 回に 1 回、ページが進まずに失敗する（#74）
 
 画面経路のファイルは**ゲートから外したうえで、外したと明記**してある。
-一覧は [AGENTS.md](AGENTS.md)「実機スモーク」にある。
+一覧は `.githooks/pre-push` の `UNVERIFIABLE` にある。
 
 ### テストの種類
 

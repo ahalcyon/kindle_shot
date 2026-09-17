@@ -15,7 +15,6 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOK = os.path.join(ROOT, ".githooks", "pre-push")
-AGENTS = os.path.join(ROOT, "AGENTS.md")
 
 # git が「ブランチ削除の push」を表すのに使う全ゼロの sha
 ZERO = "0" * 40
@@ -288,114 +287,41 @@ def _watch_re_files():
     return {alt.replace("\\.", ".") for alt in m.group(1).split("|")}
 
 
-# スモークで検証できないと AGENTS.md が明記している見出し。ここから下は
-# 「監視しないと決めたもの」なので、フックの一覧と突き合わせない
-_UNVERIFIABLE_HEADING = "**どちらのスモークでも検証できないもの**"
-
-
-def _section(start, end):
-    with open(AGENTS, encoding="utf-8") as f:
+def _unverifiable_files():
+    """フックの UNVERIFIABLE が列挙しているファイル名（ゲートから外したもの）。"""
+    with open(HOOK, encoding="utf-8") as f:
         text = f.read()
-    return text.split(start, 1)[1].split(end, 1)[0]
+    m = re.search(r"^UNVERIFIABLE='(.+)'$", text, re.MULTILINE)
+    assert m, "UNVERIFIABLE を読み取れない"
+    return set(m.group(1).split())
 
 
-def _files_in(chunk):
-    """箇条書きが主語にしているファイル名。
-
-    **1 行につき最初のパスだけを見る。** 2 つ目以降は「どこから呼ばれるか」の
-    説明で出てくるので、主語と混ぜると一覧が狂う。
-    """
-    names = set()
-    for line in chunk.splitlines():
-        if not line.startswith("- "):
-            continue
-        found = re.findall(r"`([\w/]+\.py)`", line)
-        if found:
-            names.add(found[0])
-    return names
-
-
-_WATCHED_HEADING = "**pre-push が強制するもの**"
-
-
-def _documented_files():
-    """AGENTS.md「実機スモーク」節が、監視対象として挙げているファイル名。"""
-    return _files_in(_section(_WATCHED_HEADING, _UNVERIFIABLE_HEADING))
-
-
-def _documented_unverifiable():
-    """検証できないと明記されているファイル名。"""
-    # 終端は直後の見出し。`#### 対象は Cloud Reader` まで伸ばすと
-    # 「ゲートにしない理由」節の箇条書きまで飲み込み、そこに 1 行足すだけで
-    # 「検証できないものとして明記済み」と誤判定できる
-    return _files_in(_section(_UNVERIFIABLE_HEADING, "### 画面キャプチャ経路"))
-
-
-def test_watch_list_matches_the_documentation():
-    """フックと AGENTS.md の一覧がずれていないこと。
-
-    「AGENTS.md の一覧と合わせること」というコメントだけでは守られず、
-    本番経路の headless_capture.py が実際に漏れていた（#47）。
-    """
-    assert _watch_re_files() == _documented_files()
-
-
-def test_the_unverifiable_files_are_documented_and_not_gated():
+def test_the_unverifiable_files_are_listed_and_not_gated():
     """検証できないファイルを、黙って監視対象に入れない (#50)。
 
     core/amazon_signin.py は reader_navigator から呼ばれるが、サインアウト
     していないと通らない。監視対象に足すと「検証できないのに push が
     ブロックされる」だけになる。**外すこと自体は正しいが、外したことが
-    どこにも書かれていないと穴が隠れる**ので、AGENTS.md に明記して
-    ここで固定する。
+    どこにも書かれていないと穴が隠れる**ので、フックに明記してここで固定する。
+    一覧の正典はフック（AGENTS.md には写さない。#117）。
     """
-    unverifiable = _documented_unverifiable()
+    unverifiable = _unverifiable_files()
     assert "core/amazon_signin.py" in unverifiable
     assert unverifiable & _watch_re_files() == set()
 
 
-def _bullets(chunk):
-    """箇条書きを 1 件ずつ返す（継続行を畳む）。"""
-    items: list[str] = []
-    for line in chunk.splitlines():
-        if line.startswith("- "):
-            items.append(line)
-        elif items and line.startswith("  "):
-            items[-1] += " " + line.strip()
-    return items
+def test_every_unverifiable_file_has_a_reason():
+    """外した理由をファイルごとにコメントで書く。理由の無い除外は穴を隠す。"""
+    with open(HOOK, encoding="utf-8") as f:
+        text = f.read()
+    for name in _unverifiable_files():
+        assert re.search(rf"^#\s+{re.escape(name)}\s+\S", text, re.MULTILINE), name
 
 
-# 箇条書きの中で「どこから呼ばれるか」の説明として出てくるだけのパス。
-# 主語でも監視対象でもないので、下のテストの対象から外す。
-_CONTEXT_ONLY = {"ui/steps/capture_step.py", "tests/test_pre_push_hook.py"}
-
-
-def test_each_bullet_names_exactly_one_file():
-    """一覧は 1 行 1 ファイルで書く。
-
-    _files_in は 1 行の**最初の**パスだけを主語として拾う。そのため
-    「- `a.py` と `b.py`」と書くと b.py が黙って消え、**ドキュメントには
-    載っているのにフックは見ていない**状態が緑で通る。
-    """
-    # 「検証できないもの」の箇条書きは、なぜ検証できないかの説明で呼び出し元の
-    # ファイル名が出るので対象外。監視対象の一覧だけを見る
-    chunk = _section(_WATCHED_HEADING, _UNVERIFIABLE_HEADING)
-    for item in _bullets(chunk):
-        found = re.findall(r"`([\w/]+\.py)`", item)
-        assert len(found) == 1, f"監視対象の箇条書きが 1 ファイルでない: {item}"
-
-
-def test_every_path_in_the_lists_is_accounted_for():
-    """一覧に出てくる .py が、主語か・監視対象か・説明用かのどれかであること。"""
-    chunk = "\n".join(
-        (
-            _section(_WATCHED_HEADING, _UNVERIFIABLE_HEADING),
-            _section(_UNVERIFIABLE_HEADING, "### 画面キャプチャ経路"),
-        )
-    )
-    mentioned = set(re.findall(r"`([\w/]+\.py)`", chunk))
-    known = _documented_files() | _documented_unverifiable() | _watch_re_files() | _CONTEXT_ONLY
-    assert mentioned <= known, f"主語にも監視対象にもなっていないパス: {mentioned - known}"
+def test_every_listed_file_exists():
+    """一覧のファイルが実在すること。改名・削除で一覧だけが古くなるのを防ぐ。"""
+    for name in _watch_re_files() | _unverifiable_files():
+        assert os.path.exists(os.path.join(ROOT, name)), name
 
 
 def test_the_screen_path_is_not_gated():
@@ -412,4 +338,4 @@ def test_the_screen_path_is_not_gated():
         "core/reader_navigator.py",
     }
     assert screen_only & _watch_re_files() == set()
-    assert screen_only <= _documented_unverifiable()
+    assert screen_only <= _unverifiable_files()
