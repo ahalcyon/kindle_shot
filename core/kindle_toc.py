@@ -18,7 +18,7 @@ Kindle Cloud Reader の描画 API（``renderer/render``）の応答には、本�
   （ハリー・ポッター全 7 巻: 第 1 巻 +2、第 2 巻 0、第 3 巻の途中から +2）。本全体で 1 つの
   ずれ幅を選ぶと、少ない側の区間が全部ずれる。そこで、各項目で章名がテキストに見つかる
   ずれ幅を出し、**続けて何項目も同じずれ幅で見つかるときだけ**ずれ幅を切り替える
-  （``SWITCH_COST``）。1 項目だけの一致は目次ページ・柱・本文中の言及であることが多く、
+  （``SWITCH_COST``。前へのずれ幅も選びうる）。1 項目だけの一致は目次ページ・柱・本文中の言及であることが多く、
   それで前へ動かすと誤る（初期の目視で前への補正 4 件がすべて誤りだった）
 - 決めたずれ幅のページに章名が無ければ、後ろ ``SEARCH_AHEAD`` ページまで探す。
   すき間の項目で、次のページに無く 1 つ前のページにだけあれば 1 つ前にする（目視 6/8）
@@ -39,17 +39,18 @@ SEARCH_AHEAD = 3
 # ずれ幅の候補を、描画と PDF のページ数の差の外側へ広げる幅。区間ごとのずれは差の範囲を
 # 前後に数ページはみ出す（ハリー・ポッターは差 +2 で、区間のずれは 0〜+2 に加えすき間で +1）
 SHIFT_MARGIN = 3
-# ずれ幅を切り替える費用。章名が見つからない項目 1 件を 1 とする。2.5 なら、新しいずれ幅で
-# 続けて 3 項目以上見つかるときだけ切り替わる。1〜2 項目の一致（目次ページ・柱・本文中の言及）
-# では切り替えない。先頭の項目も、既定のずれ幅（表紙の分）からの切り替えとして数える
+# ずれ幅を切り替える費用。章名が見つからない項目 1 件を 1 とする。2.5 なら、本の末尾まで続く
+# 区間は 3 項目以上、途中の区間（入って戻るので 2 回分）は 6 項目以上、新しいずれ幅で見つかる
+# ときだけ切り替わる。1〜2 項目の一致（目次ページ・柱・本文中の言及）では切り替えない。
+# 先頭の項目も、既定のずれ幅（表紙の分）からの切り替えとして数える
 SWITCH_COST = 2.5
 # 章名で探すときに使う長さ。長すぎると OCR の読み違いで当たらず、短すぎると本文に当たる
 PROBE_LEN = 10
 MIN_PROBE_LEN = 2
 
-CONFIRMED = "confirmed"  # 位置から出したページに章名があった
-MOVED = "moved"  # テキストで後ろへ補正した
-UNCONFIRMED = "unconfirmed"  # テキストはあるが章名が見つからず、位置から出したページのまま
+CONFIRMED = "confirmed"  # 区間のずれ幅を足したページ（estimated）に章名があった
+MOVED = "moved"  # estimated に無く、後ろ（すき間の項目は 1 つ前も）で章名が見つかったので動かした
+UNCONFIRMED = "unconfirmed"  # テキストはあるが章名が見つからず、estimated のまま
 UNSEARCHED = "unsearched"  # テキストが無い・章名が短いので探していない。位置だけで決めた
 
 
@@ -61,7 +62,7 @@ class TocEntry:
     title: str
     position: int
     page: int = 0
-    estimated: int = 0
+    estimated: int = 0  # 位置のページ + 区間のずれ幅（前の項目より前にはしない）
     shift: int = 0  # 描画のページ番号（すき間は次のページ）から PDF のページへのずれ幅
     how: str = UNSEARCHED
 
@@ -176,8 +177,14 @@ def map_to_pages(entries, page_ranges, pdf_pages, page_text=None, offset=0):
         usable = page_text is not None and len(probe) >= MIN_PROBE_LEN
         probes.append(probe if usable else None)
 
+    normalized: dict[int, str] = {}
+
     def found(k, page):
-        return probes[k] is not None and 0 <= page <= last and probes[k] in _norm(page_text(page))
+        if probes[k] is None or not 0 <= page <= last:
+            return False
+        if page not in normalized:
+            normalized[page] = _norm(page_text(page))
+        return probes[k] in normalized[page]
 
     diff = pdf_pages - len(page_ranges)
     shifts = list(
@@ -213,17 +220,15 @@ def _choose_shifts(count, shifts, default, matches):
     """項目ごとのずれ幅を、区間ごとに一定になるように選ぶ（動的計画法）。
 
     費用は「章名が見つからない項目の数」+「ずれ幅を切り替えた回数 × SWITCH_COST」。
-    同じ費用なら既定のずれ幅に近いほう。テキストが無ければ全項目が既定のずれ幅になる。
+    同じ費用なら既定のずれ幅に近いほう、その次に後ろ（前への補正は誤りが多かった）。
+    テキストが無ければ全項目が既定のずれ幅になる。
     """
-    tie = 1e-3  # 既定から離れるほどわずかに不利にする（同点を決めるだけの大きさ）
-    local = [
-        [(0.0 if matches(k, s) else 1.0) + tie * abs(s - default) for s in shifts]
-        for k in range(count)
-    ]
-    # 探す章名が無い項目（テキスト無し・短い名前）はどのずれ幅でも同じ費用にする
-    for k in range(count):
-        if all(v >= 1.0 for v in local[k]):
-            local[k] = [tie * abs(s - default) for s in shifts]
+    tie = 1e-4  # 同点を決めるだけの大きさ。候補の幅（数十）を掛けても 1 に届かない
+
+    def bias(s):
+        return tie * (2 * abs(s - default) + (1 if s < default else 0))
+
+    local = [[(0.0 if matches(k, s) else 1.0) + bias(s) for s in shifts] for k in range(count)]
     total = [local[0][j] + (0.0 if s == default else SWITCH_COST) for j, s in enumerate(shifts)]
     back: list[list[int]] = []
     for k in range(1, count):

@@ -99,8 +99,8 @@ def test_map_moves_forward_when_the_title_is_on_a_later_page():
     assert (entries[0].estimated, entries[0].page, entries[0].how) == (2, 3, MOVED)
 
 
-def test_map_never_moves_backward_onto_an_earlier_mention():
-    """前への補正は目次ページや本文中の言及に当たって全部誤りだった (#114)。"""
+def test_map_does_not_move_backward_onto_a_single_earlier_mention():
+    """1 項目だけの前への一致は、目次ページや本文中の言及であることが多い (#114)。"""
     texts = ["目次 クィディッチ", "", "本文", "", "", ""]
     entries = map_to_pages(
         _entries(("第11章 クィディッチ", 25)), RANGES, 6, page_text=lambda i: texts[i]
@@ -141,7 +141,7 @@ def _chapters(n, step=10):
 
 
 def test_map_changes_the_shift_part_way_through_the_book():
-    """ずれ幅は本の途中で変わる（ハリー・ポッター: 第 1 巻 0、第 2 巻から +2）。
+    """ずれ幅は本の途中で変わる（ハリー・ポッター: 第 2 巻 0、第 3 巻の途中から +2）。
 
     本全体で 1 つのずれ幅にすると、少ない側の区間が全部ずれる。
     """
@@ -155,6 +155,42 @@ def test_map_changes_the_shift_part_way_through_the_book():
     assert [e.page for e in entries] == [0, 1, 2, 3, 6, 7, 8, 9, 10, 11]
     assert all(e.how == CONFIRMED for e in entries)
     assert [e.shift for e in entries] == [0] * 4 + [2] * 6
+
+
+def test_map_can_choose_a_backward_shift_for_a_run_of_titles():
+    """ページが欠けた区間では前へのずれ幅になる（3 項目以上続けて見つかるとき）。"""
+    ranges = [[p, p + 9] for p in range(0, 80, 10)]
+    texts = [""] * 8
+    for i in range(4):
+        texts[i] = f"なまえ{i + 1:02d}"
+    for i in range(5, 8):  # 5 ページ目が欠けて、後ろの 3 章は 1 ページ前
+        texts[i - 1] = f"なまえ{i + 1:02d}"
+    entries = map_to_pages(
+        [e for i, e in enumerate(_chapters(8)) if i != 4], ranges, 8, page_text=lambda i: texts[i]
+    )
+    assert [e.shift for e in entries] == [0, 0, 0, 0, -1, -1, -1]
+    assert [e.page for e in entries] == [0, 1, 2, 3, 4, 5, 6]
+
+
+def test_map_needs_a_longer_run_to_shift_a_middle_section():
+    """途中の区間は入って戻るので切り替え 2 回分。4 項目の一致では切り替えない。"""
+    ranges = [[p, p + 9] for p in range(0, 120, 10)]
+    texts = [""] * 12
+    for i in range(12):
+        texts[i if not 4 <= i < 8 else i - 2] += f" なまえ{i + 1:02d}"
+    entries = map_to_pages(_chapters(12), ranges, 12, page_text=lambda i: texts[i])
+    assert all(e.shift == 0 for e in entries)
+    assert [e.how for e in entries[4:8]] == [UNCONFIRMED] * 4
+
+
+def test_map_prefers_a_later_page_on_a_tie():
+    ranges = [[p, p + 9] for p in range(0, 60, 10)]
+    texts = [""] * 6
+    for i in range(1, 5):  # 各章の名前が 1 つ前にも 1 つ後ろにもある
+        texts[i - 1] += f" なまえ{i + 1:02d}"
+        texts[i + 1] += f" なまえ{i + 1:02d}"
+    entries = map_to_pages(_chapters(5)[1:], ranges, 6, page_text=lambda i: texts[i])
+    assert all(e.shift == 1 for e in entries)
 
 
 def test_map_does_not_follow_one_or_two_stray_mentions():

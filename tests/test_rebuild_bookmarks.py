@@ -117,6 +117,34 @@ def test_a_single_out_of_order_entry_is_dropped_not_blocking(tmp_path):
     assert rows[0]["status"] == "書き換えた"
 
 
+def test_a_shift_chosen_from_text_is_listed_and_flagged(tmp_path):
+    """表紙の分と違うずれ幅を選んだ本は、confirmed だけでは確かめたことにならないので要確認。"""
+    structure = _structure([[p, p + 9] for p in range(0, 40, 10)])
+    structure["toc"] = [{"label": f"章{i}", "tocPositionId": i * 10} for i in range(4)]
+    pdf, books, lib, cache = _library(tmp_path, pdf_pages=4, structure=structure)
+    code, rows = _run(tmp_path, books, lib, cache)
+    assert rows[0]["shifts"] == "0"
+    assert rb.FLAG_SHIFTED not in rows[0]["flags"]
+
+    # 章名が位置のページの 1 つ後ろに続けて見つかる本は、ずれ幅 1 を選んで要確認にする
+    from reportlab.pdfgen import canvas
+
+    shifted = str(tmp_path / "shifted.pdf")
+    c = canvas.Canvas(shifted)
+    for i in range(5):
+        c.drawString(72, 720, "body text " * 8)
+        if i >= 1:
+            c.drawString(72, 700, f"chapter{i - 1:02d}")
+        c.showPage()
+    c.save()
+    structure = _structure([[p, p + 9] for p in range(0, 50, 10)])
+    structure["toc"] = [{"label": f"chapter{i:02d}", "tocPositionId": i * 10} for i in range(4)]
+    entries, row, flags = rb.plan_book(shifted, structure)
+    assert row["shifts"] == "1"
+    assert [e.page for e in entries] == [1, 2, 3, 4]
+    assert rb.FLAG_SHIFTED in flags
+
+
 def test_a_badly_ordered_toc_blocks_writing(tmp_path):
     structure = _structure([[0, 9], [10, 19], [20, 29], [30, 39]])
     structure["toc"] = [

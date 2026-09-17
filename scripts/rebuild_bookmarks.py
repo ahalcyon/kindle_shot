@@ -71,6 +71,9 @@ FLAG_COUNT = "ページ数の差が表紙で説明できない"
 FLAG_UNRENDERABLE = "描画できない区間あり"
 FLAG_INCOMPLETE = "本の終わりまで走査できていない"
 FLAG_NO_TEXT = "テキスト層なし（位置だけで決める）"
+# 表紙の分と違うずれ幅をテキストから選んだ区間がある。目視では多くが正しいが、選んだずれ幅で
+# 見つかった項目も confirmed に数えるので、confirmed だけでは確かめたことにならない
+FLAG_SHIFTED = "テキストからずれ幅を選んだ区間あり"
 
 # これが立っている本はしおりを付けられない（--include-flagged でも書かない）
 BLOCKING_FLAGS = {FLAG_NO_TOC, FLAG_NO_PAGES, FLAG_TOC_ORDER}
@@ -81,7 +84,7 @@ COLUMNS = [
     "format",
     "pdf_pages",
     "render_pages",
-    "offset",
+    "shifts",
     "toc_entries",
     "dropped",
     "old_bookmarks",
@@ -201,11 +204,13 @@ def plan_book(pdf_path, structure):
     if mappable:
         # ずれ幅は区間ごとにテキストで決まる（core.kindle_toc.map_to_pages）。表紙の分は既定値
         map_to_pages(entries, ranges, pdf_pages, text, offset or 0)
+        if offset is not None and any(e.shift != offset for e in entries):
+            flags.append(FLAG_SHIFTED)
     hows = Counter(e.how for e in entries) if mappable else Counter()
     row = {
         "pdf_pages": pdf_pages,
         "render_pages": render_pages,
-        "offset": shift_summary(entries) if mappable else "",
+        "shifts": shift_summary(entries) if mappable else "",
         "toc_entries": len(entries),
         "dropped": dropped,
         "old_bookmarks": count_outline(reader),
