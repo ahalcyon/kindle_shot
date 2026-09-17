@@ -120,3 +120,28 @@ def test_a_failure_makes_the_exit_code_non_zero(tmp_path):
     (cache / "B0TEST.json").write_text("{broken", encoding="utf-8")
     code, rows = _run(tmp_path, books, lib, cache)
     assert code == 1 and rows[0]["status"].startswith("失敗")
+
+
+def test_a_single_out_of_order_entry_is_dropped_not_blocking(tmp_path):
+    structure = _structure([[0, 9], [10, 19]])
+    structure["toc"] = [
+        {"label": "Cover", "tocPositionId": 19},
+        {"label": "第1章 はじまり", "tocPositionId": 0},
+        {"label": "第2章 つづき", "tocPositionId": 10},
+    ]
+    pdf, books, lib, cache = _library(tmp_path, pdf_pages=2, structure=structure)
+    code, rows = _run(tmp_path, books, lib, cache, "--apply")
+    assert rows[0]["dropped"] == "1" and rows[0]["toc_entries"] == "2"
+    assert rows[0]["status"] == "書き換えた"
+
+
+def test_a_badly_ordered_toc_blocks_writing(tmp_path):
+    structure = _structure([[0, 9], [10, 19], [20, 29], [30, 39]])
+    structure["toc"] = [
+        {"label": f"第{i}章 なまえ", "tocPositionId": p} for i, p in enumerate([30, 20, 10, 0])
+    ]
+    pdf, books, lib, cache = _library(tmp_path, pdf_pages=4, structure=structure)
+    before = pathlib.Path(pdf).read_bytes()
+    code, rows = _run(tmp_path, books, lib, cache, "--apply", "--include-flagged")
+    assert rows[0]["status"] == "しおりを付けられないので未適用"
+    assert pathlib.Path(pdf).read_bytes() == before

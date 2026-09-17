@@ -13,6 +13,7 @@ from core.kindle_toc import (
     TocEntry,
     flatten_toc,
     map_to_pages,
+    order_outliers,
     page_offset,
     positions_in_order,
     scan_positions,
@@ -308,3 +309,24 @@ def test_write_outline_keeps_the_file_when_the_readback_differs(tmp_path, monkey
     result = write_outline(str(pdf), [TocEntry(1, "x", 0, page=0)])
     assert not result["ok"] and "読み戻す" in result["error"]
     assert pdf.read_bytes() == before
+
+
+def test_scan_keeps_pages_whose_ranges_overlap():
+    """隣り合うページの位置の範囲が少し重なっても、重複として捨てない。"""
+    pages = [[0, 10], [8, 20], [21, 30]]
+
+    def get(num_pages, position):
+        out = [p for p in pages if p[1] >= position][:num_pages]
+        meta = {"lastPositionId": 30}
+        return ([{"startPositionId": a, "endPositionId": b} for a, b in out], None, meta)
+
+    got = scan_positions(get)
+    assert got["pages"] == pages and got["complete"]
+
+
+def test_order_outliers_finds_the_one_entry_pointing_elsewhere():
+    # 実測: 「Cover」が本の末尾を指し、残りは順に並んでいた
+    entries = _entries(("Cover", 281307), ("Front Matter", 3), ("1 Intro", 50), ("2 Next", 900))
+    assert order_outliers(entries) == [0]
+    assert order_outliers(_entries(("A", 0), ("B", 5), ("C", 9))) == []
+    assert order_outliers([]) == []

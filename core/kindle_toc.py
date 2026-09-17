@@ -67,6 +67,33 @@ def flatten_toc(toc) -> list[TocEntry]:
     return out
 
 
+def order_outliers(entries) -> list[int]:
+    """目次の順に位置が並ぶ最長の列から外れる項目の番号を返す。
+
+    実測では、並びの崩れた目次は「目次」「Cover」のような 1 項目だけが本の別の場所
+    （末尾など）を指していた。その項目だけ外せば残りは順に並ぶ。
+    """
+    import bisect as _bisect
+
+    positions = [e.position for e in entries]
+    tails: list[int] = []  # 長さ k+1 の列の末尾の位置が最小になる項目の番号
+    prev: list[int | None] = [None] * len(positions)
+    for i, pos in enumerate(positions):
+        k = _bisect.bisect_right([positions[t] for t in tails], pos)
+        if k > 0:
+            prev[i] = tails[k - 1]
+        if k == len(tails):
+            tails.append(i)
+        else:
+            tails[k] = i
+    keep = set()
+    cursor: int | None = tails[-1] if tails else None
+    while cursor is not None:
+        keep.add(cursor)
+        cursor = prev[cursor]
+    return [i for i in range(len(positions)) if i not in keep]
+
+
 def positions_in_order(entries) -> bool:
     """目次の位置が、出てくる順に減っていないか。
 
@@ -263,16 +290,18 @@ def scan_positions(get, *, emit=None):
         layout, toc_json, meta = got
         toc = toc if toc is not None else toc_json
         metadata = metadata if metadata is not None else meta
-        # 要求した位置より前から始まるページ（前回までに取ったもの）は捨てる
-        ranges = [
-            [p["startPositionId"], p["endPositionId"]]
-            for p in (layout or [])
-            if p["startPositionId"] >= position
-        ]
+        # 前回までに取ったページがもう一度返ってきたら捨てる。隣り合うページは位置の範囲が
+        # 少し重なることがある（実測: [483330, 484702] の次が [484697, 485937]）ので、
+        # 「要求した位置より前から始まる」では判定しない。開始位置が前に取ったページ以下なら重複
+        ranges: list[list[int]] = []
+        for p in layout or []:
+            last_start = ranges[-1][0] if ranges else (pages[-1][0] if pages else -1)
+            if p["startPositionId"] > last_start:
+                ranges.append([p["startPositionId"], p["endPositionId"]])
         if not ranges:
             break
         pages.extend(ranges)
-        position = ranges[-1][1] + 1
+        position = max(position, ranges[-1][1] + 1)
     return {
         "toc": toc,
         "metadata": metadata,

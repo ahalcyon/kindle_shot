@@ -50,8 +50,8 @@ from core.kindle_toc import (  # noqa: E402
     UNSEARCHED,
     flatten_toc,
     map_to_pages,
+    order_outliers,
     page_offset,
-    positions_in_order,
     write_outline,
 )
 
@@ -59,13 +59,17 @@ from core.kindle_toc import (  # noqa: E402
 TEXT_LAYER_MIN_CHARS = 50
 # ずらし幅を試す上限。差し込んだページの数ぶん。大きい差は別の原因なので試さない
 MAX_OFFSET_TRIAL = 3
+# 並びから外れた項目を除いてよい上限。実測では外れるのは「目次」「Cover」の 1 項目だった。
+# これを超えて外れる目次は、対応づけの前提（目次の順＝ページの順）が崩れている
+MAX_ORDER_OUTLIERS = 2
+MAX_ORDER_OUTLIER_RATIO = 0.1
 # 続けて失敗したら打ち切る冊数
 MAX_CONSECUTIVE_FAILURES = 5
 
 # 一覧の「要確認」の理由
 FLAG_NO_TOC = "目次なし"
 FLAG_NO_PAGES = "ページ範囲が取れない"
-FLAG_TOC_ORDER = "目次の位置が順に並んでいない"
+FLAG_TOC_ORDER = "目次の位置の並びが大きく崩れている"
 FLAG_COUNT = "ページ数の差が表紙で説明できない"
 FLAG_UNRENDERABLE = "描画できない区間あり"
 FLAG_INCOMPLETE = "本の終わりまで走査できていない"
@@ -82,6 +86,7 @@ COLUMNS = [
     "render_pages",
     "offset",
     "toc_entries",
+    "dropped",
     "old_bookmarks",
     "confirmed",
     "moved",
@@ -170,8 +175,16 @@ def plan_book(pdf_path, structure):
         flags.append(FLAG_NO_TOC)
     if not starts:
         flags.append(FLAG_NO_PAGES)
-    if entries and not positions_in_order(entries):
-        flags.append(FLAG_TOC_ORDER)
+    dropped = 0
+    if entries:
+        outliers = order_outliers(entries)
+        dropped = len(outliers)
+        if dropped > max(MAX_ORDER_OUTLIERS, len(entries) * MAX_ORDER_OUTLIER_RATIO):
+            flags.append(FLAG_TOC_ORDER)
+        else:
+            # 並びから外れた項目（別の場所を指す「目次」「Cover」など）だけ外して付ける
+            skip = set(outliers)
+            entries = [e for i, e in enumerate(entries) if i not in skip]
     offset = page_offset(pdf_pages, render_pages)
     if offset is None:
         flags.append(FLAG_COUNT)
@@ -208,6 +221,7 @@ def plan_book(pdf_path, structure):
         "render_pages": render_pages,
         "offset": offset if offset is not None else "",
         "toc_entries": len(entries),
+        "dropped": dropped,
         "old_bookmarks": count_outline(reader),
         "confirmed": hows[CONFIRMED],
         "moved": hows[MOVED],
