@@ -3,7 +3,9 @@
 #
 # キャプチャ層（Win32 のウィンドウ検出・画面キャプチャ・キーストローク送出）は
 # ユニットテストでも CI でもカバーできない。PR を出す前にここだけは実機で
-# 確認するためのフック。詳細は AGENTS.md「実機スモーク」を参照。
+# 確認するためのフック。方針は AGENTS.md「実機スモーク」を参照。
+# **どのファイルをゲートにし、どれを外したかの正典はこのファイル**（WATCH_RE と
+# UNVERIFIABLE）。AGENTS.md や README には写さない。
 #
 # 有効化（クローンごとに 1 回）:
 #   git config core.hooksPath .githooks
@@ -74,7 +76,7 @@ if [ "$1" = "--check" ]; then
     exit 0
 fi
 
-# 実機確認が要るファイル。AGENTS.md の一覧と合わせること。
+# 実機確認が要るファイル（headless スモークが実際に実行するもの）。
 #
 # **ここに入れてよいのは、headless スモークが実際に実行するものだけ。**
 # 以前は画面キャプチャ経路のファイル (capture_engine / capture_runner /
@@ -89,7 +91,7 @@ fi
 #     --no-verify が常態化する
 #   - 実測で 4 回に 1 回、ページが進まずに失敗する (#74)
 # 画面経路を触ったときは scripts/smoke_capture.py --screen を手で流す。
-# 対象ファイルは AGENTS.md「どちらのスモークでも検証できないもの」にある。
+# ゲートから外したファイルは下の UNVERIFIABLE に理由つきで並べる。
 #
 # core/win32_utils.py は画面経路の顔をしているが**ゲートに入れる**。
 # core/pipeline.py は headless 分岐に入る前に無条件で import し、
@@ -97,6 +99,18 @@ fi
 # ユニットテストはこれを monkeypatch で差し替えるので、シグネチャを変えても
 # CI は捕まえない。捕まえられるのは headless スモークだけ。
 WATCH_RE='^(core/headless_capture\.py|core/headless_browser\.py|core/capture_profiles\.py|core/boundary_detector\.py|core/pipeline\.py|core/win32_utils\.py|cli\.py|scripts/smoke_capture\.py)$'
+
+# どちらのスモークでも検証できないので、**あえてゲートから外した**ファイル。
+# 足すと「検証できないのに push がブロックされる」だけになる。外したこと自体は
+# 正しいが、書いておかないと穴が隠れるのでここに並べる（テストで固定している）。
+#   core/capture_engine.py    画面キャプチャ経路
+#   core/capture_runner.py    画面キャプチャ経路
+#   core/reader_navigator.py  画面キャプチャ経路
+#   core/amazon_signin.py     reader_navigator から呼ばれるが、サインアウトしていないと通らない
+#   core/dpi.py               起動時に実行はされるが、例外を全部握り潰すのでどう壊しても緑
+#   core/page_turn_probe.py   GUI（ui/steps/capture_step.py）からしか呼ばれない
+#   core/library.py           cli.py library は蔵書ページを読むが、スモークは cli.py run だけ
+UNVERIFIABLE='core/capture_engine.py core/capture_runner.py core/reader_navigator.py core/amazon_signin.py core/dpi.py core/page_turn_probe.py core/library.py'
 
 ZERO='0000000000000000000000000000000000000000'
 changed=''

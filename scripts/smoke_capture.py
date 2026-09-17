@@ -324,7 +324,7 @@ def run_smoke_with_retry(asin, out, pages, python=None, echo=print, screen=False
     やり直すのは**画面経路のときだけ**。headless は 4 回に 1 回の不安定さを
     持たないうえ、ゲートが headless 専用になった今 (#50)、
     `stopped_reason=timeout` は「本が開けていないか、ページが送れていない」
-    退行そのものの症状（AGENTS.md「manifest の読み方」）。ここでやり直すと、
+    退行そのものの症状。ここでやり直すと、
     間欠的な退行が push を通る率が 50% から 75% に上がる。
     """
     attempts = SMOKE_ATTEMPTS if screen else 1
