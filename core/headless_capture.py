@@ -806,7 +806,16 @@ CATCHUP_WAIT = 5.0
 #
 # 止まらない間は**キーを押さない**。実機ではスピナーの間に押したキーは飲まれていたが、
 # 飲まれなければ押した分だけ本が先へ進み、読み込み待ちのページが黙って抜ける。
-# 上限（60 秒 × 3 回）まで止まらなければ保存せず `unsettled` で止める。完成扱いにはしない。
+# 上限まで止まらなければ保存せず `unsettled` で止める。完成扱いにはしない。
+#
+# 上限の根拠: 実測のスピナーは、描画要求を 20 秒保留した実験では解放直後に消え、
+# #104 で 500 を取り直したときは数秒だった。開き直しの待ち (RELOAD_WAIT = 15 秒) より
+# 十分長くとり、60 秒を 3 回（計 3 分）にした。3 回に分けているのは経過をログに出す
+# ためで、実質は 3 分の 1 回待ちと同じ。
+#
+# 見逃しうる形（未検証）: 回転の周期と撮影間隔が噛み合うと、回っているスピナーが
+# 2 回同じ画像になりうる。実機の 0.5 秒おきの撮影では毎回違った。
+# 描画途中が「静止した白紙」の場合は、この方法では見分けられない。
 SETTLE_INTERVAL = 0.5
 SETTLE_MAX_WAIT = 60.0
 SETTLE_ROUNDS = 3
@@ -1011,7 +1020,9 @@ def _reload_and_advance(page, key, *, page_wait, emit=null_emit):
 def _wait_until_settled(page, total, emit):
     """止まった画面を (バイト列, 撮影方式) で返す。上限まで止まらなければ None。
 
-    止まらない間はキーを押さない (#109)。待つだけにする。
+    止まらない間はキーを押さない (#109)。待つだけにする。None を返すときは、
+    止まった位置を ``capture_stopped`` で残す（manifest の stopped_at に入る。
+    途中で切れた本をあとから機械的に洗う手がかり）。
     """
     for round_no in range(1, SETTLE_ROUNDS + 1):
         shot, mode, settled = settled_shot(page)
@@ -1026,6 +1037,16 @@ def _wait_until_settled(page, total, emit):
             page=total,
             round=round_no,
         )
+    position, book_total = _stable_position_pair(page)
+    emit(
+        "capture_stopped",
+        human=f"{total} ページで停止しました（{UNSETTLED}、位置 {position}/{book_total}）",
+        page=total,
+        reason=UNSETTLED,
+        position=position,
+        book_total=book_total,
+        message="画面が止まらない（読み込み中のまま）",
+    )
     return None
 
 

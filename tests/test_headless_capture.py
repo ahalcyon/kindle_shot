@@ -2929,6 +2929,11 @@ def test_a_spinner_during_the_retry_does_not_press_again(tmp_path):
     saved = _saved(tmp_path)
     assert not [s for s in saved if s.startswith(b"spinner")], saved
     assert saved == [b"a", b"b", b"c"]
+    # スピナーの無い同じ本と押した回数が同じ。スピナーの間に押していれば増える
+    plain = FakePage([b"a", b"a", b"b", b"c"])
+    (tmp_path / "plain").mkdir()
+    capture_pages(plain, str(tmp_path / "plain"), key="ArrowLeft", max_retries=3)
+    assert len(page.pressed) == len(plain.pressed)
 
 
 def test_the_first_page_that_never_settles_fails_loudly(tmp_path):
@@ -2951,3 +2956,52 @@ def test_an_unsettled_stop_does_not_exit_zero(tmp_path, monkeypatch):
     from core.pipeline import EXIT_ERROR
 
     assert _run_with_stop_reason("unsettled", tmp_path, monkeypatch) == EXIT_ERROR
+
+
+def test_an_unsettled_stop_records_where_it_stopped(tmp_path):
+    """unsettled で止めたときも、止まった位置を capture_stopped で残す (#109)。
+
+    manifest の stopped_at はこのイベントからしか埋まらない。途中で切れた本を
+    あとから機械的に洗う手がかりなので、黙って return しない。
+    """
+    events = []
+    page = FakePage(
+        [b"a", b"b", b"c"], animating={1: 10_000}, positions=[10, 20, 30], book_total=300
+    )
+    capture_pages(
+        page, str(tmp_path), key="ArrowLeft", emit=lambda name, **kw: events.append((name, kw))
+    )
+    stopped = [kw for n, kw in events if n == "capture_stopped"]
+    assert len(stopped) == 1
+    assert stopped[0]["reason"] == "unsettled"
+    assert stopped[0]["book_total"] == 300
+    assert stopped[0]["position"] is not None
+
+
+def test_settled_shot_gives_up_at_the_limit():
+    page = FakePage([b"a"], animating={0: 10_000})
+    shot, mode, settled = settled_shot(page, interval=0.5, max_wait=2.0)
+    assert settled is False
+    assert len(page.waits) == 4
+
+
+def test_settled_shot_does_not_settle_across_a_shot_mode_change():
+    """同じバイト列でも撮影方式が変わった 2 枚は「止まった」としない。"""
+
+    class Flip(FakePage):
+        def __init__(self):
+            super().__init__([b"a"])
+            self.calls = 0
+
+        def locator(self, selector):
+            self.calls += 1
+            if selector != POSITION_SELECTOR:
+                # 1 回目は要素が無い（ビューポート撮影）、以後は要素がある
+                self.page_image = self.calls > 1
+            return super().locator(selector)
+
+    page = Flip()
+    shot, mode, settled = settled_shot(page)
+    assert settled is True
+    assert mode == "element"
+    assert len(page.waits) == 2
