@@ -6,6 +6,8 @@ import os
 import pathlib
 import sys
 
+import pytest
+
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
 )
@@ -143,6 +145,50 @@ def test_a_shift_chosen_from_text_is_listed_and_flagged(tmp_path):
     assert row["shifts"] == "1"
     assert [e.page for e in entries] == [1, 2, 3, 4]
     assert rb.FLAG_SHIFTED in flags
+
+
+def test_cached_structure_stops_at_an_unsupported_book(tmp_path, monkeypatch):
+    """非対応の本は描画 API の要求が出ない。開いた画面のダイアログで見分ける (#114)。"""
+    import contextlib
+
+    import core.headless_browser as hb
+    import core.headless_capture as hc
+    import core.kindle_toc as kt
+
+    @contextlib.contextmanager
+    def fake_open_reader(*args, **kwargs):
+        yield object()
+
+    monkeypatch.setattr(hb, "open_reader", fake_open_reader)
+    monkeypatch.setattr(hc, "unsupported_reason", lambda page: "Kindleアプリが必要です")
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("非対応の本で描画 API を叩いてはいけない")
+
+    monkeypatch.setattr(kt, "fetch_book_structure", must_not_run)
+    with pytest.raises(rb.UnsupportedBook):
+        rb.cached_structure(str(tmp_path), "B0TEST")
+
+    monkeypatch.setattr(hc, "unsupported_reason", lambda page: None)
+    monkeypatch.setattr(kt, "fetch_book_structure", lambda page: {"toc": [], "pages": []})
+    assert rb.cached_structure(str(tmp_path), "B0TEST") == {"toc": [], "pages": []}
+
+
+def test_an_unsupported_book_is_not_counted_as_a_failure(tmp_path, monkeypatch):
+    """Kindle アプリでしか開けない本は直しようが無い。失敗に数えると内訳がずれる (#114)。"""
+    pdf, books, lib, cache = _library(
+        tmp_path, pdf_pages=2, structure=_structure([[0, 9], [10, 19]])
+    )
+
+    def unsupported(*args, **kwargs):
+        raise rb.UnsupportedBook("Kindleアプリが必要です")
+
+    monkeypatch.setattr(rb, "cached_structure", unsupported)
+    before = pathlib.Path(pdf).read_bytes()
+    code, rows = _run(tmp_path, books, lib, cache, "--apply", "--include-flagged")
+    assert code == 0
+    assert rows[0]["status"].startswith("Cloud Reader 非対応")
+    assert pathlib.Path(pdf).read_bytes() == before
 
 
 def test_a_badly_ordered_toc_blocks_writing(tmp_path):
