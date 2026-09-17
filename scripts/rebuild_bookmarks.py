@@ -4,11 +4,18 @@ OCR から推測したしおりは崩れやすい（`core/kindle_toc.py` の説�
 Cloud Reader で開き、描画 API から目次と全ページの位置範囲を取って、しおりだけを
 付け直す。**ページの画像とテキスト層には触らない。** 読書位置も動かさない。
 
-既定は**試し実行**で、蔵書は書き換えない。本ごとの結果を一覧（CSV）に出す。
-`--apply` を付けたときだけ書き換える。書き換えは検証（ページ数・描画結果・
-テキストが変わっていないこと）に通った本だけで、通らなければ元のファイルを残す。
+既定は**試し実行**で、蔵書は書き換えない。本ごとの結果を一覧（CSV）に 1 冊ずつ追記する。
+`--apply` を付けたときだけ書き換える。
+
+- **要確認の印が付いた本は書き換えない。** 書き換えるには `--include-flagged` を付ける
+- 書き換えは検証（ページ数・描画結果・テキストが変わっていないこと、書いたしおりを読み戻して
+  一致すること）に通った本だけで、通らなければ元のファイルを残す
 
 描画 API から取った内容は `--cache` に本ごとに保存し、2 回目以降は開き直さない。
+本の終わりまで取れなかったもの（`complete` が偽）は保存しない。`--refresh` で取り直す。
+
+1 冊でも失敗があれば終了コード 1。続けて `MAX_CONSECUTIVE_FAILURES` 冊失敗したら打ち切る
+（サインイン切れなどで全冊が同じ理由で落ちるのを、ブラウザを何百回も起動して並べない）。
 
 使い方:
 
@@ -16,13 +23,17 @@ Cloud Reader で開き、描画 API から目次と全ページの位置範囲�
     python scripts/rebuild_bookmarks.py --books books_typed.json --library <蔵書> \\
         --cache <作業フォルダ>/toc_cache --report <作業フォルダ>/bookmarks.csv
 
-    # 指定した本だけ書き換える
-    python scripts/rebuild_bookmarks.py ... --apply --asin B0XXXXXXXX --asin B0YYYYYYYY
+    # 要確認の印が無い本を書き換える
+    python scripts/rebuild_bookmarks.py ... --apply
+
+    # 要確認の本を見たうえで、指定した本だけ書き換える
+    python scripts/rebuild_bookmarks.py ... --apply --include-flagged --asin B0XXXXXXXX
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import os
@@ -33,24 +44,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.book_format import book_pdf_path  # noqa: E402
 from core.kindle_toc import (  # noqa: E402
-    EXACT,
+    CONFIRMED,
     MOVED,
     UNCONFIRMED,
+    UNSEARCHED,
     flatten_toc,
     map_to_pages,
     page_offset,
+    positions_in_order,
     write_outline,
 )
 
 # テキスト層があるとみなす、抜き取りページの合計文字数
 TEXT_LAYER_MIN_CHARS = 50
+# ずらし幅を試す上限。差し込んだページの数ぶん。大きい差は別の原因なので試さない
+MAX_OFFSET_TRIAL = 3
+# 続けて失敗したら打ち切る冊数
+MAX_CONSECUTIVE_FAILURES = 5
 
 # 一覧の「要確認」の理由
 FLAG_NO_TOC = "目次なし"
+FLAG_NO_PAGES = "ページ範囲が取れない"
+FLAG_TOC_ORDER = "目次の位置が順に並んでいない"
 FLAG_COUNT = "ページ数の差が表紙で説明できない"
 FLAG_UNRENDERABLE = "描画できない区間あり"
 FLAG_INCOMPLETE = "本の終わりまで走査できていない"
 FLAG_NO_TEXT = "テキスト層なし（位置だけで決める）"
+
+# これが立っている本はしおりを付けられない（--include-flagged でも書かない）
+BLOCKING_FLAGS = {FLAG_NO_TOC, FLAG_NO_PAGES, FLAG_TOC_ORDER}
 
 COLUMNS = [
     "asin",
@@ -61,9 +83,10 @@ COLUMNS = [
     "offset",
     "toc_entries",
     "old_bookmarks",
-    "exact",
+    "confirmed",
     "moved",
     "unconfirmed",
+    "unsearched",
     "flags",
     "status",
 ]
@@ -74,12 +97,14 @@ def load_books(path):
         return json.load(f)
 
 
-def cached_structure(cache_dir, asin, *, profile_dir=None):
+def cached_structure(cache_dir, asin, *, profile_dir=None, refresh=False):
     """描画 API から取った目次とページ範囲。キャッシュが無ければ本を開いて取る。"""
     path = os.path.join(cache_dir, f"{asin}.json")
-    if os.path.exists(path):
+    if os.path.exists(path) and not refresh:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            structure = json.load(f)
+        if structure.get("complete"):
+            return structure
     from core.headless_browser import open_reader
     from core.headless_capture import BOOK_URL
     from core.kindle_toc import fetch_book_structure
@@ -88,9 +113,13 @@ def cached_structure(cache_dir, asin, *, profile_dir=None):
         if page is None:
             raise RuntimeError("本を開けませんでした")
         structure = fetch_book_structure(page)
-    os.makedirs(cache_dir, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(structure, f, ensure_ascii=False)
+    if structure.get("complete"):
+        # 途中で落ちても壊れた JSON を残さない
+        os.makedirs(cache_dir, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(structure, f, ensure_ascii=False)
+        os.replace(tmp, path)
     return structure
 
 
@@ -104,39 +133,45 @@ def count_outline(reader):
         return 0
 
 
-# ずらし幅を試す上限。差し込んだページの数ぶん。大きい差は別の原因なので試さない
-MAX_OFFSET_TRIAL = 3
-
-
 def choose_offset(entries, starts, pdf_pages, page_text, candidates):
-    """テキストで章名を確かめられた項目が最も多いずらし幅を返す。テキストが無ければ 0。"""
-    import copy
+    """テキストで章名を確かめられた項目が最も多いずらし幅を返す。
 
+    点数が同じなら小さいほう。テキストが無ければ 0。
+    """
     if page_text is None or not entries or not starts:
         return 0
     best, best_score = 0, -1
     for offset in candidates:
         trial = map_to_pages(copy.deepcopy(entries), starts, pdf_pages, page_text, offset)
-        score = sum(1 for e in trial if e.how == EXACT)
+        score = sum(1 for e in trial if e.how == CONFIRMED)
         if score > best_score:
             best, best_score = offset, score
     return best
 
 
 def plan_book(pdf_path, structure):
-    """1 冊分の対応づけと、一覧の 1 行ぶんの数字を作る。"""
+    """1 冊分の対応づけと、一覧の 1 行ぶんの数字を作る。
+
+    Returns:
+        (entries, row, flags)。flags に BLOCKING_FLAGS のどれかがあれば entries は書けない。
+    """
     from pypdf import PdfReader
 
     from core.text_layer import _sample_indexes
 
     reader = PdfReader(pdf_path)
     pdf_pages = len(reader.pages)
-    render_pages = len(structure.get("pages") or [])
+    starts = [p[0] for p in structure.get("pages") or []]
+    render_pages = len(starts)
     flags = []
 
     entries = flatten_toc(structure.get("toc"))
     if not entries:
         flags.append(FLAG_NO_TOC)
+    if not starts:
+        flags.append(FLAG_NO_PAGES)
+    if entries and not positions_in_order(entries):
+        flags.append(FLAG_TOC_ORDER)
     offset = page_offset(pdf_pages, render_pages)
     if offset is None:
         flags.append(FLAG_COUNT)
@@ -158,29 +193,29 @@ def plan_book(pdf_path, structure):
             cache[i] = reader.pages[i].extract_text() or ""
         return cache[i]
 
-    starts = [p[0] for p in structure.get("pages") or []]
-    if offset is None:
-        # 差が表紙で説明できない本（途中に画像を差し込んだ本など）。ずらし幅の候補を
-        # 全部試し、テキストで章名を確かめられた項目が最も多いものを採る
-        candidates = range(0, min(max(pdf_pages - render_pages, 0), MAX_OFFSET_TRIAL) + 1)
-        offset = choose_offset(
-            entries, starts, pdf_pages, page_text if has_text else None, candidates
-        )
-    if entries and starts:
-        map_to_pages(entries, starts, pdf_pages, page_text if has_text else None, offset)
-    hows = Counter(e.how for e in entries)
+    text = page_text if has_text else None
+    mappable = not (BLOCKING_FLAGS & set(flags))
+    if mappable:
+        if offset is None:
+            # 差が表紙で説明できない本（途中に画像を差し込んだ本など）。ずらし幅の候補を
+            # 全部試し、テキストで章名を確かめられた項目が最も多いものを採る
+            candidates = range(0, min(max(pdf_pages - render_pages, 0), MAX_OFFSET_TRIAL) + 1)
+            offset = choose_offset(entries, starts, pdf_pages, text, candidates)
+        map_to_pages(entries, starts, pdf_pages, text, offset)
+    hows = Counter(e.how for e in entries) if mappable else Counter()
     row = {
         "pdf_pages": pdf_pages,
         "render_pages": render_pages,
-        "offset": offset,
+        "offset": offset if offset is not None else "",
         "toc_entries": len(entries),
         "old_bookmarks": count_outline(reader),
-        "exact": len(entries) - hows[MOVED] - hows[UNCONFIRMED],
+        "confirmed": hows[CONFIRMED],
         "moved": hows[MOVED],
         "unconfirmed": hows[UNCONFIRMED],
+        "unsearched": hows[UNSEARCHED],
         "flags": " / ".join(flags),
     }
-    return entries, row
+    return entries, row, flags
 
 
 def main(argv=None):
@@ -190,6 +225,12 @@ def main(argv=None):
     ap.add_argument("--cache", required=True, help="描画 API から取った内容を置くフォルダ")
     ap.add_argument("--report", required=True, help="一覧（CSV）の出力先")
     ap.add_argument("--apply", action="store_true", help="しおりを書き換える（既定は試し実行）")
+    ap.add_argument(
+        "--include-flagged",
+        action="store_true",
+        help="要確認の印が付いた本も書き換える（付けられない本は除く）",
+    )
+    ap.add_argument("--refresh", action="store_true", help="キャッシュを使わず取り直す")
     ap.add_argument("--asin", action="append", help="この ASIN の本だけ（複数指定可）")
     ap.add_argument("--profile-dir", help="ブラウザプロファイル（省略時は既定）")
     args = ap.parse_args(argv)
@@ -199,40 +240,63 @@ def main(argv=None):
         wanted = set(args.asin)
         books = [b for b in books if b.get("asin") in wanted]
 
-    rows = []
-    for n, book in enumerate(books, 1):
-        title, asin = book.get("title", ""), book.get("asin", "")
-        row = {"asin": asin, "title": title, "format": book.get("format", "")}
-        pdf = book_pdf_path(args.library, title)
-        if not os.path.exists(pdf):
-            row["status"] = "PDF なし"
-            rows.append(row)
-            continue
-        try:
-            structure = cached_structure(args.cache, asin, profile_dir=args.profile_dir)
-            entries, numbers = plan_book(pdf, structure)
-            row.update(numbers)
-            with open(os.path.join(args.cache, f"{asin}.plan.json"), "w", encoding="utf-8") as f:
-                json.dump([e.__dict__ for e in entries], f, ensure_ascii=False, indent=1)
-            if args.apply and entries:
-                result = write_outline(pdf, entries)
-                row["status"] = "書き換えた" if result["ok"] else f"失敗: {result.get('error')}"
-            else:
-                row["status"] = "試し実行"
-        except Exception as exc:  # noqa: BLE001 - 1 冊の失敗で一括処理を止めない
-            row["status"] = f"失敗: {type(exc).__name__}: {exc}"
-        rows.append(row)
-        print(f"[{n}/{len(books)}] {row['status']} {row.get('flags', '')} {title[:40]}", flush=True)
-
-    os.makedirs(os.path.dirname(os.path.abspath(args.report)), exist_ok=True)
-    with open(args.report, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")
+    os.makedirs(os.path.dirname(os.path.abspath(args.report)) or ".", exist_ok=True)
+    statuses: Counter = Counter()
+    failures = consecutive = flagged = 0
+    with open(args.report, "w", encoding="utf-8-sig", newline="") as report:
+        writer = csv.DictWriter(report, fieldnames=COLUMNS, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
-    statuses = Counter(r["status"].split(":")[0] for r in rows)
-    flagged = sum(1 for r in rows if r.get("flags"))
-    print(f"完了: {dict(statuses)}、要確認 {flagged} 冊。一覧: {args.report}")
-    return 0
+        for n, book in enumerate(books, 1):
+            title, asin = book.get("title", ""), book.get("asin", "")
+            row = {"asin": asin, "title": title, "format": book.get("format", "")}
+            pdf = book_pdf_path(args.library, title)
+            failed = False
+            if not os.path.exists(pdf):
+                row["status"] = "PDF なし"
+            else:
+                try:
+                    structure = cached_structure(
+                        args.cache, asin, profile_dir=args.profile_dir, refresh=args.refresh
+                    )
+                    entries, numbers, flags = plan_book(pdf, structure)
+                    row.update(numbers)
+                    flagged += bool(flags)
+                    os.makedirs(args.cache, exist_ok=True)
+                    with open(
+                        os.path.join(args.cache, f"{asin}.plan.json"), "w", encoding="utf-8"
+                    ) as f:
+                        json.dump([e.__dict__ for e in entries], f, ensure_ascii=False, indent=1)
+                    if not args.apply:
+                        row["status"] = "試し実行"
+                    elif BLOCKING_FLAGS & set(flags):
+                        row["status"] = "しおりを付けられないので未適用"
+                    elif flags and not args.include_flagged:
+                        row["status"] = "要確認のため未適用"
+                    else:
+                        result = write_outline(pdf, entries)
+                        if result["ok"]:
+                            row["status"] = "書き換えた"
+                        else:
+                            row["status"] = f"失敗: {result.get('error')}"
+                            failed = True
+                except Exception as exc:  # noqa: BLE001 - 1 冊の失敗で一括処理を止めない
+                    row["status"] = f"失敗: {type(exc).__name__}: {exc}"
+                    failed = True
+            writer.writerow(row)
+            report.flush()
+            statuses[row["status"].split(":")[0]] += 1
+            failures += failed
+            consecutive = consecutive + 1 if failed else 0
+            print(
+                f"[{n}/{len(books)}] {row['status']} {row.get('flags', '')} {title[:40]}",
+                flush=True,
+            )
+            if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                print(f"{consecutive} 冊続けて失敗したので打ち切ります", flush=True)
+                break
+
+    print(f"完了: {dict(statuses)}、要確認 {flagged} 冊、失敗 {failures} 冊。一覧: {args.report}")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

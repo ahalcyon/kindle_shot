@@ -33,9 +33,10 @@ SEARCH_AHEAD = 3
 PROBE_LEN = 10
 MIN_PROBE_LEN = 2
 
-EXACT = "exact"  # 位置から出したページでそのまま（テキストでも確かめられたか、テキストが無い）
+CONFIRMED = "confirmed"  # 位置から出したページに章名があった
 MOVED = "moved"  # テキストで後ろへ補正した
 UNCONFIRMED = "unconfirmed"  # テキストはあるが章名が見つからず、位置から出したページのまま
+UNSEARCHED = "unsearched"  # テキストが無い・章名が短いので探していない。位置だけで決めた
 
 
 @dataclass
@@ -47,7 +48,7 @@ class TocEntry:
     position: int
     page: int = 0
     estimated: int = 0
-    how: str = EXACT
+    how: str = UNSEARCHED
 
 
 def flatten_toc(toc) -> list[TocEntry]:
@@ -64,6 +65,15 @@ def flatten_toc(toc) -> list[TocEntry]:
 
     walk(toc, 1)
     return out
+
+
+def positions_in_order(entries) -> bool:
+    """目次の位置が、出てくる順に減っていないか。
+
+    減っている目次は対応づけの前提（目次の順＝ページの順）が崩れているので、
+    しおりを付けずに要確認にする。
+    """
+    return all(a.position <= b.position for a, b in zip(entries, entries[1:], strict=False))
 
 
 def _norm(text: str) -> str:
@@ -97,6 +107,9 @@ def page_offset(pdf_pages: int, render_pages: int) -> int | None:
 def map_to_pages(entries, page_starts, pdf_pages, page_text=None, offset=0):
     """各しおりに PDF のページを割り当てる（entries を書き換えて返す）。
 
+    前提: ``positions_in_order(entries)`` が真で、``page_starts`` が空でない。
+    呼び出し側で確かめること（崩れていると全部のしおりが誤ったページに付く）。
+
     Args:
         entries: ``flatten_toc`` の結果
         page_starts: 描画の各ページの ``startPositionId``（昇順）
@@ -104,16 +117,19 @@ def map_to_pages(entries, page_starts, pdf_pages, page_text=None, offset=0):
         page_text: ``page_text(i)`` で i ページ目のテキストを返す関数。None ならテキストで補正しない
         offset: PDF の先頭に足したページ数（表紙）
     """
+    if not page_starts:
+        raise ValueError("描画のページ範囲がありません")
     last = max(pdf_pages - 1, 0)
     prev = 0
     for entry in entries:
         index = max(bisect.bisect_right(page_starts, entry.position) - 1, 0)
         estimated = min(index + offset, last)
-        # 目次の並びどおりに、ページが戻らないようにする
+        # 前の項目をテキストで後ろへ補正した結果、位置の順では後ろの項目が前に来ることがある。
+        # そのときだけ前の項目に揃える（位置の順は呼び出し側で確かめてある）
         estimated = max(estimated, prev)
         entry.estimated = estimated
         entry.page = estimated
-        entry.how = EXACT
+        entry.how = UNSEARCHED
         probe = title_probe(entry.title)
         if page_text is not None and len(probe) >= MIN_PROBE_LEN:
             found = None
@@ -123,7 +139,9 @@ def map_to_pages(entries, page_starts, pdf_pages, page_text=None, offset=0):
                     break
             if found is None:
                 entry.how = UNCONFIRMED
-            elif found != estimated:
+            elif found == estimated:
+                entry.how = CONFIRMED
+            else:
                 entry.page = found
                 entry.how = MOVED
         prev = entry.page
@@ -136,14 +154,20 @@ def map_to_pages(entries, page_starts, pdf_pages, page_text=None, offset=0):
 
 # 1 回の要求で描かせるページ数。多いと描けないページが混ざったときに要求ごと落ちる (#104)
 SCAN_NUM_PAGES = 4
-# 描けない区間の先を探すときの刻み。区間の長さは実測で数十〜数百位置
+# 描けない区間の先を探すときの刻み。実測の区間は数十位置（#104）。近くは細かく、遠くは粗く
 SKIP_STEP = 25
 SKIP_STEP_FAR = 500
 SKIP_NEAR = 2000
-# 描けない区間を探す上限（位置の数）。これを超えたら走査を打ち切り、打ち切ったと記録する
-SKIP_LIMIT = 200_000
-# 通信の一時的な失敗のやり直し回数
+# 描けない区間 1 つを探す要求の上限。25 刻みで 2000 位置（80 回）+ 500 刻みで 10 万位置（200 回）。
+# 合本 1 冊（300 万位置）の 3% を超える区間は、探すより要確認にして人が見るほうがよい
+SKIP_MAX_REQUESTS = 280
+# 1 冊の要求の上限。最大の本（ハリー・ポッター全 7 巻 2,657 ページ）で 4 ページずつ約 670 回だった。
+# その 10 倍を超えたら何かがおかしいので打ち切る
+BOOK_MAX_REQUESTS = 7000
+# 通信の一時的な失敗・5xx のやり直し回数と間隔（ミリ秒）
 FETCH_RETRIES = 4
+SERVER_ERROR_RETRIES = 2
+RETRY_WAIT_MS = 5000
 
 
 def _sub_query(url, **params):
@@ -169,90 +193,67 @@ def _untar(body):
         return load("layout.json"), load("toc.json"), load("metadata.json")
 
 
-def fetch_book_structure(page, *, emit=None, wait_ms=15000):
-    """開いている本について、目次と全ページの位置範囲を描画 API から取る。
+def scan_positions(get, *, emit=None):
+    """``get(num_pages, position)`` を順に呼んで、目次と全ページの位置範囲を集める。
 
-    **読書位置は動かさない。** リーダーのページ送りはせず、リーダーが最初に出した
-    描画要求の URL と認証ヘッダーを使って、位置を指定した要求を順に送る。
-    描けない区間（#104）は先の位置を探して飛ばし、``unrenderable`` に残す。
+    ``get`` は描けたら ``(layout, toc, metadata)`` を、描けなければ None を返す。
+    通信の失敗は ``get`` の中でやり直し、続けて失敗したら例外にすること。
 
     Returns:
         {"toc", "metadata", "pages": [[start, end], ...], "unrenderable": [[from, resume], ...],
-         "complete": 最後の位置まで取れたか}
+         "complete": 本の最後の位置まで取れたか}
     """
     emit = emit or (lambda *a, **k: None)
-    requests = []
+    calls = [0]
 
-    def on_request(request):
-        if "/renderer/render" in request.url:
-            requests.append(request)
-
-    page.on("request", on_request)
-    page.reload(wait_until="domcontentloaded")
-    waited = 0
-    while not requests and waited < wait_ms:
-        page.wait_for_timeout(500)
-        waited += 500
-    if not requests:
-        raise RuntimeError("描画要求が出ませんでした（本を開けていない可能性）")
-    first = requests[0]
-    state = {
-        "url": _sub_query(first.url, skipPageCount=0),
-        "headers": {k: v for k, v in first.headers.items() if not k.startswith(":")},
-    }
-
-    def refresh():
-        requests.clear()
-        page.reload(wait_until="domcontentloaded")
-        for _ in range(wait_ms // 500):
-            if requests:
-                break
-            page.wait_for_timeout(500)
-        if requests:
-            state["url"] = _sub_query(requests[0].url, skipPageCount=0)
-            state["headers"] = {
-                k: v for k, v in requests[0].headers.items() if not k.startswith(":")
-            }
-
-    def get(num_pages, position):
-        for _ in range(FETCH_RETRIES):
-            try:
-                resp = page.request.get(
-                    _sub_query(state["url"], numPage=num_pages, startingPosition=position),
-                    headers=state["headers"],
-                    timeout=90000,
-                )
-            except Exception:  # noqa: BLE001 - 通信の一時的な失敗はやり直す
-                page.wait_for_timeout(5000)
-                continue
-            if resp.status in (401, 403):
-                refresh()
-                continue
-            if resp.status >= 500:
-                return None
-            if resp.status != 200:
-                page.wait_for_timeout(5000)
-                continue
-            return _untar(resp.body())
-        raise RuntimeError(f"描画 API の要求に失敗し続けました（位置 {position}）")
+    def call(num_pages, position):
+        calls[0] += 1
+        if calls[0] > BOOK_MAX_REQUESTS:
+            raise RuntimeError(f"描画 API の要求が上限（{BOOK_MAX_REQUESTS} 回）を超えました")
+        return get(num_pages, position)
 
     pages: list[list[int]] = []
     unrenderable: list[list[int | None]] = []
     toc = metadata = None
     position = 0
     complete = False
+
+    def last_position():
+        return metadata.get("lastPositionId") if isinstance(metadata, dict) else None
+
+    def first_start(got):
+        layout = got[0] if got else None
+        return layout[0]["startPositionId"] if layout else None
+
     while True:
-        got = get(SCAN_NUM_PAGES, position) or get(1, position)
+        last = last_position()
+        if last is not None and position > last:
+            complete = True
+            break
+        got = call(SCAN_NUM_PAGES, position) or call(1, position)
         if got is None:
             # 描けない。先へ探して、描ける位置から続ける
-            probe = position + SKIP_STEP
-            resume = None
-            while probe - position < SKIP_LIMIT:
-                again = get(1, probe)
-                if again and again[0] and again[0][0]["startPositionId"] > position:
-                    resume = again[0][0]["startPositionId"]
+            failed, resume, tries, probe = position, None, 0, position + SKIP_STEP
+            while tries < SKIP_MAX_REQUESTS and (last is None or probe <= last):
+                tries += 1
+                start = first_start(call(1, probe))
+                if start is not None and start > position:
+                    resume = start
                     break
+                failed = probe
                 probe += SKIP_STEP if probe - position < SKIP_NEAR else SKIP_STEP_FAR
+            if resume is not None:
+                # 見つかったのは探した位置を含むページ。失敗した位置との間に描けるページが
+                # あれば取りこぼすので、二分探索で最初に描けるページまで戻す
+                lo, hi = failed, resume
+                while hi - lo > 1:
+                    mid = (lo + hi) // 2
+                    start = first_start(call(1, mid))
+                    if start is not None and start > position:
+                        resume = min(resume, start)
+                        hi = mid
+                    else:
+                        lo = mid
             unrenderable.append([position, resume])
             emit("toc_unrenderable", start=position, resume=resume)
             if resume is None:
@@ -262,14 +263,16 @@ def fetch_book_structure(page, *, emit=None, wait_ms=15000):
         layout, toc_json, meta = got
         toc = toc if toc is not None else toc_json
         metadata = metadata if metadata is not None else meta
-        ranges = [[p["startPositionId"], p["endPositionId"]] for p in (layout or [])]
-        if not ranges or ranges[-1][1] + 1 <= position:
+        # 要求した位置より前から始まるページ（前回までに取ったもの）は捨てる
+        ranges = [
+            [p["startPositionId"], p["endPositionId"]]
+            for p in (layout or [])
+            if p["startPositionId"] >= position
+        ]
+        if not ranges:
             break
         pages.extend(ranges)
         position = ranges[-1][1] + 1
-        if metadata and position > metadata.get("lastPositionId", position):
-            complete = True
-            break
     return {
         "toc": toc,
         "metadata": metadata,
@@ -279,17 +282,113 @@ def fetch_book_structure(page, *, emit=None, wait_ms=15000):
     }
 
 
+def fetch_book_structure(page, *, emit=None, wait_ms=15000):
+    """開いている本について、目次と全ページの位置範囲を描画 API から取る。
+
+    **読書位置は動かさない。** リーダーのページ送りはせず、リーダーが最初に出した
+    描画要求の URL と認証ヘッダーを使って、位置を指定した要求を順に送る。
+    描けない区間（#104）は先の位置を探して飛ばし、``unrenderable`` に残す。
+    """
+    requests: list[Any] = []
+
+    def on_request(request):
+        if "/renderer/render" in request.url:
+            requests.append(request)
+
+    def wait_for_request():
+        waited = 0
+        while not requests and waited < wait_ms:
+            page.wait_for_timeout(500)
+            waited += 500
+
+    page.on("request", on_request)
+    try:
+        page.reload(wait_until="domcontentloaded")
+        wait_for_request()
+        if not requests:
+            raise RuntimeError("描画要求が出ませんでした（本を開けていない可能性）")
+        first = requests[0].url
+        for key in ("numPage", "startingPosition", "skipPageCount"):
+            if not re.search(rf"[?&]{key}=", first):
+                # 置き換えられないまま送ると、どの要求も読書位置のページを返す
+                raise RuntimeError(f"描画要求の形が想定と違います（{key} がありません）")
+        state = {
+            "url": _sub_query(first, skipPageCount=0),
+            "headers": {k: v for k, v in requests[0].headers.items() if not k.startswith(":")},
+        }
+
+        def refresh():
+            requests.clear()
+            page.reload(wait_until="domcontentloaded")
+            wait_for_request()
+            if requests:
+                state["url"] = _sub_query(requests[0].url, skipPageCount=0)
+                state["headers"] = {
+                    k: v for k, v in requests[0].headers.items() if not k.startswith(":")
+                }
+
+        def get(num_pages, position):
+            server_errors = 0
+            for _ in range(FETCH_RETRIES + SERVER_ERROR_RETRIES):
+                try:
+                    resp = page.request.get(
+                        _sub_query(state["url"], numPage=num_pages, startingPosition=position),
+                        headers=state["headers"],
+                        timeout=90000,
+                    )
+                except Exception:  # noqa: BLE001 - 通信の一時的な失敗はやり直す
+                    page.wait_for_timeout(RETRY_WAIT_MS)
+                    continue
+                if resp.status in (401, 403):
+                    refresh()
+                    continue
+                if resp.status >= 500:
+                    # 描けないページでも一時的な失敗でも 500 が返る。数回やり直してから決める
+                    server_errors += 1
+                    if server_errors > SERVER_ERROR_RETRIES:
+                        return None
+                    page.wait_for_timeout(RETRY_WAIT_MS)
+                    continue
+                if resp.status != 200:
+                    page.wait_for_timeout(RETRY_WAIT_MS)
+                    continue
+                return _untar(resp.body())
+            raise RuntimeError(f"描画 API の要求に失敗し続けました（位置 {position}）")
+
+        return scan_positions(get, emit=emit)
+    finally:
+        page.remove_listener("request", on_request)
+
+
 # ---------------------------------------------------------------------------
 # PDF のしおりを書き換える
 # ---------------------------------------------------------------------------
+
+# しおりの名前の長さの上限。ビューアで切り詰められるので、長すぎるものはここで切る
+TITLE_MAX = 120
+
+
+def _outline_pages(reader):
+    out = []
+
+    def walk(items):
+        for item in items:
+            if isinstance(item, list):
+                walk(item)
+            else:
+                out.append(reader.get_destination_page_number(item))
+
+    walk(reader.outline)
+    return out
 
 
 def write_outline(path, entries, *, verify=True):
     """PDF のしおりを entries で置き換える。ページの画像とテキスト層には触らない。
 
     **検証に通らなければ元のファイルを残す。** 蔵書を直接書き換えるので、
-    ページ数・抜き取りページの描画結果・抽出文字数が変わっていないことを確かめてから
-    差し替える（``core.text_layer.strip_file`` と同じ作法）。
+    ページ数・抜き取りページの描画結果・抽出文字数が変わっていないこと、
+    書いたしおりを読み戻して件数とページが一致することを確かめてから差し替える
+    （``core.text_layer.strip_file`` と同じ作法）。書けるしおりが 1 件も無ければ書き換えない。
 
     Returns:
         結果の dict。``ok`` が False なら ``error`` に理由が入り、元のファイルは手つかず。
@@ -306,6 +405,9 @@ def write_outline(path, entries, *, verify=True):
         reader = PdfReader(path)
         pages = len(reader.pages)
         del reader
+        usable = [e for e in entries if 0 <= e.page < pages]
+        if not usable:
+            raise ValueError("書けるしおりがありません")
         indexes = _sample_indexes(pages)
         before_text = extracted_chars(path, indexes) if verify else None
         before_render = render_digests(path, indexes) if verify else None
@@ -316,24 +418,24 @@ def write_outline(path, entries, *, verify=True):
         if "/Outlines" in root:
             del root["/Outlines"]
         parents: dict[int, Any] = {}
-        written = 0
-        for entry in entries:
-            if not 0 <= entry.page < pages:
-                continue
+        expected_pages = []
+        for entry in usable:
             level = max(1, entry.level)
             # 親の無い深さに飛ばない（1 つ上の階層が無ければ詰める）
             while level > 1 and level - 1 not in parents:
                 level -= 1
             parent = parents.get(level - 1) if level > 1 else None
-            item = writer.add_outline_item(entry.title[:120], entry.page, parent=parent)
+            item = writer.add_outline_item(entry.title[:TITLE_MAX], entry.page, parent=parent)
             parents[level] = item
             for deeper in [k for k in parents if k > level]:
                 del parents[deeper]
-            written += 1
+            expected_pages.append(entry.page)
         writer.page_mode = "/UseOutlines"
+        # 捨てたしおりのオブジェクトを残さない
+        writer.compress_identical_objects(remove_identicals=False, remove_orphans=True)
 
         folder = os.path.dirname(path) or "."
-        fd, created = tempfile.mkstemp(suffix=".pdf", dir=folder)
+        fd, created = tempfile.mkstemp(prefix=".bookmarks-", suffix=".tmp", dir=folder)
         os.close(fd)
         tmp: str | None = created
         try:
@@ -343,14 +445,20 @@ def write_outline(path, entries, *, verify=True):
                 after = PdfReader(created)
                 if len(after.pages) != pages:
                     raise ValueError(f"ページ数が変わりました: {pages} -> {len(after.pages)}")
+                written = _outline_pages(after)
+                if written != expected_pages:
+                    raise ValueError("書いたしおりを読み戻すと件数かページが違います")
                 del after
                 if extracted_chars(created, indexes) != before_text:
                     raise ValueError("テキスト層が変わりました")
                 if render_digests(created, indexes) != before_render:
                     raise ValueError("描画結果が変わりました")
-            os.replace(created, path)
+            try:
+                os.replace(created, path)
+            except PermissionError as exc:
+                raise PermissionError(f"{exc}（PDF を開いているなら閉じて再実行）") from exc
             tmp = None
-            result.update(ok=True, pages=pages, bookmarks=written)
+            result.update(ok=True, pages=pages, bookmarks=len(expected_pages))
         finally:
             if tmp and os.path.exists(tmp):
                 os.remove(tmp)

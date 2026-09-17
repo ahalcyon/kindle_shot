@@ -1,16 +1,21 @@
 """core/kindle_toc.py のテスト（Kindle の目次からしおりを作る。#114）"""
 
+import pytest
 from pypdf import PdfReader
 from reportlab.pdfgen import canvas
 
+from core import kindle_toc
 from core.kindle_toc import (
-    EXACT,
+    CONFIRMED,
     MOVED,
     UNCONFIRMED,
+    UNSEARCHED,
     TocEntry,
     flatten_toc,
     map_to_pages,
     page_offset,
+    positions_in_order,
+    scan_positions,
     title_probe,
     write_outline,
 )
@@ -58,7 +63,26 @@ STARTS = [0, 10, 20, 30, 40, 50]  # 描画の 6 ページ
 def test_map_uses_the_page_that_contains_the_position():
     entries = map_to_pages(_entries(("A", 0), ("B", 25), ("C", 50)), STARTS, 6)
     assert [e.page for e in entries] == [0, 2, 5]
-    assert all(e.how == EXACT for e in entries)
+    assert all(e.how == UNSEARCHED for e in entries)
+
+
+def test_map_confirms_when_the_title_is_on_the_estimated_page():
+    texts = ["", "", "クィディッチ", "", "", ""]
+    entries = map_to_pages(
+        _entries(("第11章 クィディッチ", 25)), STARTS, 6, page_text=lambda i: texts[i]
+    )
+    assert (entries[0].page, entries[0].how) == (2, CONFIRMED)
+
+
+def test_map_refuses_empty_page_ranges():
+    # 空のまま進めると全部のしおりが先頭ページに付く
+    with pytest.raises(ValueError):
+        map_to_pages(_entries(("A", 0)), [], 6)
+
+
+def test_positions_in_order_detects_a_toc_going_backwards():
+    assert positions_in_order(_entries(("A", 0), ("B", 5), ("C", 5)))
+    assert not positions_in_order(_entries(("A", 45), ("B", 5)))
 
 
 def test_map_shifts_by_the_cover_offset():
@@ -87,7 +111,7 @@ def test_map_does_not_search_one_character_titles():
     """1 文字の章名（「円」）は本文のどこにでも当たる。"""
     texts = ["", "", "", "円を描く", "", ""]
     entries = map_to_pages(_entries(("円", 25)), STARTS, 6, page_text=lambda i: texts[i])
-    assert (entries[0].page, entries[0].how) == (2, EXACT)
+    assert (entries[0].page, entries[0].how) == (2, UNSEARCHED)
 
 
 def test_map_keeps_pages_in_toc_order():
@@ -165,3 +189,122 @@ def test_write_outline_leaves_the_file_when_it_fails(tmp_path):
     result = write_outline(str(pdf), [TocEntry(1, "x", 0, page=0)])
     assert not result["ok"] and "error" in result
     assert pdf.read_bytes() == b"not a pdf"
+
+
+def test_write_outline_refuses_when_no_bookmark_fits(tmp_path):
+    """書けるしおりが無いのに既存のしおりを消して空で置き換えない。"""
+    pdf = tmp_path / "book.pdf"
+    _make_pdf(pdf, pages=2)
+    before = pdf.read_bytes()
+    result = write_outline(str(pdf), [TocEntry(1, "ない", 0, page=9)])
+    assert not result["ok"]
+    assert pdf.read_bytes() == before
+
+
+def test_write_outline_keeps_the_file_when_verification_fails(tmp_path, monkeypatch):
+    from core import text_layer
+
+    pdf = tmp_path / "book.pdf"
+    _make_pdf(pdf, pages=3)
+    before = pdf.read_bytes()
+    calls = iter([["a"], ["b"]])  # 書き換え前と後で描画結果が違う
+    monkeypatch.setattr(text_layer, "render_digests", lambda path, idx: next(calls))
+    result = write_outline(str(pdf), [TocEntry(1, "x", 0, page=0)])
+    assert not result["ok"] and "描画結果" in result["error"]
+    assert pdf.read_bytes() == before
+    assert not [p for p in tmp_path.iterdir() if p.name != "book.pdf"]
+
+
+# --- scan_positions: 描画 API を順に叩く走査（偽の get で確かめる） ---
+
+
+def _book(page_ranges, *, bad=(), last=None, toc=None):
+    """page_ranges の本を描く偽の get。bad に入る位置を含むページは描けない（None）。"""
+    last = last if last is not None else page_ranges[-1][1]
+    calls = []
+
+    def page_of(position):
+        for start, end in page_ranges:
+            if position <= end:
+                return start, end
+        return None
+
+    def get(num_pages, position):
+        calls.append((num_pages, position))
+        out: list[dict] = []
+        p = position
+        while len(out) < num_pages:
+            found = page_of(p)
+            if found is None:
+                break
+            start, end = found
+            if any(start <= b <= end for b in bad):
+                return None if not out else (out, toc, {"lastPositionId": last})
+            out.append({"startPositionId": start, "endPositionId": end})
+            p = end + 1
+        return (out, toc, {"lastPositionId": last}) if out else ([], toc, {"lastPositionId": last})
+
+    return get, calls
+
+
+def test_scan_collects_every_page_and_completes():
+    ranges = [[0, 9], [10, 19], [20, 29], [30, 39], [40, 49], [50, 59]]
+    get, _ = _book(ranges, toc=[{"label": "A", "tocPositionId": 0}])
+    got = scan_positions(get)
+    assert got["pages"] == ranges and got["complete"] and not got["unrenderable"]
+    assert got["toc"] == [{"label": "A", "tocPositionId": 0}]
+
+
+def test_scan_skips_an_unrenderable_page_without_losing_the_next_one():
+    """描けない区間の先は、最初に描けるページから続ける（間のページを落とさない）。"""
+    ranges = [[i * 100, i * 100 + 99] for i in range(60)]
+    get, _ = _book(ranges, bad=[250])
+    got = scan_positions(get)
+    assert [200, 299] not in got["pages"]
+    assert [300, 399] in got["pages"]
+    assert len(got["pages"]) == 59 and got["complete"]
+    assert got["unrenderable"] == [[200, 300]]
+
+
+def test_scan_gives_up_on_an_unrenderable_tail_with_a_bounded_number_of_requests():
+    ranges = [[0, 9], [10, 19]]
+    get, calls = _book(ranges, bad=[15], last=100_000_000)
+    got = scan_positions(get)
+    assert got["unrenderable"] == [[10, None]] and not got["complete"]
+    assert len(calls) <= kindle_toc.SKIP_MAX_REQUESTS + 10
+
+
+def test_scan_stops_when_the_server_repeats_pages():
+    def get(num_pages, position):
+        return ([{"startPositionId": 0, "endPositionId": 9}], None, None)
+
+    got = scan_positions(get)
+    assert got["pages"] == [[0, 9]] and not got["complete"]
+
+
+def test_scan_has_a_request_ceiling(monkeypatch):
+    monkeypatch.setattr(kindle_toc, "BOOK_MAX_REQUESTS", 5)
+    ranges = [[i, i] for i in range(100)]
+    get, _ = _book(ranges)
+    with pytest.raises(RuntimeError):
+        scan_positions(get)
+
+
+def test_scan_backfills_pages_the_skip_step_jumped_over():
+    """描けないページの直後のページを、探す刻み（25 位置）で飛び越えて落とさない。"""
+    ranges = [[i * 10, i * 10 + 9] for i in range(60)]
+    get, _ = _book(ranges, bad=[205])
+    got = scan_positions(get)
+    assert [210, 219] in got["pages"]
+    assert got["unrenderable"] == [[200, 210]]
+    assert len(got["pages"]) == 59
+
+
+def test_write_outline_keeps_the_file_when_the_readback_differs(tmp_path, monkeypatch):
+    pdf = tmp_path / "book.pdf"
+    _make_pdf(pdf, pages=3)
+    before = pdf.read_bytes()
+    monkeypatch.setattr(kindle_toc, "_outline_pages", lambda reader: [2])
+    result = write_outline(str(pdf), [TocEntry(1, "x", 0, page=0)])
+    assert not result["ok"] and "読み戻す" in result["error"]
+    assert pdf.read_bytes() == before
