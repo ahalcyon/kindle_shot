@@ -309,6 +309,8 @@ def _run_book_collecting(tmp_path, monkeypatch, **kwargs):
     monkeypatch.setattr(pipeline, "run_validate", lambda *a, **k: 0)
     monkeypatch.setattr(pipeline, "run_trim", lambda *a, **k: 0)
     monkeypatch.setattr(pipeline, "run_convert", lambda *a, **k: 0)
+    # しおりの作り直しは本を開きに行く。ここでは潰す（tests/test_pipeline.py で別に見る）
+    monkeypatch.setattr(pipeline, "rebuild_toc_bookmarks", lambda *a, **k: False)
     monkeypatch.setattr(pipeline, "add_cover_page", lambda *a, **k: _record(calls, a, k))
     pipeline.run_book(
         asin="B0TEST",

@@ -344,6 +344,8 @@ def spy_run_book(monkeypatch):
     monkeypatch.setattr(headless_capture, "run_headless_capture", lambda *a, **k: EXIT_OK)
     monkeypatch.setattr(pipeline, "run_validate", lambda *a, **k: EXIT_OK)
     monkeypatch.setattr(pipeline, "run_trim", lambda *a, **k: EXIT_OK)
+    # しおりの作り直しは本を開きに行くので、ここでは潰す（専用のテストで見る）
+    monkeypatch.setattr(pipeline, "rebuild_toc_bookmarks", lambda *a, **k: False)
     return calls
 
 
@@ -368,6 +370,160 @@ def test_run_book_cleans_up_only_on_success(tmp_path, monkeypatch, spy_run_book)
 def test_run_book_keep_images_skips_cleanup(tmp_path, monkeypatch, spy_run_book):
     assert call_run_book(tmp_path, EXIT_OK, monkeypatch, keep_images=True) == EXIT_OK
     assert spy_run_book == []
+
+
+def test_run_book_rebuilds_bookmarks_only_for_pdf_formats(tmp_path, monkeypatch, spy_run_book):
+    """しおりの作り直しは PDF を作る形式だけ。テキスト PDF は撮影のページと 1 対 1 でない。"""
+    from core import pipeline
+
+    seen = []
+    monkeypatch.setattr(
+        pipeline, "rebuild_toc_bookmarks", lambda pdf, asin, cache, **k: seen.append((pdf, asin))
+    )
+    assert call_run_book(tmp_path, EXIT_OK, monkeypatch) == EXIT_OK
+    assert len(seen) == 1 and seen[0][1] == "B0TEST"
+    # convert の出力と同じパスを見る（違うと FileNotFoundError を握って無音になる）
+    from core.safe_names import book_path_name
+
+    assert seen[0][0] == os.path.join(str(tmp_path), book_path_name("本", str(tmp_path)) + ".pdf")
+
+    seen.clear()
+    assert call_run_book(tmp_path, EXIT_OK, monkeypatch, no_toc_bookmarks=True) == EXIT_OK
+    assert seen == []
+
+    seen.clear()
+    monkeypatch.setattr(pipeline, "run_convert", lambda *a, **k: EXIT_OK)
+    assert (
+        pipeline.run_book(asin="B0TEST", title="本", output=str(tmp_path), fmt="text_pdf")
+        == EXIT_OK
+    )
+    assert seen == []
+
+
+def test_rebuild_toc_bookmarks_swallows_failures(tmp_path, monkeypatch):
+    """しおりは仕上げ。中の失敗は外に出さない（PDF はできている） (#114)。"""
+    from core import bookmark_rebuild as br
+    from core import pipeline
+
+    def boom(*a, **k):
+        raise RuntimeError("描画要求が出ませんでした")
+
+    monkeypatch.setattr(br, "cached_structure", boom)
+    messages: list = []
+    ok = pipeline.rebuild_toc_bookmarks(
+        "x.pdf", "B0TEST", str(tmp_path), emit=lambda ev, human=None, **f: messages.append(human)
+    )
+    assert ok is False
+    assert any("PDF はできています" in m for m in messages if m)
+
+    # 非対応の本は理由を分けて出す
+    def unsupported(*a, **k):
+        raise br.UnsupportedBook("Kindleアプリが必要です")
+
+    monkeypatch.setattr(br, "cached_structure", unsupported)
+    messages.clear()
+    assert (
+        pipeline.rebuild_toc_bookmarks(
+            "x.pdf",
+            "B0TEST",
+            str(tmp_path),
+            emit=lambda ev, human=None, **f: messages.append(human),
+        )
+        is False
+    )
+    assert any("Cloud Reader 非対応" in m for m in messages if m)
+
+
+def _no_text_pdf(path, pages=4):
+    from reportlab.pdfgen import canvas
+
+    c = canvas.Canvas(str(path))
+    for _ in range(pages):
+        c.showPage()
+    c.save()
+    return str(path)
+
+
+def _toc_structure(pages=4):
+    return {
+        "toc": [{"label": f"章{i}", "tocPositionId": i * 10} for i in range(pages)],
+        "pages": [[p, p + 9] for p in range(0, pages * 10, 10)],
+        "complete": True,
+        "unrenderable": [],
+    }
+
+
+def test_rebuild_toc_bookmarks_writes_image_pdf_but_not_searchable(tmp_path, monkeypatch):
+    """image_pdf はテキスト層が無いと分かっている。その印だけで見送ると必ず見送られる。"""
+    from core import bookmark_rebuild as br
+    from core import pipeline
+
+    monkeypatch.setattr(br, "cached_structure", lambda *a, **k: _toc_structure())
+    pdf = _no_text_pdf(tmp_path / "manga.pdf")
+    assert pipeline.rebuild_toc_bookmarks(pdf, "B0TEST", str(tmp_path), fmt="image_pdf") is True
+    # 同じ本でも searchable_pdf なら「テキスト層なし」は異常なので書かない
+    assert (
+        pipeline.rebuild_toc_bookmarks(pdf, "B0TEST", str(tmp_path), fmt="searchable_pdf") is False
+    )
+
+
+def test_rebuild_toc_bookmarks_reports_the_reason_in_fields(tmp_path, monkeypatch):
+    """--json には human が入らない。理由は構造化した値で出す（#50 と同じ穴）。"""
+    from core import bookmark_rebuild as br
+    from core import pipeline
+
+    events: list = []
+
+    def record(event, human=None, **fields):
+        events.append((event, fields))
+
+    monkeypatch.setattr(br, "cached_structure", lambda *a, **k: _toc_structure())
+    pdf = _no_text_pdf(tmp_path / "skipped.pdf")
+    pipeline.rebuild_toc_bookmarks(pdf, "B0TEST", str(tmp_path), emit=record)
+    assert events[-1][0] == "bookmarks_skipped"
+    assert events[-1][1]["reason"] == "要確認"
+    assert br.FLAG_NO_TEXT in events[-1][1]["flags"]
+    assert events[-1][1]["asin"] == "B0TEST"
+
+    events.clear()
+
+    def boom(*a, **k):
+        raise RuntimeError("描画要求が出ませんでした")
+
+    monkeypatch.setattr(br, "cached_structure", boom)
+    pipeline.rebuild_toc_bookmarks(pdf, "B0TEST", str(tmp_path), emit=record)
+    assert events[-1][0] == "bookmarks_skipped" and events[-1][1]["reason"] == "error"
+
+    events.clear()
+    monkeypatch.setattr(br, "cached_structure", lambda *a, **k: _toc_structure())
+    pipeline.rebuild_toc_bookmarks(pdf, "B0TEST", str(tmp_path), emit=record, fmt="image_pdf")
+    assert events[-1][0] == "bookmarks_rebuilt"
+    assert events[-1][1]["entries"] == 4 and events[-1][1]["asin"] == "B0TEST"
+
+
+def test_rebuild_toc_bookmarks_skips_flagged_books(tmp_path, monkeypatch):
+    """要確認の本は撮影の流れでは書き換えない（まとめて見てから入れる）。"""
+    from core import bookmark_rebuild as br
+    from core import pipeline
+
+    monkeypatch.setattr(br, "cached_structure", lambda *a, **k: {"toc": [], "pages": []})
+    monkeypatch.setattr(
+        br,
+        "rebuild_book",
+        lambda pdf, structure, **k: {
+            "written": False,
+            "reason": "要確認",
+            "row": {"confirmed": 0, "shifts": ""},
+            "flags": [br.FLAG_NO_TEXT],
+            "entries": 3,
+        },
+    )
+    messages = []
+    ok = pipeline.rebuild_toc_bookmarks(
+        "x.pdf", "B0TEST", str(tmp_path), emit=lambda ev, human=None, **f: messages.append(human)
+    )
+    assert ok is False
+    assert any("作り直しませんでした" in m for m in messages if m)
 
 
 # ------------------------------------------------------------

@@ -1,4 +1,7 @@
-"""scripts/rebuild_bookmarks.py のテスト（#114）"""
+"""scripts/rebuild_bookmarks.py のテスト（CLI・一覧 CSV・打ち切り。#114）
+
+判定そのもの（何を書くか）は core/bookmark_rebuild.py 側のテストにある。
+"""
 
 import csv
 import json
@@ -14,12 +17,13 @@ sys.path.insert(
 
 import rebuild_bookmarks as rb  # noqa: E402
 
+from core import bookmark_rebuild as br  # noqa: E402
 from core.kindle_toc import TocEntry  # noqa: E402
 
 
 def test_shift_summary_lists_each_run_of_the_same_shift():
     entries = [TocEntry(1, "a", 0, shift=s) for s in (2, 2, 0, 0, 2)]
-    assert rb.shift_summary(entries) == "2→0→2"
+    assert br.shift_summary(entries) == "2→0→2"
 
 
 def _library(tmp_path, *, pdf_pages=6, structure=None):
@@ -126,7 +130,7 @@ def test_a_shift_chosen_from_text_is_listed_and_flagged(tmp_path):
     pdf, books, lib, cache = _library(tmp_path, pdf_pages=4, structure=structure)
     code, rows = _run(tmp_path, books, lib, cache)
     assert rows[0]["shifts"] == "0"
-    assert rb.FLAG_SHIFTED not in rows[0]["flags"]
+    assert br.FLAG_SHIFTED not in rows[0]["flags"]
 
     # 章名が位置のページの 1 つ後ろに続けて見つかる本は、ずれ幅 1 を選んで要確認にする
     from reportlab.pdfgen import canvas
@@ -141,10 +145,10 @@ def test_a_shift_chosen_from_text_is_listed_and_flagged(tmp_path):
     c.save()
     structure = _structure([[p, p + 9] for p in range(0, 50, 10)])
     structure["toc"] = [{"label": f"chapter{i:02d}", "tocPositionId": i * 10} for i in range(4)]
-    entries, row, flags = rb.plan_book(shifted, structure)
+    entries, row, flags = br.plan_book(shifted, structure)
     assert row["shifts"] == "1"
     assert [e.page for e in entries] == [1, 2, 3, 4]
-    assert rb.FLAG_SHIFTED in flags
+    assert br.FLAG_SHIFTED in flags
 
 
 def test_cached_structure_looks_for_the_dialog_only_after_a_failed_fetch(tmp_path, monkeypatch):
@@ -170,7 +174,7 @@ def test_cached_structure_looks_for_the_dialog_only_after_a_failed_fetch(tmp_pat
 
     # 取れた本ではダイアログを見に行かない（誤判定で取れる本を飛ばす経路を作らない）
     monkeypatch.setattr(kt, "fetch_book_structure", lambda page: {"toc": [], "pages": []})
-    assert rb.cached_structure(str(tmp_path), "B0TEST") == {"toc": [], "pages": []}
+    assert br.cached_structure(str(tmp_path), "B0TEST") == {"toc": [], "pages": []}
     assert looked == []
 
     # 取れなかった本はダイアログを見て、非対応なら失敗ではなく UnsupportedBook にする
@@ -178,14 +182,14 @@ def test_cached_structure_looks_for_the_dialog_only_after_a_failed_fetch(tmp_pat
         raise RuntimeError("描画要求が出ませんでした（本を開けていない可能性）")
 
     monkeypatch.setattr(kt, "fetch_book_structure", no_render)
-    with pytest.raises(rb.UnsupportedBook):
-        rb.cached_structure(str(tmp_path), "B0TEST")
+    with pytest.raises(br.UnsupportedBook):
+        br.cached_structure(str(tmp_path), "B0TEST")
     assert looked == [1]
 
     # ダイアログが無ければ元の失敗のまま（非対応にすり替えない）
     monkeypatch.setattr(hc, "unsupported_reason", lambda page: None)
     with pytest.raises(RuntimeError):
-        rb.cached_structure(str(tmp_path), "B0TEST")
+        br.cached_structure(str(tmp_path), "B0TEST")
 
 
 def test_an_unsupported_book_is_not_counted_as_a_failure(tmp_path, monkeypatch):
@@ -206,7 +210,7 @@ def test_an_unsupported_book_is_not_counted_as_a_failure(tmp_path, monkeypatch):
     def structures(cache_dir, asin, **kwargs):
         if asin == "B0FAIL":
             raise RuntimeError("描画要求が出ませんでした（本を開けていない可能性）")
-        raise rb.UnsupportedBook("Kindleアプリが必要です")
+        raise br.UnsupportedBook("Kindleアプリが必要です")
 
     monkeypatch.setattr(rb, "cached_structure", structures)
     before = pathlib.Path(pdf).read_bytes()
@@ -236,7 +240,7 @@ def test_unsupported_books_still_count_towards_the_stop_rule(tmp_path, monkeypat
 
     def unsupported(cache_dir, asin, **kwargs):
         opened.append(asin)
-        raise rb.UnsupportedBook("Kindleアプリが必要です")
+        raise br.UnsupportedBook("Kindleアプリが必要です")
 
     monkeypatch.setattr(rb, "cached_structure", unsupported)
     code, rows = _run(tmp_path, books, lib, cache)
