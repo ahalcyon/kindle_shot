@@ -255,8 +255,15 @@ def is_cover(image, *, threshold=6.0):
 
 def _clipboard():
     """いまクリップボードに入っている文字。読めなければ空文字。"""
+    # PowerShell の標準出力はコンソールのコードページ（cp932）で出る。UTF-8 で読むと日本語の
+    # 題名が全部「入れられない」になる（実測: 本番 2 冊目で発覚）。出力を UTF-8 に固定する
     got = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw",
+        ],
         check=False,
         capture_output=True,
         creationflags=NO_WINDOW,

@@ -115,6 +115,15 @@ def test_title_matches_survives_the_noise_around_a_cover():
     )
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell のクリップボード")
+def test_clipboard_round_trips_a_japanese_title():
+    """PowerShell の出力は cp932 で出る。UTF-8 で読むと日本語の題名が全部「入れられない」になった
+    （実測: 本番 2 冊目「入門　現代の量子力学…」で発覚し、日本語の本が全滅した）。"""
+    title = "入門　現代の量子力学　量子情報・量子測定を中心として (ＫＳ物理専門書)"
+    assert cab._to_clipboard(title)
+    assert cab._norm(cab._clipboard()) == cab._norm(title)
+
+
 def test_is_cover_tells_a_book_from_the_background():
     """検索結果がちょうど 1 冊かを、この判定で見る（別の本を撮らないため）。"""
     from PIL import Image
