@@ -53,6 +53,7 @@ from PIL import Image
 
 # ページめくりキーの候補は core/capture_profiles.py が唯一の定義
 from core.capture_profiles import PAGE_TURN_KEYS
+from core.console import setup_stdio
 
 # 終了コードは cli の公開契約なので、cli.EXIT_* として全て再エクスポートする
 from core.pipeline import (  # noqa: F401
@@ -102,20 +103,6 @@ class Reporter:
             )
 
         return cb
-
-
-def _setup_stdio():
-    """パイプ経由の呼び出し（エージェント等）で日本語が壊れないよう UTF-8 に固定する。
-
-    コンソール直結 (tty) のときは WriteConsoleW 経由で日本語が表示できるため
-    触らない。
-    """
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            if not stream.isatty():
-                stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-        except Exception:
-            pass
 
 
 # ============================================================
@@ -1293,7 +1280,7 @@ def build_parser():
 
 
 def main(argv=None):
-    _setup_stdio()
+    setup_stdio()
 
     # DPI 認識はモジュール先頭で確定済み（冒頭のコメント参照）。ここで呼んでも
     # 手遅れになる（pyautogui のロードが先に走るため）ので呼ばない。

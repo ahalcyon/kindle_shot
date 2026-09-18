@@ -55,6 +55,7 @@ from core.bookmark_rebuild import (  # noqa: E402
     plan_book,
     rebuild_book,
 )
+from core.console import setup_stdio  # noqa: E402
 
 # 続けて失敗したら打ち切る冊数
 MAX_CONSECUTIVE_FAILURES = 5
@@ -106,6 +107,8 @@ def main(argv=None):
     ap.add_argument("--asin", action="append", help="この ASIN の本だけ（複数指定可）")
     ap.add_argument("--profile-dir", help="ブラウザプロファイル（省略時は既定）")
     args = ap.parse_args(argv)
+    # 題名に cp932 で書けない字があっても、進捗の 1 行で一括処理を止めない
+    setup_stdio()
 
     books = load_books(args.books)
     if args.asin:
