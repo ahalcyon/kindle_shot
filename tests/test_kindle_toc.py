@@ -184,6 +184,20 @@ def test_map_needs_a_longer_run_to_shift_a_middle_section():
     assert [e.how for e in entries[4:8]] == [UNCONFIRMED] * 4
 
 
+def test_map_does_not_leave_one_unconfirmed_entry_in_its_own_section():
+    """章名が 1 つも見つからない区間は作らない (#122)。
+
+    実測（われわれはなぜ嘘つきで…）では、本全体が -1 ずれているのに、テキストで裏の取れない
+    先頭の「目次」だけが既定のずれ幅 0 に取り残され、1 ページ後ろに付いていた。
+    """
+    ranges = [[p, p + 9] for p in range(10, 70, 10)]  # 描画 6 ページ（位置 10 から）
+    texts = ["", "なまえ03", "なまえ04", "なまえ05", "", ""]
+    entries = [TocEntry(1, "目次", 20)] + [TocEntry(1, f"なまえ{i:02d}", i * 10) for i in (3, 4, 5)]
+    got = map_to_pages(entries, ranges, 6, page_text=lambda i: texts[i])
+    assert [e.shift for e in got] == [-1, -1, -1, -1]
+    assert [e.page for e in got] == [0, 1, 2, 3]  # 「目次」だけ 1 ページ後ろに残らない
+
+
 def test_map_prefers_a_later_page_on_a_tie():
     ranges = [[p, p + 9] for p in range(0, 60, 10)]
     texts = [""] * 6
