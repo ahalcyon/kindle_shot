@@ -46,6 +46,8 @@ from core.console import setup_stdio  # noqa: E402
 
 # ウィンドウの大きさ。幅 1200 で 1 段組（1400 以上だと 2 段組になる。実測）
 WIDTH, HEIGHT = 1200, 1390
+# ウィンドウを置く x（左のモニタ。主モニタのカーソル退避先と分ける）
+WINDOW_LEFT = -1600
 # ライブラリ画面の位置（上の大きさのとき）。**左の「全て」の行（青く反転）を基準にした相対**。
 # 上の余白が日によって違う（実測: 「全て」の中心 y が 243 → 翌日 188）ので固定座標は使えない
 LIBRARY_X = 125  # 「全て」の行と検索窓の中心 x
@@ -78,8 +80,9 @@ COLUMNS = ["asin", "title", "status", "pages", "stopped_reason", "seconds", "det
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # Store 版 Kindle の AUMID（Get-StartApps で取れる。末尾の英数字は発行元ごとの固定値）
 APP_ID = "AMZNKindle.AmazonKindleReadingApp_m1sc522ngdk36!App"
-# 起動してからライブラリが読めるまで待つ秒数
-LAUNCH_WAIT = 8.0
+# 起動してからライブラリが読めるまで待つ秒数。起動し直したアプリは遅れて最後の本を開き直し
+# 最大化するので、それが済むまで待つ（8 秒では済んでいなかった。実測）
+LAUNCH_WAIT = 20.0
 # 検索結果が 1 冊に絞られるまで待つ上限（秒）
 SEARCH_WAIT = 10
 # タイトルバーの高さとして信じる範囲（実測 48px）。外れたら測れないものとして撮らない
@@ -194,14 +197,43 @@ def restart_app(*, timeout=60.0, emit=print):
     raise RuntimeError("Kindle アプリを起動し直せない")
 
 
-def _place(hwnd, width=WIDTH, height=HEIGHT):
-    """撮影する大きさ・位置にウィンドウを置く（1 段組にするため）。"""
+def _place(hwnd, width=WIDTH, height=HEIGHT, *, settle=2.0, tries=10):
+    """撮影する大きさ・位置にウィンドウを置く（1 段組にするため）。置けなければ RuntimeError。
+
+    **置いたあと、そのままでいることを確かめる。** 起動し直したアプリは、少し遅れて最後に
+    読んでいた本を自動で開き、ウィンドウを最大化し直す（実測: 置いたあとに最大化されて、
+    検索窓の位置が窓の外になり、以後の本が全部「開けない」になった）。2 回続けて
+    置いた通りの矩形なら安定したと見る。
+    """
+    from core.win32_utils import get_window_rect
+
+    want = _wanted_rect(width, height)
+    stable = 0
+    for _ in range(tries):
+        _move_window(hwnd, width, height)
+        time.sleep(settle)
+        stable = stable + 1 if get_window_rect(hwnd) == want else 0
+        if stable >= 2:
+            return
+    raise RuntimeError(f"ウィンドウを置けない（{get_window_rect(hwnd)}）")
+
+
+def _move_window(hwnd, width, height):
     import ctypes
 
     # 最大化のままだと枠の分だけ描画がずれる（実測: 8px）。通常の状態に戻してから置く
     ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-    ctypes.windll.user32.SetWindowPos(hwnd, None, -1600, 0, width, height, 0x0040)
-    time.sleep(1.5)
+    ctypes.windll.user32.SetWindowPos(hwnd, None, WINDOW_LEFT, 0, width, height, 0x0040)
+
+
+def _wanted_rect(width=WIDTH, height=HEIGHT):
+    return (WINDOW_LEFT, 0, WINDOW_LEFT + width, height)
+
+
+def _is_placed(hwnd, width=WIDTH, height=HEIGHT):
+    from core.win32_utils import get_window_rect
+
+    return get_window_rect(hwnd) == _wanted_rect(width, height)
 
 
 def _shot(hwnd, box=None):
@@ -309,11 +341,16 @@ def _cover_box(point, size=60):
     return (x - size, y - size, x + size, y + size)
 
 
-def find_library_anchor(image, *, x=LIBRARY_X, span=(60, 500), min_run=20):
+def find_library_anchor(image, *, x=LIBRARY_X, span=(60, 500), height=(28, 44)):
     """ライブラリ画面の基準 y（左の「全て」の行の中心）。ライブラリでなければ None。
 
-    左の列 ``x`` を上から見て、青く反転している一続きの行のうち最も長いものの中心。
-    「全て」の行は高さ 36px（実測）。上の余白が変わっても、青い行を探せば追える。
+    左の列 ``x`` を上から見て、青く反転している一続きの行を探す。「全て」の行は
+    高さ 36px・左の欄いっぱい（x = 20〜232）の青で、上下は白い余白（実測）。
+    上の余白が変わっても、この形の行を探せば追える。
+
+    **本のページの青い箱と区別する。** 高さと上下の白だけで見ていたとき、章見出しの
+    青い箱（x = 115〜270、高さ 42px）を「全て」の行と取り違え、本を開いたまま
+    ライブラリにいると判定した（実測）。行の左端・右端も青く、欄の外は白いことを要求する。
 
     **画面がどこにいるかを確かめずに操作しない。** 本を開いたままだと、検索窓のつもりの
     クリックが本文に当たり、Ctrl+A が「読書補助機能」になってダイアログが開く（実測）。
@@ -321,29 +358,37 @@ def find_library_anchor(image, *, x=LIBRARY_X, span=(60, 500), min_run=20):
     from PIL import ImageStat
 
     rgb = image.convert("RGB")
+
+    def blue_at(px, y):
+        r, _g, b = ImageStat.Stat(rgb.crop((px - 4, y, px + 4, y + 1))).mean
+        return b > r + 40 and b > 120
+
+    def white_at(px, y):
+        return min(ImageStat.Stat(rgb.crop((px - 4, y, px + 4, y + 1))).mean) >= 240
+
     runs: list[list[int]] = []
     cur = None
     for y in range(span[0], min(span[1], rgb.height)):
-        r, _g, b = ImageStat.Stat(rgb.crop((x - 12, y, x + 12, y + 1))).mean
-        if b > r + 40 and b > 120:
+        if blue_at(x, y):
             cur = [y, y] if cur is None else [cur[0], y]
         elif cur:
             runs.append(cur)
             cur = None
     if cur:
         runs.append(cur)
-    runs = [run for run in runs if run[1] - run[0] + 1 >= min_run]
-    if not runs:
-        return None
-    top, bottom = max(runs, key=lambda run: run[1] - run[0])
-    # 本のページの青い領域（表紙・図版）と区別する。「全て」の行の上下は白い余白
-    for y in (top - 10, bottom + 10):
-        if not (0 <= y < rgb.height):
-            return None
-        mean = ImageStat.Stat(rgb.crop((x - 12, y, x + 12, y + 1))).mean
-        if min(mean) < 240:
-            return None
-    return (top + bottom) // 2
+    for top, bottom in runs:
+        if not (height[0] <= bottom - top + 1 <= height[1]):
+            continue
+        mid = (top + bottom) // 2
+        if not (top - 10 >= 0 and bottom + 10 < rgb.height):
+            continue
+        # 行の左端と右端まで青く、欄の外（x=245）と上下は白い
+        if not (blue_at(30, mid) and blue_at(225, mid)):
+            continue
+        if not (white_at(245, mid) and white_at(x, top - 10) and white_at(x, bottom + 10)):
+            continue
+        return mid
+    return None
 
 
 def is_library(image):
@@ -359,6 +404,9 @@ def _to_library(hwnd, *, tries=3):
         for _ in range(2):
             pyautogui.press("esc")  # 開いたままのダイアログを閉じる
             time.sleep(0.4)
+        if not _is_placed(hwnd):
+            # 最大化されていると欄の幅が変わり、「全て」の行の検出が当てにならない。先に置き直す
+            _place(hwnd)
         if is_library(_shot(hwnd)):
             return True
         pyautogui.hotkey("ctrl", "w")
@@ -381,6 +429,9 @@ def open_book(hwnd, title, *, emit=print):
     if not _to_library(hwnd):
         emit("  ライブラリに戻れない")
         return False
+    if not _is_placed(hwnd):
+        # 前の本を閉じる間に最大化し直されることがある（起動し直した直後）。置き直す
+        _place(hwnd)
     anchor = find_library_anchor(_shot(hwnd))
     if anchor is None:
         emit("  ライブラリの「全て」の行が見つからない")
@@ -773,6 +824,8 @@ def main(argv=None):
             except Exception as exc:  # noqa: BLE001 - 1 冊の失敗で一括処理を止めない
                 row["status"] = "失敗"
                 row["detail"] = f"{type(exc).__name__}: {exc}"
+                # 置けない・窓が見つからない等は、起動し直しが唯一の復旧手段
+                need_restart = True
             if row["status"] != DONE:
                 # **完了でない本の PDF を蔵書に残さない。** run_book は撮れた分の PDF を蔵書に
                 # 書いてから返るので、そのままだと pending() が次から飛ばし、断片・少ページの本が
