@@ -382,6 +382,10 @@ def test_run_book_rebuilds_bookmarks_only_for_pdf_formats(tmp_path, monkeypatch,
     )
     assert call_run_book(tmp_path, EXIT_OK, monkeypatch) == EXIT_OK
     assert len(seen) == 1 and seen[0][1] == "B0TEST"
+    # convert の出力と同じパスを見る（違うと FileNotFoundError を握って無音になる）
+    from core.safe_names import book_path_name
+
+    assert seen[0][0] == os.path.join(str(tmp_path), book_path_name("本", str(tmp_path)) + ".pdf")
 
     seen.clear()
     assert call_run_book(tmp_path, EXIT_OK, monkeypatch, no_toc_bookmarks=True) == EXIT_OK
@@ -428,6 +432,73 @@ def test_rebuild_toc_bookmarks_swallows_failures(tmp_path, monkeypatch):
         is False
     )
     assert any("Cloud Reader 非対応" in m for m in messages if m)
+
+
+def _no_text_pdf(path, pages=4):
+    from reportlab.pdfgen import canvas
+
+    c = canvas.Canvas(str(path))
+    for _ in range(pages):
+        c.showPage()
+    c.save()
+    return str(path)
+
+
+def _toc_structure(pages=4):
+    return {
+        "toc": [{"label": f"章{i}", "tocPositionId": i * 10} for i in range(pages)],
+        "pages": [[p, p + 9] for p in range(0, pages * 10, 10)],
+        "complete": True,
+        "unrenderable": [],
+    }
+
+
+def test_rebuild_toc_bookmarks_writes_image_pdf_but_not_searchable(tmp_path, monkeypatch):
+    """image_pdf はテキスト層が無いと分かっている。その印だけで見送ると必ず見送られる。"""
+    from core import bookmark_rebuild as br
+    from core import pipeline
+
+    monkeypatch.setattr(br, "cached_structure", lambda *a, **k: _toc_structure())
+    pdf = _no_text_pdf(tmp_path / "manga.pdf")
+    assert pipeline.rebuild_toc_bookmarks(pdf, "B0TEST", str(tmp_path), fmt="image_pdf") is True
+    # 同じ本でも searchable_pdf なら「テキスト層なし」は異常なので書かない
+    assert (
+        pipeline.rebuild_toc_bookmarks(pdf, "B0TEST", str(tmp_path), fmt="searchable_pdf") is False
+    )
+
+
+def test_rebuild_toc_bookmarks_reports_the_reason_in_fields(tmp_path, monkeypatch):
+    """--json には human が入らない。理由は構造化した値で出す（#50 と同じ穴）。"""
+    from core import bookmark_rebuild as br
+    from core import pipeline
+
+    events: list = []
+
+    def record(event, human=None, **fields):
+        events.append((event, fields))
+
+    monkeypatch.setattr(br, "cached_structure", lambda *a, **k: _toc_structure())
+    pdf = _no_text_pdf(tmp_path / "skipped.pdf")
+    pipeline.rebuild_toc_bookmarks(pdf, "B0TEST", str(tmp_path), emit=record)
+    assert events[-1][0] == "bookmarks_skipped"
+    assert events[-1][1]["reason"] == "要確認"
+    assert br.FLAG_NO_TEXT in events[-1][1]["flags"]
+    assert events[-1][1]["asin"] == "B0TEST"
+
+    events.clear()
+
+    def boom(*a, **k):
+        raise RuntimeError("描画要求が出ませんでした")
+
+    monkeypatch.setattr(br, "cached_structure", boom)
+    pipeline.rebuild_toc_bookmarks(pdf, "B0TEST", str(tmp_path), emit=record)
+    assert events[-1][0] == "bookmarks_skipped" and events[-1][1]["reason"] == "error"
+
+    events.clear()
+    monkeypatch.setattr(br, "cached_structure", lambda *a, **k: _toc_structure())
+    pipeline.rebuild_toc_bookmarks(pdf, "B0TEST", str(tmp_path), emit=record, fmt="image_pdf")
+    assert events[-1][0] == "bookmarks_rebuilt"
+    assert events[-1][1]["entries"] == 4 and events[-1][1]["asin"] == "B0TEST"
 
 
 def test_rebuild_toc_bookmarks_skips_flagged_books(tmp_path, monkeypatch):

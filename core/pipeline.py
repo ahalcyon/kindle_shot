@@ -916,26 +916,51 @@ TOC_BOOKMARK_FORMATS = ("searchable_pdf", "image_pdf")
 TOC_CACHE_DIR = "_toc_cache"
 
 
-def rebuild_toc_bookmarks(pdf_path, asin, cache_dir, *, emit=null_emit, profile_dir=None):
+def rebuild_toc_bookmarks(pdf_path, asin, cache_dir, *, emit=null_emit, fmt="searchable_pdf"):
     """撮影した PDF のしおりを、Kindle の本が持つ目次で作り直す (#114)。
 
     **仕上げなので、失敗しても本の成否は変えない。** OCR から推測したしおり
-    （`core.chapter_detector`）は残る。要確認の印が付いた本も書き換えない
-    （まとめて見てから `scripts/rebuild_bookmarks.py --apply --include-flagged` で入れる）。
+    （`core.chapter_detector`）は残る。ページ数の差が表紙で説明できない本などは
+    書き換えない（まとめて見てから `scripts/rebuild_bookmarks.py --apply --include-flagged`）。
+
+    ``image_pdf`` はテキスト層が無いと分かっている形式なので、「テキスト層なし」の印だけは
+    要確認としない。そうしないと**必ず見送られる**（漫画 175 冊は、位置だけで決めた付け先を
+    目視で確かめたうえで適用済み。#114 のコメント）。
+
+    **理由は構造化した値で出す。** human は --json の出力に入らないので、文言で
+    判定する側は一致しない（#50 で同じ穴を踏んでいる）。
 
     Returns:
         書き換えたら True。
     """
-    from core.bookmark_rebuild import UnsupportedBook, cached_structure, rebuild_book
+    from core.bookmark_rebuild import (
+        FLAG_NO_TEXT,
+        UnsupportedBook,
+        cached_structure,
+        rebuild_book,
+    )
 
+    allowed = (FLAG_NO_TEXT,) if fmt == "image_pdf" else ()
     try:
-        structure = cached_structure(cache_dir, asin, profile_dir=profile_dir)
-        result = rebuild_book(pdf_path, structure)
+        structure = cached_structure(cache_dir, asin)
+        result = rebuild_book(pdf_path, structure, allowed_flags=allowed)
     except UnsupportedBook as exc:
-        emit("status", human=f"しおりの作り直しは省略（Cloud Reader 非対応）: {exc}")
+        emit(
+            "bookmarks_skipped",
+            human=f"しおりの作り直しは省略（Cloud Reader 非対応）: {exc}",
+            asin=asin,
+            reason="unsupported",
+            detail=str(exc),
+        )
         return False
     except Exception as exc:  # noqa: BLE001 - 仕上げの失敗で PDF を失敗扱いにしない
-        emit("status", human=f"しおりを作り直せませんでした（PDF はできています）: {exc}")
+        emit(
+            "bookmarks_skipped",
+            human=f"しおりを作り直せませんでした（PDF はできています）: {exc}",
+            asin=asin,
+            reason="error",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
         return False
     row = result["row"]
     if result["written"]:
@@ -943,14 +968,20 @@ def rebuild_toc_bookmarks(pdf_path, asin, cache_dir, *, emit=null_emit, profile_
             "bookmarks_rebuilt",
             human=f"しおりを {result['entries']} 件にしました"
             f"（章名を確かめた {row['confirmed']} 件 / ずれ幅 {row['shifts']}）",
+            asin=asin,
             entries=result["entries"],
             confirmed=row["confirmed"],
             shifts=row["shifts"],
+            flags=result["flags"],
         )
         return True
+    detail = " / ".join(result["flags"])
     emit(
-        "status",
-        human=f"しおりは作り直しませんでした（{result['reason']}: {' / '.join(result['flags'])}）",
+        "bookmarks_skipped",
+        human=f"しおりは作り直しませんでした（{result['reason']}{': ' + detail if detail else ''}）",
+        asin=asin,
+        reason=result["reason"],
+        flags=result["flags"],
     )
     return False
 
@@ -1204,6 +1235,7 @@ def run_book(
                 asin,
                 os.path.join(out, TOC_CACHE_DIR),
                 emit=emit,
+                fmt=fmt,
             )
 
         # 成功した本だけ消す。失敗した本の中間ファイルを消すと原因を追えなくなり、
@@ -1304,6 +1336,7 @@ _BOOK_FIELDS = (
     ("faithful", "faithful", _v_bool),
     ("no_cleanup", "no_cleanup", _v_bool),
     ("no_cover", "no_cover", _v_bool),
+    ("no_toc_bookmarks", "no_toc_bookmarks", _v_bool),
     ("ocr_workers", "ocr_workers", _v_int),
     ("split_words", "split_words", _v_int),
 )

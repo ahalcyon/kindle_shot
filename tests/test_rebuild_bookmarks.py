@@ -1,4 +1,7 @@
-"""scripts/rebuild_bookmarks.py のテスト（#114）"""
+"""scripts/rebuild_bookmarks.py のテスト（CLI・一覧 CSV・打ち切り。#114）
+
+判定そのもの（何を書くか）は core/bookmark_rebuild.py 側のテストにある。
+"""
 
 import csv
 import json

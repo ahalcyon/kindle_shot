@@ -188,13 +188,17 @@ def plan_book(pdf_path, structure):
     return entries, row, flags
 
 
-def rebuild_book(pdf_path, structure, *, include_flagged=False):
+def rebuild_book(pdf_path, structure, *, include_flagged=False, allowed_flags=()):
     """1 冊ぶんのしおりを作り直す。
 
     Args:
         pdf_path: 撮影済みの PDF
         structure: ``cached_structure`` の結果
         include_flagged: 要確認の印が付いた本も書き換える
+        allowed_flags: これだけが付いた本は要確認としない印。``FLAG_NO_TEXT`` を渡すのは
+            テキスト層が無いと分かっている形式（``image_pdf``）のとき。漫画は位置だけで
+            決まるが、すき間の規則を実機で確かめてあり（目視 10/10）、蔵書 175 冊に
+            適用済み（#114 のコメント）。``BLOCKING_FLAGS`` はこれでも書かない
 
     Returns:
         結果の dict。``written`` が真なら書き換えた。``reason`` に書かなかった理由、
@@ -205,7 +209,7 @@ def rebuild_book(pdf_path, structure, *, include_flagged=False):
     if BLOCKING_FLAGS & set(flags):
         result["reason"] = "しおりを付けられない"
         return result
-    if flags and not include_flagged:
+    if set(flags) - set(allowed_flags) and not include_flagged:
         result["reason"] = "要確認"
         return result
     written = write_outline(pdf_path, entries)

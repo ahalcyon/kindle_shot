@@ -50,15 +50,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.book_format import book_pdf_path  # noqa: E402
 from core.bookmark_rebuild import (  # noqa: E402
-    BLOCKING_FLAGS,
     UnsupportedBook,
     cached_structure,
     plan_book,
+    rebuild_book,
 )
-from core.kindle_toc import write_outline  # noqa: E402
 
 # 続けて失敗したら打ち切る冊数
 MAX_CONSECUTIVE_FAILURES = 5
+# rebuild_book が書かなかった理由 → 一覧の status
+APPLY_STATUS = {
+    "しおりを付けられない": "しおりを付けられないので未適用",
+    "要確認": "要確認のため未適用",
+}
 
 COLUMNS = [
     "asin",
@@ -134,16 +138,15 @@ def main(argv=None):
                         json.dump([e.__dict__ for e in entries], f, ensure_ascii=False, indent=1)
                     if not args.apply:
                         row["status"] = "試し実行"
-                    elif BLOCKING_FLAGS & set(flags):
-                        row["status"] = "しおりを付けられないので未適用"
-                    elif flags and not args.include_flagged:
-                        row["status"] = "要確認のため未適用"
                     else:
-                        result = write_outline(pdf, entries)
-                        if result["ok"]:
+                        # 判定は core と同じものを使う（2 か所に書くと片方だけ直して食い違う）
+                        written = rebuild_book(pdf, structure, include_flagged=args.include_flagged)
+                        if written["written"]:
                             row["status"] = "書き換えた"
+                        elif written["reason"] in APPLY_STATUS:
+                            row["status"] = APPLY_STATUS[written["reason"]]
                         else:
-                            row["status"] = f"失敗: {result.get('error')}"
+                            row["status"] = f"失敗: {written['reason']}"
                             failed = stalled = True
                 except UnsupportedBook as exc:
                     # 撮影のバッチと同じ扱い。直しようが無いので失敗に数えない。

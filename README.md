@@ -230,7 +230,7 @@ kindle_shot.bat check --profile kindle_cloud
 | オプション | 既定 | 意味 |
 |-----------|------|------|
 | `--books` | （必須） | 本リストの JSON ファイル（[batch ファイル形式](#batch-ファイル形式)） |
-| `--out` | （必須） | 全本共通の保存先フォルダ（直下に `<title>.pdf` / `.md` が並ぶ） |
+| `--out` | （必須） | 全本共通の保存先フォルダ（直下に `<title>.pdf` / `.md` が並ぶ。`_toc_cache/` に Kindle の目次のキャッシュ（1 冊数 KB の JSON）を置く。消してよい。次に作り直すとき本を開き直すだけ） |
 | `--profile` / `--format` / `--page-turn` / `--page-wait` / `--expect-pages` / `--max-pages` / `--max-rewind` / `--load-wait` / `--no-rewind` / `--safety` / `--min-margins` / `--no-ui-bands` / `--ocr-workers` / `--faithful` / `--no-cleanup` / `--no-cover` / `--no-toc-bookmarks` / `--split-words` | `run` と同じ | **全本の既定**。JSON 側の本ごとの指定がこれを上書きする |
 | `--keep-images` | オフ（＝消す） | `run` と同じ。**全本共通で、JSON 側の本ごとの指定はできない** |
 | `--overwrite` | オフ | 完成済み（出力ファイルがある）本も再処理する。既定は完成済みをスキップして途中から再開 |
@@ -771,12 +771,14 @@ python scripts\convert_2nd.py --books books_c.json --out C:\books --format markd
 - **`cover` イベント**: 表紙を 1 ページ目にしたか。`human` に「1 ページ目にしました」と
   出れば付いており、PDF のページ数は本文より 1 多くなります。取れなかった本でも処理は
   続きます（表紙なしで本文だけの PDF になります）
-- **`bookmarks_rebuilt` イベント（`--asin` 付きの `image_pdf` / `searchable_pdf`）**: PDF ができたあと、
-  Kindle の本が持つ目次でしおりを作り直した結果。`entries`（しおりの件数）/ `confirmed`（テキスト層で
-  章名を確かめられた件数）/ `shifts`（区間ごとのずれ幅。例 `0→1→0→2`）。要確認の印が付いた本
-  （テキスト層なし・ページ数の差が表紙で説明できない・テキストからずれ幅を選んだ）は書き換えず、
-  `status` イベントで理由を出します。まとめて見てから入れるときは
-  `scripts/rebuild_bookmarks.py --apply --include-flagged`。
+- **`bookmarks_rebuilt` / `bookmarks_skipped` イベント（`--asin` 付きの `image_pdf` / `searchable_pdf`）**:
+  PDF ができたあと、Kindle の本が持つ目次でしおりを作り直した結果。`bookmarks_rebuilt` は
+  `entries`（しおりの件数）/ `confirmed`（テキスト層で章名を確かめられた件数）/
+  `shifts`（区間ごとのずれ幅。例 `0→1→0→2`）/ `asin`。書き換えなかった本は `bookmarks_skipped` で、
+  `reason`（`要確認` / `しおりを付けられない` / `unsupported` / `error`）と `flags` が付きます。
+  要確認の本をまとめて見てから入れるときは `scripts/rebuild_bookmarks.py --apply --include-flagged`。
+  `image_pdf` は「テキスト層なし」だけなら要確認にしません（漫画は位置だけで付け先が決まりますが、
+  実機で確かめてあります）。
   **しおりは仕上げなので、失敗しても PDF の成否は変わりません**（OCR から推測したしおりが残ります）
 
 - **`margins_clip_content` イベント**: 自動検出したトリミングが内容の位置を超えた辺と
@@ -1210,7 +1212,7 @@ python scripts\audit_rules.py C:\books\out --rule プロード   # 1 規則の�
   2形式目は `scripts\convert_2nd.py` で作ります
 - 本ごとに上書きできるキー: `format` / `max_pages` / `expect_pages` / `page_turn` / `page_wait` /
   `min_margins` / `ui_bands` / `profile` / `safety` / `ocr_workers` / `faithful` / `no_cleanup` / `split_words` /
-  `max_rewind` / `load_wait` / `no_rewind` / `no_cover`
+  `max_rewind` / `load_wait` / `no_rewind` / `no_cover` / `no_toc_bookmarks`
   （`min_margins` は `[0,0,80,80]` の配列か `"0,0,80,80"` の文字列、`ui_bands` は true/false）
 - CLI フラグはバッチ全体の既定で、JSON 側の指定が本ごとにそれを上書きします
 
