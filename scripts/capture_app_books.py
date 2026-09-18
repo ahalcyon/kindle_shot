@@ -104,7 +104,9 @@ def _keep_shot(hwnd, name, *, image=None):
         return
     try:
         os.makedirs(SHOT_DIR, exist_ok=True)
-        (image or _shot(hwnd)).save(os.path.join(SHOT_DIR, f"{CURRENT_BOOK or 'book'}_{name}.png"))
+        (image if image is not None else _shot(hwnd)).save(
+            os.path.join(SHOT_DIR, f"{CURRENT_BOOK or 'book'}_{name}.png")
+        )
     except Exception:  # noqa: BLE001 - 記録の失敗で本を落とさない
         pass
 
@@ -604,7 +606,7 @@ def _toggle_chrome(hwnd, *, top=0):
 
 
 def chrome_hidden(hwnd, *, top=0):
-    """読書 UI が消えているか。**切り替えて比べ、元に戻す。** 分からなければ None。
+    """読書 UI が消えているか。**切り替えて比べ、戻そうとする。** 分からなければ None。
 
     出す→消すの 2 回切り替えて、スライダーが「無い→有る→無い」なら元は「消えていた」。
     「有る→無い」なら「出ていた」。どちらでもなければ（クリックが効いていない、
