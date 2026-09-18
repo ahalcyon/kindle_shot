@@ -278,7 +278,7 @@ def test_restarts_the_app_first_and_after_a_book_could_not_be_opened(tmp_path, m
     ]
     books, library, state = _prepare(tmp_path, entries, [])
     _stub_screen(monkeypatch)
-    restarts = []
+    restarts: list[int] = []
     monkeypatch.setattr(cab, "restart_app", lambda **kw: restarts.append(len(restarts)))
     opened = iter([False, True, True])
     monkeypatch.setattr(cab, "open_book", lambda hwnd, title, **kw: next(opened))
