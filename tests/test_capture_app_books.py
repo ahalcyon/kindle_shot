@@ -109,6 +109,97 @@ def test_is_cover_tells_a_book_from_the_background():
     assert cab.is_cover(cover)
 
 
+def _library_screen(blue_top, blue_bottom):
+    """ライブラリ画面の代わり。左の列に「全て」の青い行だけを描く。"""
+    from PIL import Image
+
+    image = Image.new("RGB", (1200, 600), (255, 255, 255))
+    for x in range(20, 232):
+        for y in range(blue_top, blue_bottom + 1):
+            image.putpixel((x, y), (0, 90, 200))
+    return image
+
+
+def test_library_anchor_follows_the_blue_row():
+    """「全て」の行の位置は日によって違う（実測: 243 と 188）。青い行を探して追う。"""
+    assert cab.find_library_anchor(_library_screen(169, 204)) == 186
+    assert cab.find_library_anchor(_library_screen(225, 260)) == 242
+    assert cab.is_library(_library_screen(169, 204))
+
+
+def test_library_anchor_is_none_off_the_library():
+    from PIL import Image
+
+    assert cab.find_library_anchor(Image.new("RGB", (1200, 600), (255, 255, 255))) is None
+    # 1〜2 行だけ青い（本文中の下線リンクなど）のを「全て」の行と見ない
+    assert cab.find_library_anchor(_library_screen(200, 203)) is None
+    assert not cab.is_library(Image.new("RGB", (1200, 600), (255, 255, 255)))
+
+
+def _arrow(page, top=0):
+    for x in range(30, 48):
+        for y in range(24 + top, 28 + top):
+            page.putpixel((x, y), (30, 30, 30))  # ← の矢印
+
+
+def test_reader_chrome_is_seen_by_the_back_arrow():
+    """読書 UI はページにかぶさるので、出たまま撮ると上下が隠れる。出ているかを左上で見る。"""
+    from PIL import Image
+
+    page = Image.new("RGB", (1200, 1390), (255, 255, 255))
+    assert not cab.reader_chrome_shown(page)
+    _arrow(page)
+    assert cab.reader_chrome_shown(page)
+
+
+def _with_title_bar(height=48):
+    from PIL import Image
+
+    page = Image.new("RGB", (1200, 1390), (255, 255, 255))
+    for x in range(1200):
+        page.putpixel((x, 0), (75, 75, 75))  # 前面のウィンドウの枠線（実測値）
+        for y in range(1, height):
+            page.putpixel((x, y), (247, 249, 250))  # 薄い灰色の帯（実測値）
+    _arrow(page)  # タイトルバーにも ← がある
+    return page
+
+
+def test_title_bar_is_measured_and_not_taken_for_the_reader_ui():
+    """アプリはタイトルバーを出す表示と出さない表示を行き来する（実測: 同じ日に両方）。
+
+    タイトルバーの ← を読書 UI と取り違えると「消せない」で全冊止まる（実測）。
+    """
+    from PIL import Image
+
+    plain = Image.new("RGB", (1200, 1390), (255, 255, 255))
+    assert cab.title_bar_height(plain) == 0
+    for x in range(1200):
+        plain.putpixel((x, 0), (75, 75, 75))  # 枠線だけの上端をバーと見ない
+    assert cab.title_bar_height(plain) == 0
+    page = _with_title_bar(48)
+    assert cab.title_bar_height(page) == 48
+    assert cab.reader_chrome_shown(page, top=0)  # ずらさないと取り違える
+    assert not cab.reader_chrome_shown(page, top=48)
+    _arrow(page, top=48)  # 読書 UI が出た
+    assert cab.reader_chrome_shown(page, top=48)
+
+
+def test_cuts_the_title_bar_only_when_it_is_there(tmp_path, monkeypatch):
+    books, library, state = _prepare(tmp_path, [{"title": "本G", "asin": "A7"}], [])
+    _stub_screen(monkeypatch)
+    monkeypatch.setattr(cab, "reader_top", lambda hwnd: 48)
+    seen = {}
+
+    def fake_run_book(**kw):
+        seen["min_margins"] = kw["min_margins"]
+        kw["emit"]("result", total_pages=120, stopped_reason="no_change")
+        return 0
+
+    monkeypatch.setattr("core.pipeline.run_book", fake_run_book)
+    assert cab.main(["--books", books, "--library", library, "--state", state]) == 0
+    assert seen["min_margins"] == (0, 0, 50, 0)
+
+
 def test_pending_skips_books_that_are_already_there(tmp_path):
     library = tmp_path / "lib"
     library.mkdir()
@@ -165,12 +256,50 @@ def _prepare(tmp_path, entries, titles):
     return str(books_path), library, str(tmp_path / "state.csv")
 
 
-def _stub_screen(monkeypatch, *, opened=True, rewound=True, verified=True):
+def _stub_screen(monkeypatch, *, opened=True, hidden=True, rewound=True, verified=True):
     monkeypatch.setattr(cab, "_app", lambda: object())
     monkeypatch.setattr(cab, "_place", lambda hwnd: None)
+    monkeypatch.setattr(cab, "restart_app", lambda **kw: None)
+    monkeypatch.setattr("core.win32_utils.get_window_rect", lambda hwnd: (0, 0, 1200, 1390))
+    monkeypatch.setattr("core.config.load_config", lambda: {})
     monkeypatch.setattr(cab, "open_book", lambda hwnd, title, **kw: opened)
+    monkeypatch.setattr(cab, "reader_top", lambda hwnd: 0)
+    monkeypatch.setattr(cab, "hide_reader_chrome", lambda hwnd, **kw: hidden)
     monkeypatch.setattr(cab, "rewind_to_start", lambda hwnd, **kw: rewound)
     monkeypatch.setattr(cab, "verify_title", lambda hwnd, title, **kw: verified)
+
+
+def test_restarts_the_app_first_and_after_a_book_could_not_be_opened(tmp_path, monkeypatch):
+    """F11 全画面を経たアプリは検索窓に文字が入らなくなり、操作では戻らない（実測）。"""
+    entries = [
+        {"title": "本X", "asin": "X1"},
+        {"title": "本Y", "asin": "X2"},
+        {"title": "本Z", "asin": "X3"},
+    ]
+    books, library, state = _prepare(tmp_path, entries, [])
+    _stub_screen(monkeypatch)
+    restarts = []
+    monkeypatch.setattr(cab, "restart_app", lambda **kw: restarts.append(len(restarts)))
+    opened = iter([False, True, True])
+    monkeypatch.setattr(cab, "open_book", lambda hwnd, title, **kw: next(opened))
+
+    def fake_run_book(**kw):
+        kw["emit"]("result", total_pages=120, stopped_reason="no_change")
+        return 0
+
+    monkeypatch.setattr("core.pipeline.run_book", fake_run_book)
+    cab.main(["--books", books, "--library", library, "--state", state])
+    # 最初に 1 回、開けなかった本のあとに 1 回。開けた本のあとは起動し直さない
+    assert len(restarts) == 2
+
+
+def test_does_not_capture_with_the_reader_ui_showing(tmp_path, monkeypatch):
+    """UI が出たままだと上下が隠れた本になる。消せなければ撮らない。"""
+    books, library, state = _prepare(tmp_path, [{"title": "本E", "asin": "A5"}], [])
+    _stub_screen(monkeypatch, hidden=False)
+    code = cab.main(["--books", books, "--library", library, "--state", state])
+    assert code == 1
+    assert _rows(state)[0]["status"] == "読書 UI を消せない"
 
 
 def test_counts_every_status_and_fails_when_a_book_is_not_captured(tmp_path, monkeypatch, capsys):
@@ -206,7 +335,11 @@ def test_records_a_finished_book_with_its_stopped_reason(tmp_path, monkeypatch):
     def fake_run_book(**kw):
         assert kw["page_turn"] == "right"  # アプリは縦書きでも → が次ページ
         assert kw["overwrite"] is True  # 失敗した本をやり直せるように
-        assert kw["asin"] == "A3"  # 表紙を商品ページから取る
+        # asin を渡すと run_book が URL で開いて F11 を押し、アプリが全画面になる（実測）
+        assert kw["asin"] is None and kw["no_cover"] is True
+        assert kw["min_margins"] is None  # 読書 UI を消して撮る。固定で削ると中身を切る
+        # 前面化のクリックが本文に当たると表示が変わる（実測: 拡大された断片が入った）
+        assert kw["config"]["capture"]["profiles"]["kindle"]["click_position"] == "none"
         kw["emit"]("result", total_pages=120, stopped_reason="no_change")
         return 0
 
@@ -215,6 +348,23 @@ def test_records_a_finished_book_with_its_stopped_reason(tmp_path, monkeypatch):
     row = _rows(state)[0]
     assert (row["status"], row["pages"], row["stopped_reason"]) == (cab.DONE, "120", "no_change")
     assert cab.load_state(state) == {"A3"}
+
+
+def test_does_not_finish_a_book_when_the_window_moved_while_capturing(tmp_path, monkeypatch):
+    """撮っている間にウィンドウが最大化されると、拡大された断片がページになる（実測）。"""
+    books, library, state = _prepare(tmp_path, [{"title": "本F", "asin": "A6"}], [])
+    _stub_screen(monkeypatch)
+    rects = iter([(0, 0, 1200, 1390), (-8, -8, 2560, 1400)])
+    monkeypatch.setattr("core.win32_utils.get_window_rect", lambda hwnd: next(rects))
+
+    def fake_run_book(**kw):
+        kw["emit"]("result", total_pages=120, stopped_reason="no_change")
+        return 0
+
+    monkeypatch.setattr("core.pipeline.run_book", fake_run_book)
+    assert cab.main(["--books", books, "--library", library, "--state", state]) == 1
+    row = _rows(state)[0]
+    assert row["status"] == "失敗" and "ウィンドウが動いた" in row["detail"]
 
 
 def test_refuses_a_partial_capture_into_the_library(tmp_path, monkeypatch):
