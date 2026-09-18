@@ -763,6 +763,9 @@ def unsupported_reason(page, *, markers=UNSUPPORTED_MARKERS):
     終了コードにも出ず「books.json から外してください」と案内されるので、
     誤判定は 1 冊を黙って永久に失うことになる。
 
+    しおりの作り直し（``scripts/rebuild_bookmarks.py``）からも呼ぶ。あちらは判定を
+    記録しないので、誤判定でも次回の実行でやり直せる（害の大きさが呼び出し元で違う）。
+
     issue #42 には「?asin= を開くと /kindle-library へ戻される」とも書いたが、
     非対応の本 2 冊を 9 秒間観測しても再現しなかったので判定に使わない。
     load_wait は固定待ちなので、読み込みが遅いだけの本がライブラリの URL の

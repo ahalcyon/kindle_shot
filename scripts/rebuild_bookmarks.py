@@ -14,8 +14,15 @@ Cloud Reader で開き、描画 API から目次と全ページの位置範囲�
 描画 API から取った内容は `--cache` に本ごとに保存し、2 回目以降は開き直さない。
 本の終わりまで取れなかったもの（`complete` が偽）は保存しない。`--refresh` で取り直す。
 
-1 冊でも失敗があれば終了コード 1。続けて `MAX_CONSECUTIVE_FAILURES` 冊失敗したら打ち切る
-（サインイン切れなどで全冊が同じ理由で落ちるのを、ブラウザを何百回も起動して並べない）。
+Cloud Reader 非対応の本（Kindle アプリでしか開けない）は、しおりを作れないので読み飛ばす。
+直しようが無いので失敗には数えない（終了コードには出ない）。どの本を読み飛ばしたかは一覧の
+status 列と完了行の内訳で分かる。
+
+1 冊でも失敗があれば終了コード 1。続けて `MAX_CONSECUTIVE_FAILURES` 冊、取れなかった本
+（失敗・非対応）が並んだら打ち切る（サインイン切れなどで全冊が同じ理由で落ちるのを、
+ブラウザを何百回も起動して並べない）。**非対応でもブラウザは開いている**ので、続くなら
+打ち切る理由は同じ。しかもこのツールが見るのは PDF がある本＝かつて撮れた本なので、
+非対応が続くこと自体がおかしい。
 
 使い方:
 
@@ -97,6 +104,10 @@ COLUMNS = [
 ]
 
 
+class UnsupportedBook(Exception):
+    """Cloud Reader 非対応の本（Kindle アプリでしか開けない）。しおりは作れない。"""
+
+
 def load_books(path):
     with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
@@ -111,13 +122,26 @@ def cached_structure(cache_dir, asin, *, profile_dir=None, refresh=False):
         if structure.get("complete"):
             return structure
     from core.headless_browser import open_reader
-    from core.headless_capture import BOOK_URL
+    from core.headless_capture import BOOK_URL, unsupported_reason
     from core.kindle_toc import fetch_book_structure
 
     with open_reader(BOOK_URL.format(asin=asin), headless=True, profile_dir=profile_dir) as page:
         if page is None:
             raise RuntimeError("本を開けませんでした")
-        structure = fetch_book_structure(page)
+        # 撮影済みでも、いま非対応になっている本がある（B071GN3JN2。#114 のコメントに実測）。
+        # 描画 API の要求が出ないので、そのままだと「描画要求が出ませんでした」で失敗に数える。
+        #
+        # **判定は取れなかったあと。** 非対応のダイアログが出るまでには時間がかかり
+        # （撮影経路は DEFAULT_LOAD_WAIT = 12 秒待ってから見る）、開いた直後に見ると
+        # まだ出ていない本を見落とす。取れなかった本だけ見れば、リロードと 15 秒の待ちを
+        # 挟んだあとの画面になるうえ、誤判定で取れる本を飛ばす経路も無くなる
+        try:
+            structure = fetch_book_structure(page)
+        except RuntimeError as exc:
+            reason = unsupported_reason(page)
+            if reason:
+                raise UnsupportedBook(reason) from exc
+            raise
     if structure.get("complete"):
         # 途中で落ちても壊れた JSON を残さない
         os.makedirs(cache_dir, exist_ok=True)
@@ -255,7 +279,7 @@ def main(argv=None):
             title, asin = book.get("title", ""), book.get("asin", "")
             row = {"asin": asin, "title": title, "format": book.get("format", "")}
             pdf = book_pdf_path(args.library, title)
-            failed = False
+            failed = stalled = False
             if not os.path.exists(pdf):
                 row["status"] = "PDF なし"
             else:
@@ -283,21 +307,26 @@ def main(argv=None):
                             row["status"] = "書き換えた"
                         else:
                             row["status"] = f"失敗: {result.get('error')}"
-                            failed = True
+                            failed = stalled = True
+                except UnsupportedBook as exc:
+                    # 撮影のバッチと同じ扱い。直しようが無いので失敗に数えない。
+                    # ただし打ち切りの判定では「取れなかった本」として数える
+                    row["status"] = f"Cloud Reader 非対応: {exc}"
+                    stalled = True
                 except Exception as exc:  # noqa: BLE001 - 1 冊の失敗で一括処理を止めない
                     row["status"] = f"失敗: {type(exc).__name__}: {exc}"
-                    failed = True
+                    failed = stalled = True
             writer.writerow(row)
             report.flush()
             statuses[row["status"].split(":")[0]] += 1
             failures += failed
-            consecutive = consecutive + 1 if failed else 0
+            consecutive = consecutive + 1 if stalled else 0
             print(
                 f"[{n}/{len(books)}] {row['status']} {row.get('flags', '')} {title[:40]}",
                 flush=True,
             )
             if consecutive >= MAX_CONSECUTIVE_FAILURES:
-                print(f"{consecutive} 冊続けて失敗したので打ち切ります", flush=True)
+                print(f"{consecutive} 冊続けて取れなかったので打ち切ります", flush=True)
                 break
 
     print(f"完了: {dict(statuses)}、要確認 {flagged} 冊、失敗 {failures} 冊。一覧: {args.report}")
