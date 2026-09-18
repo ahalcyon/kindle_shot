@@ -566,27 +566,31 @@ def _dark_pixels(image, *, dark=150):
     return sum(1 for p in image.convert("L").tobytes() if p < dark)
 
 
-def has_slider(image, *, y_from_bottom=64, x=(300, 900), contrast=40, flat=12):
+def has_slider(image, *, y_from_bottom=64, x=(300, 900), contrast=40, flat=8, share=0.9):
     """読書 UI のスライダー（下端から 64px の横線）が写っているか。
 
     UI の有無を色の多寡で見る方法は表紙で誤った（黒い表紙、左右が黒い表紙、リフロー本が
     ページ自体に描く「ページ 9/253」。実測）。スライダーは**決まった y に引かれる一様な横線**で、
-    その上下 6px はページ（白か絵）なので、「行が一様で、上下の行と明るさが違う」で見る。
+    その上下 6px はページ（白か絵）なので、「行がほぼ一様で、上下の行と明るさが違う」で見る。
     本文にこの位置・この長さの罫線が来ることはまず無く、来ても切り替え前後の比較で弾く。
+
+    「一様」は中央値 ±``flat`` に入る画素の割合が ``share`` 以上。標準偏差で見ると、読書位置の
+    つまみ（白い縁付きの暗い円、幅 18px）が範囲に入る本（進捗 18〜78% で開いた本）で
+    一様でなくなり、UI があっても見逃した（レビューで実測）。
     """
     from PIL import ImageStat
 
     gray = image.convert("L")
     y = image.height - y_from_bottom
-
-    def row(dy):
-        return ImageStat.Stat(gray.crop((x[0], y + dy, x[1], y + dy + 1)))
-
-    line = row(0)
-    if line.stddev[0] > flat:
+    values = list(gray.crop((x[0], y, x[1], y + 1)).tobytes())
+    median = sorted(values)[len(values) // 2]
+    if sum(1 for v in values if abs(v - median) <= flat) < share * len(values):
         return False
-    above, below = row(-6).mean[0], row(6).mean[0]
-    return abs(line.mean[0] - above) > contrast and abs(line.mean[0] - below) > contrast
+
+    def mean(dy):
+        return ImageStat.Stat(gray.crop((x[0], y + dy, x[1], y + dy + 1))).mean[0]
+
+    return abs(median - mean(-6)) > contrast and abs(median - mean(6)) > contrast
 
 
 def _toggle_chrome(hwnd, *, top=0):
@@ -632,7 +636,9 @@ def hide_reader_chrome(hwnd, *, top=0, emit=print):
         shown, hidden = _toggle_chrome(hwnd, top=top)
         if has_slider(shown) and not has_slider(hidden):
             return True
-    emit("  読書 UI を消せない（切り替えても変わらない）")
+        emit("  読書 UI を消せない（出したあと消えない）")
+    else:
+        emit("  読書 UI を消せない（切り替えても変わらない）")
     _keep_shot(hwnd, "chrome")
     return False
 

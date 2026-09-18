@@ -291,7 +291,7 @@ def _reader_stub(monkeypatch, shots):
 
 def test_chrome_is_judged_by_the_change_when_toggled(monkeypatch):
     """UI の有無は絶対値では決められない（表紙の色・リフロー本がページに描く見出しで誤る。
-    実測: 黒い表紙、左右が黒い表紙、「ページ 9/253」）。切り替えの前後で UI 領域の墨を比べる。"""
+    実測: 黒い表紙、左右が黒い表紙、「ページ 9/253」）。切り替えの前後でスライダー線の有無を比べる。"""
     from PIL import Image
 
     for bg in ((255, 255, 255), (5, 5, 5)):
@@ -302,7 +302,7 @@ def test_chrome_is_judged_by_the_change_when_toggled(monkeypatch):
         # 消えている状態から: 出す→消す で元に戻る → 消えていた
         _reader_stub(monkeypatch, [page, shown, page])
         assert cab.chrome_hidden(object()) is True
-        # 出ている状態から: 消す→出す で元に戻り、墨は減る → 出ていた
+        # 出ている状態から: 消す→出す で元に戻り、線は消える → 出ていた
         _reader_stub(monkeypatch, [shown, page, shown])
         assert cab.chrome_hidden(object()) is False
         # クリックが効かず何も変わらない → 分からない
@@ -310,7 +310,46 @@ def test_chrome_is_judged_by_the_change_when_toggled(monkeypatch):
         assert cab.chrome_hidden(object()) is None
 
 
-def test_hide_reader_chrome_toggles_until_the_ink_drops(monkeypatch):
+def test_slider_is_seen_even_with_the_knob_in_the_middle():
+    """読書位置のつまみ（白い縁付きの暗い円）が線の中央付近にあっても線と見る（レビューで実測）。"""
+    from PIL import Image, ImageDraw
+
+    page = Image.new("RGB", (1200, 1390), (255, 255, 255))
+    _chrome(page)
+    y = page.height - 64
+    draw = ImageDraw.Draw(page)
+    for knob_x in (400, 600, 800):
+        shown = page.copy()
+        d = ImageDraw.Draw(shown)
+        d.rectangle((knob_x - 9, y - 9, knob_x + 9, y + 9), fill=(255, 255, 255))
+        d.ellipse((knob_x - 6, y - 6, knob_x + 6, y + 6), fill=(95, 95, 95))
+        assert cab.has_slider(shown)
+    # 線が無い行は、上下と違っていても線ではない
+    draw.rectangle((0, y - 20, 1200, y + 20), fill=(200, 200, 200))
+    assert not cab.has_slider(page)
+
+
+def test_chrome_hidden_needs_the_screen_to_come_back(monkeypatch):
+    """2 回目の切り替えで元の画面に戻らなければ（ページが進んだ等）分からない扱い。"""
+    from PIL import Image
+
+    page = Image.new("RGB", (1200, 1390), (255, 255, 255))
+    shown = page.copy()
+    _chrome(shown)
+    _reader_stub(monkeypatch, [page, shown, shown])
+    assert cab.chrome_hidden(object()) is None
+
+
+def test_a_book_is_not_finished_when_the_ui_state_is_unknown_after_capture(tmp_path, monkeypatch):
+    books, library, state = _prepare(tmp_path, [{"title": "本M", "asin": "A13"}], [])
+    _stub_screen(monkeypatch)
+    monkeypatch.setattr(cab, "chrome_hidden", lambda hwnd, **kw: None)
+    monkeypatch.setattr("core.pipeline.run_book", _run_book_writing_pdf(library))
+    assert cab.main(["--books", books, "--library", library, "--state", state]) == 1
+    assert _rows(state)[0]["status"] == "失敗"
+
+
+def test_hide_reader_chrome_toggles_until_the_slider_goes(monkeypatch):
     from PIL import Image
 
     page = Image.new("RGB", (1200, 1390), (255, 255, 255))
@@ -318,7 +357,9 @@ def test_hide_reader_chrome_toggles_until_the_ink_drops(monkeypatch):
     _chrome(shown)
     _reader_stub(monkeypatch, [shown, page])  # 出ていた → 1 回で消える
     assert cab.hide_reader_chrome(object(), emit=lambda *a: None)
-    _reader_stub(monkeypatch, [page, shown, page])  # 消えていた → 出してしまい、もう 1 回で消す
+    _reader_stub(
+        monkeypatch, [page, shown, page]
+    )  # 消えていた → 出してしまい、もう 1 回で消す（線が消える）
     assert cab.hide_reader_chrome(object(), emit=lambda *a: None)
     _reader_stub(monkeypatch, [page, page, page])  # 切り替わらない → 消せない
     assert not cab.hide_reader_chrome(object(), emit=lambda *a: None)
