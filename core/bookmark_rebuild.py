@@ -19,6 +19,7 @@ from collections import Counter
 from core.kindle_toc import (
     CONFIRMED,
     MOVED,
+    RUNNING_HEAD,
     UNCONFIRMED,
     UNSEARCHED,
     flatten_toc,
@@ -42,6 +43,9 @@ FLAG_COUNT = "ページ数の差が表紙で説明できない"
 FLAG_UNRENDERABLE = "描画できない区間あり"
 FLAG_INCOMPLETE = "本の終わりまで走査できていない"
 FLAG_NO_TEXT = "テキスト層なし（位置だけで決める）"
+# 章名が柱に出ていて場所を決められない項目のほうが、テキストで裏の取れた項目より多い。
+# ずれ幅は実質テキストで確かめられておらず、表紙の分だけで決まっている (#122)
+FLAG_RUNNING_HEAD = "柱の項目が多く、ずれ幅をテキストで確かめられない"
 # 表紙の分と違うずれ幅をテキストから選んだ区間がある。目視では多くが正しいが、選んだずれ幅で
 # 見つかった項目も confirmed に数えるので、confirmed だけでは確かめたことにならない
 FLAG_SHIFTED = "テキストからずれ幅を選んだ区間あり"
@@ -172,6 +176,8 @@ def plan_book(pdf_path, structure):
         if offset is not None and any(e.shift != offset for e in entries):
             flags.append(FLAG_SHIFTED)
     hows = Counter(e.how for e in entries) if mappable else Counter()
+    if hows[RUNNING_HEAD] > hows[CONFIRMED] + hows[MOVED]:
+        flags.append(FLAG_RUNNING_HEAD)
     row = {
         "pdf_pages": pdf_pages,
         "render_pages": render_pages,
@@ -183,6 +189,7 @@ def plan_book(pdf_path, structure):
         "moved": hows[MOVED],
         "unconfirmed": hows[UNCONFIRMED],
         "unsearched": hows[UNSEARCHED],
+        "running_head": hows[RUNNING_HEAD],
         "flags": " / ".join(flags),
     }
     return entries, row, flags
