@@ -78,6 +78,7 @@ COLUMNS = [
     "moved",
     "unconfirmed",
     "unsearched",
+    "running_head",
     "flags",
     "status",
 ]

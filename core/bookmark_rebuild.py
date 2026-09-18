@@ -19,6 +19,7 @@ from collections import Counter
 from core.kindle_toc import (
     CONFIRMED,
     MOVED,
+    RUNNING_HEAD,
     UNCONFIRMED,
     UNSEARCHED,
     flatten_toc,
@@ -183,6 +184,7 @@ def plan_book(pdf_path, structure):
         "moved": hows[MOVED],
         "unconfirmed": hows[UNCONFIRMED],
         "unsearched": hows[UNSEARCHED],
+        "running_head": hows[RUNNING_HEAD],
         "flags": " / ".join(flags),
     }
     return entries, row, flags

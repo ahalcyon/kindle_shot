@@ -22,6 +22,10 @@ Kindle Cloud Reader の描画 API（``renderer/render``）の応答には、本�
   それで前へ動かすと誤る（初期の目視で前への補正 4 件がすべて誤りだった）
 - 決めたずれ幅のページに章名が無ければ、後ろ ``SEARCH_AHEAD`` ページまで探す。
   すき間の項目で、次のページに無く 1 つ前のページにだけあれば 1 つ前にする（目視 6/8）
+- **柱（ランニングヘッダ）に章名が出る本では、章名のあるページは章の始まりを指さない**
+  （#122）。章の終わりまで毎ページ出るうえ、章扉は飾り文字でテキストが無いことがあり、
+  テキストで決めると必ず後ろへずれる。章名が ``RUNNING_HEAD_RUN`` ページ以上続けて
+  見つかる項目は、ずれ幅の判断にも後ろへの補正にも使わず、位置の示すページに付ける
 - 章名は番号（「第1章」「1-2-3」「Chapter 4」）を落とした部分で探す。番号は OCR が崩しやすい。
   1 文字の章名は本文のどこにでも当たるので探さない
 """
@@ -47,11 +51,16 @@ SWITCH_COST = 2.5
 # 章名で探すときに使う長さ。長すぎると OCR の読み違いで当たらず、短すぎると本文に当たる
 PROBE_LEN = 10
 MIN_PROBE_LEN = 2
+# 柱（ランニングヘッダ）とみなす、章名が続けて出るページ数。柱のある本では章名が章の終わりまで
+# 毎ページ出るので、「章名があるページ」は章の始まりを指さない。実測（図解・気象学入門
+# B00GHHYQNM）では章扉にテキストが無く、柱だけが当たって付け先が 1 ページ後ろにずれた
+RUNNING_HEAD_RUN = 3
 
 CONFIRMED = "confirmed"  # 区間のずれ幅を足したページ（estimated）に章名があった
 MOVED = "moved"  # estimated に無く、後ろ（すき間の項目は 1 つ前も）で章名が見つかったので動かした
 UNCONFIRMED = "unconfirmed"  # テキストはあるが章名が見つからず、estimated のまま
 UNSEARCHED = "unsearched"  # テキストが無い・章名が短いので探していない。位置だけで決めた
+RUNNING_HEAD = "running_head"  # 章名が柱に出ていて場所を決められない。位置だけで決めた
 
 
 @dataclass
@@ -190,7 +199,27 @@ def map_to_pages(entries, page_ranges, pdf_pages, page_text=None, offset=0):
     shifts = list(
         range(min(diff, 0, offset) - SHIFT_MARGIN, max(diff, 0, offset) + SHIFT_MARGIN + 1)
     )
-    shift = _choose_shifts(len(entries), shifts, offset, lambda k, s: found(k, bases[k] + s))
+
+    def running_head(k):
+        """章名が候補の範囲で続けて出るなら、どのページも章の始まりを指していない (#122)。
+
+        柱のある本では章名が章の終わりまで毎ページ出る。章扉にテキストが無いと、当たるのは
+        柱だけになり、テキストで決めると必ず後ろへずれる。そういう項目はテキストを使わず、
+        位置の示すページに付ける（``shifts`` は連続した範囲なので、続けて当たった数が
+        そのままページの連なりになる）。
+        """
+        run = 0
+        for s in shifts:
+            run = run + 1 if found(k, bases[k] + s) else 0
+            if run >= RUNNING_HEAD_RUN:
+                return True
+        return False
+
+    heads = [probes[k] is not None and running_head(k) for k in range(len(entries))]
+    # 柱の項目はどのずれ幅でも「見つからない」。費用が一定なので、ずれ幅の判断に効かない
+    shift = _choose_shifts(
+        len(entries), shifts, offset, lambda k, s: not heads[k] and found(k, bases[k] + s)
+    )
 
     prev = 0
     for k, entry in enumerate(entries):
@@ -201,6 +230,8 @@ def map_to_pages(entries, page_ranges, pdf_pages, page_text=None, offset=0):
         entry.page = estimated
         if probes[k] is None:
             entry.how = UNSEARCHED
+        elif heads[k]:
+            entry.how = RUNNING_HEAD
         elif found(k, estimated):
             entry.how = CONFIRMED
         else:

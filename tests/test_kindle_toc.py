@@ -8,6 +8,7 @@ from core import kindle_toc
 from core.kindle_toc import (
     CONFIRMED,
     MOVED,
+    RUNNING_HEAD,
     UNCONFIRMED,
     UNSEARCHED,
     TocEntry,
@@ -211,6 +212,38 @@ def test_map_moves_a_gap_entry_back_only_when_the_title_is_only_there():
     texts = ["なまえ", "", ""]
     entries = map_to_pages(_entries(("なまえ", 8)), ranges, 3, page_text=lambda i: texts[i])
     assert (entries[0].estimated, entries[0].page, entries[0].how) == (1, 0, MOVED)
+
+
+def test_map_keeps_a_chapter_whose_name_is_in_the_running_head():
+    """柱に章名が出る本では、章名のあるページは章の始まりを指さない (#122)。
+
+    図解・気象学入門（B00GHHYQNM）の形。章扉にはテキストが無く（大きな飾り文字）、
+    次のページから章の終わりまで柱に章名が出る。テキストで決めると必ず後ろにずれる。
+    """
+    ranges = [[p, p + 9] for p in range(0, 120, 10)]
+    texts = [""] * 12
+    for start in (0, 4, 8):  # 章扉（start）には無く、続く 3 ページの柱に出る
+        for p in range(start + 1, start + 4):
+            texts[p] = f"なまえ{start + 1:02d}"
+    entries = [TocEntry(1, f"なまえ{i + 1:02d}", i * 10) for i in (0, 4, 8)]
+    got = map_to_pages(entries, ranges, 12, page_text=lambda i: texts[i])
+    assert [e.shift for e in got] == [0, 0, 0]
+    assert [e.page for e in got] == [0, 4, 8]
+    assert all(e.how == RUNNING_HEAD for e in got)
+
+
+def test_map_does_not_move_an_entry_onto_a_running_head():
+    """1 項目でも、章名が続けて出るなら動かさない（動かす先が柱だと分かるため）。"""
+    texts = ["", "", "本文", "なまえ", "なまえ", "なまえ"]
+    entries = map_to_pages(_entries(("なまえ", 25)), RANGES, 6, page_text=lambda i: texts[i])
+    assert (entries[0].page, entries[0].how) == (2, RUNNING_HEAD)
+
+
+def test_map_still_follows_a_title_that_appears_on_two_pages():
+    """見出しと次ページの本文中の言及くらい（2 ページ）では柱とみなさない。"""
+    texts = ["", "", "本文", "なまえ", "なまえ", ""]
+    entries = map_to_pages(_entries(("なまえ", 25)), RANGES, 6, page_text=lambda i: texts[i])
+    assert (entries[0].page, entries[0].how) == (3, MOVED)
 
 
 def test_map_does_not_move_back_an_entry_that_is_not_in_a_gap():
