@@ -37,6 +37,7 @@ from mine_misreads import (  # noqa: E402
     zipf_of,
 )
 
+from core.console import setup_stdio  # noqa: E402
 from core.ocr_validator import unbalanced_brackets  # noqa: E402
 
 # 3 文字未満のカタカナ語は変種が偶然の別語になりやすい
@@ -203,6 +204,8 @@ def iter_pdfs(paths):
 
 
 def main(argv=None):
+    # 題名に cp932 で書けない字があっても、進捗の 1 行で一括処理を止めない
+    setup_stdio()
     parser = argparse.ArgumentParser(description="完成した PDF が文章として通っているか判定する")
     parser.add_argument("paths", nargs="+", help="PDF かフォルダ")
     parser.add_argument("--json", action="store_true", help="JSON Lines で出す")

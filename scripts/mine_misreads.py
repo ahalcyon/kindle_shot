@@ -31,6 +31,10 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.console import setup_stdio  # noqa: E402
+
 # 大書き -> 小書き。ワ ヵ ヶ は現代の表記でまず出ないので入れない
 BIG_TO_SMALL = {
     "ツ": "ッ",
@@ -468,6 +472,8 @@ def mine_by_frequency(
 
 
 def main(argv=None):
+    # 題名・語に cp932 で書けない字があっても、1 行の表示で処理を止めない
+    setup_stdio()
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0] or None)
     parser.add_argument("paths", nargs="+", help="PDF / テキスト / それらを含むフォルダ")
     parser.add_argument(

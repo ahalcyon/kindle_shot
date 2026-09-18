@@ -27,6 +27,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.console import setup_stdio
 from core.headless_browser import open_reader
 from core.headless_capture import (
     PAGE_IMAGE_SELECTOR,
@@ -117,6 +118,8 @@ def probe(url, *, profile_dir, headless, wait_ms, label, toc=False):
 
 
 def main(argv=None):
+    # 題名に cp932 で書けない字があっても、進捗の 1 行で一括処理を止めない
+    setup_stdio()
     ap = argparse.ArgumentParser(description="開いた瞬間のリーダーエラーを診断する (#104)")
     ap.add_argument("--asin", default="B01B6RN6IS", help="調べる本の ASIN")
     ap.add_argument("--compare", help="正常に撮れている本の ASIN（対照）")

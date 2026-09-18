@@ -7,7 +7,7 @@ PDF の一連の流れを本物のプロセス境界越しに検証する。イ�
 
 - エントリポイント (cli.py の import 順・DPI 初期化・argparse) が実際に起動すること
 - 終了コードがプロセスの exit status として正しく返ること
-- パイプ出力時に日本語が UTF-8 で壊れずに出ること (_setup_stdio の実挙動)
+- パイプ出力時に日本語が UTF-8 で壊れずに出ること (core.console.setup_stdio の実挙動)
 - 各コマンドの出力が次のコマンドの入力としてそのまま繋がること
 - 生成された PDF が pypdfium2 で読み戻せる実ファイルであること
 
@@ -59,7 +59,7 @@ def run_cli(*argv, timeout=300):
         cwd=REPO_ROOT,
         capture_output=True,
         timeout=timeout,
-        # cli._setup_stdio() がパイプ出力を UTF-8 に固定するので UTF-8 で読む
+        # core.console.setup_stdio() がパイプ出力を UTF-8 に固定するので UTF-8 で読む
         encoding="utf-8",
         errors="replace",
         # 親の環境変数の PYTHONIOENCODING 等に結果が左右されないようにする

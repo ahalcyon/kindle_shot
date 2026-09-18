@@ -55,6 +55,7 @@ from core.bookmark_rebuild import (  # noqa: E402
     plan_book,
     rebuild_book,
 )
+from core.console import setup_stdio  # noqa: E402
 
 # 続けて失敗したら打ち切る冊数
 MAX_CONSECUTIVE_FAILURES = 5
@@ -91,6 +92,8 @@ def load_books(path):
 
 
 def main(argv=None):
+    # 題名に cp932 で書けない字があっても、進捗の 1 行で一括処理を止めない
+    setup_stdio()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("--books", required=True, help="books.json（title / asin / format）")
     ap.add_argument("--library", required=True, help="蔵書フォルダ（撮影時の --out と同じ場所）")
