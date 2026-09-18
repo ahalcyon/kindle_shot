@@ -10,12 +10,15 @@
   `kindle://book?action=open&asin=...` は何も起きない（実測）
 - **F11 の全画面では UI が一切消える**が、画面が横長だと 2 段組（見開き）になる。
   幅 1200 なら 1 段組＝ 1 ページになるので、こちらを使う（見開きを割るより素直）
-- ウィンドウ表示の UI（タイトルバー・書名ヘッダー・ページ番号フッター）は
-  `--min-margins 0,0,115,60` で削れる
+- 読書 UI（上のバー・スライダー・← →）は本文をクリックすると出たり消えたりし、
+  **ページにかぶさる**（ページは動かない）。出たまま撮ると上下が隠れるので、消してから撮る
 - ページ送りは **→ が常に「次のページ」**（アプリのショートカット一覧）。縦書きでも
   変わらないので、Cloud Reader のような向きの判定（#111）が要らない
+- ライブラリ画面は日によって上に 55px の帯が出たり消えたりする（2026-09-18 と翌日で
+  「全て」の行の y が 243 と 188）。固定座標では検索窓のつもりが「Kindle ストア」を押す
+  ので、位置は青く反転した「全て」の行からの相対で決める
 
-**開いた本が違っていないかを、書名ヘッダーの OCR で確かめてから撮る。**
+**開いた本が違っていないかを、表紙の OCR で確かめてから撮る。**
 検索で 2 冊以上に絞れなかった本は撮らずに飛ばす（別の本を蔵書に入れない）。
 
 使い方:
@@ -43,26 +46,44 @@ from core.console import setup_stdio  # noqa: E402
 
 # ウィンドウの大きさ。幅 1200 で 1 段組（1400 以上だと 2 段組になる。実測）
 WIDTH, HEIGHT = 1200, 1390
-# ライブラリ画面の位置（上の大きさのとき）。実測で決めた
-SEARCH_BOX = (125, 96)
-FIRST_COVER = (358, 305)
-SECOND_COVER = (599, 305)
-# ライブラリにいるかの目印。左の「全て」の行が青く反転している
-LIBRARY_MARK = (125, 243)
-# 本を閉じてライブラリに戻る矢印（本を開いているときだけ出る）
+# ライブラリ画面の位置（上の大きさのとき）。**左の「全て」の行（青く反転）を基準にした相対**。
+# 上の余白が日によって違う（実測: 「全て」の中心 y が 243 → 翌日 188）ので固定座標は使えない
+LIBRARY_X = 125  # 「全て」の行と検索窓の中心 x
+SEARCH_DY = -148  # 検索窓の中心 y（基準から）
+COVER_DY = 60  # 検索結果の表紙の中心 y（基準から）
+COVER_XS = (358, 599)  # 検索結果の 1 冊目・2 冊目の中心 x
+# 本を閉じてライブラリに戻る矢印（タイトルバー、または読書 UI の左上）。UI が消えていれば
+# ここは本文で、クリックは UI の出し入れになるだけ。_to_library は Esc・Ctrl+W のあとの最後の手段
 BACK_ARROW = (32, 32)
+# 読書 UI（上のバー・スライダー・← →）を出し入れするクリック位置。上の余白なので本文の
+# リンクを踏まない。実測: 左端のクリックは前のページに戻る、下端は無反応
+CHROME_TOGGLE = (600, 60)
+# 読書 UI の「戻る」矢印が出る範囲（左上）。ここに暗い画素があれば UI が出ている
+CHROME_BOX = (14, 8, 64, 44)
 
-# 最低限削る余白。**アプリのタイトルバーだけ**（実測で高さ 62px）。
-# 書名ヘッダーとページ番号フッターは本によって有無が違う（固定レイアウトの本には無い。
-# 実測: Beginning in Algebraic Geometry）ので、ここで一律に削ると中身を切る。
-# 残りはページ間の変化から UI 帯を見つける仕組み（run の ui_bands）に任せる
-MIN_MARGINS = (0, 0, 65, 0)
+# 最低限削る余白。読書 UI を消して撮るので無し。UI はページに**かぶさる**（ページは動かない。
+# 実測）ので、固定で削ると UI の無い状態では中身を切る。書名ヘッダー・ページ番号フッターも
+# 読書 UI の側に出るもので、消せばページに残らない。右上のウィンドウ操作ボタンだけは残るが、
+# ページ間で変わらない帯として ui_bands が見つける。
+# アプリがタイトルバー（「← Kindle」。実測 48px）を出す表示のときは、その高さを本ごとに
+# 測って削る（title_bar_height）
+MIN_MARGINS = None
 # 本を開いてから読めるようになるまで待つ秒数。未ダウンロードの本はここで落ちる
 OPEN_WAIT = 25.0
 # これ未満のページ数で「完了」にしない。撮れていない本が完成扱いで固定されるのを防ぐ
 MIN_PAGES = 10
 DONE = "完了"
 COLUMNS = ["asin", "title", "status", "pages", "stopped_reason", "seconds", "detail"]
+# PowerShell をコンソール窓なしで起動する（窓が出るとアプリから前面を奪う）
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# Store 版 Kindle の AUMID（Get-StartApps で取れる。末尾の英数字は発行元ごとの固定値）
+APP_ID = "AMZNKindle.AmazonKindleReadingApp_m1sc522ngdk36!App"
+# 起動してからライブラリが読めるまで待つ秒数
+LAUNCH_WAIT = 8.0
+# 検索結果が 1 冊に絞られるまで待つ上限（秒）
+SEARCH_WAIT = 10
+# タイトルバーの高さとして信じる範囲（実測 48px）。外れたら測れないものとして撮らない
+TITLE_BAR_RANGE = (40, 60)
 
 
 def _norm(text):
@@ -84,8 +105,13 @@ def title_matches(want, seen, *, ratio=0.7, cap=24):
     `Linear Algebra Done Right` と `Linear Algebra and Its Applications` のように
     先頭が同じ本が普通にある（実測でこの 2 つが同じ本と判定された）。
     """
+    import re
     from difflib import SequenceMatcher
 
+    # **括弧書き（シリーズ名・レーベル名）は照合に使わない。** 同じシリーズの別の本の表紙にも
+    # 同じ文字列が印字されるので、`(Undergraduate Texts in Mathematics)` だけで cap を超えて
+    # 「同じ本」と通ってしまう（レビューで実測: Linear Algebra Done Right と Analysis I）
+    want = re.sub(r"[（(][^（()）]*[)）]", " ", want or "")
     a, b = _norm(want), _norm(seen)
     if not a or not b:
         return False
@@ -141,10 +167,39 @@ def _app():
     return hwnd
 
 
+def restart_app(*, timeout=60.0, emit=print):
+    """Kindle アプリを終了して起動し直す。窓が出なければ RuntimeError。
+
+    **一度おかしくなったアプリは操作で戻せない。** F11 全画面を経たあとは検索窓を
+    クリックしても Tab で移っても文字が入らなくなり、何度試しても戻らなかった（実測）。
+    起動し直せば入る。実行の最初と、本を開けなかったあとに呼ぶ。
+    """
+    from core.win32_utils import find_window, get_window_process_name
+
+    subprocess.run(["taskkill.exe", "/IM", "Kindle.exe", "/F"], check=False, capture_output=True)
+    time.sleep(3.0)
+    subprocess.run(
+        ["explorer.exe", rf"shell:AppsFolder\{APP_ID}"], check=False, capture_output=True
+    )
+    started = time.time()
+    while time.time() - started < timeout:
+        # find_window の process_name は加点であって絞り込みではない（_app と同じ）。
+        # 題名に kindle を含む別の窓で「起動した」と見ないよう、プロセス名まで確かめる
+        hwnd = find_window("kindle", process_name="Kindle.exe")
+        if hwnd and (get_window_process_name(hwnd) or "").lower() == "kindle.exe":
+            time.sleep(LAUNCH_WAIT)
+            emit("  アプリを起動し直した")
+            return
+        time.sleep(1.0)
+    raise RuntimeError("Kindle アプリを起動し直せない")
+
+
 def _place(hwnd, width=WIDTH, height=HEIGHT):
     """撮影する大きさ・位置にウィンドウを置く（1 段組にするため）。"""
     import ctypes
 
+    # 最大化のままだと枠の分だけ描画がずれる（実測: 8px）。通常の状態に戻してから置く
+    ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     ctypes.windll.user32.SetWindowPos(hwnd, None, -1600, 0, width, height, 0x0040)
     time.sleep(1.5)
 
@@ -204,6 +259,7 @@ def _clipboard():
         ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
         check=False,
         capture_output=True,
+        creationflags=NO_WINDOW,
     )
     return got.stdout.decode("utf-8", errors="replace").strip()
 
@@ -231,6 +287,7 @@ def _to_clipboard(text):
             ],
             check=False,
             capture_output=True,
+            creationflags=NO_WINDOW,
         )
     finally:
         os.unlink(path)
@@ -245,16 +302,46 @@ def _cover_box(point, size=60):
     return (x - size, y - size, x + size, y + size)
 
 
-def is_library(image):
-    """ライブラリ画面にいるか（左の「全て」の行が青い）。
+def find_library_anchor(image, *, x=LIBRARY_X, span=(60, 500), min_run=20):
+    """ライブラリ画面の基準 y（左の「全て」の行の中心）。ライブラリでなければ None。
+
+    左の列 ``x`` を上から見て、青く反転している一続きの行のうち最も長いものの中心。
+    「全て」の行は高さ 36px（実測）。上の余白が変わっても、青い行を探せば追える。
 
     **画面がどこにいるかを確かめずに操作しない。** 本を開いたままだと、検索窓のつもりの
     クリックが本文に当たり、Ctrl+A が「読書補助機能」になってダイアログが開く（実測）。
     """
     from PIL import ImageStat
 
-    r, g, b = ImageStat.Stat(image.convert("RGB")).mean
-    return b > r + 40 and b > 120
+    rgb = image.convert("RGB")
+    runs: list[list[int]] = []
+    cur = None
+    for y in range(span[0], min(span[1], rgb.height)):
+        r, _g, b = ImageStat.Stat(rgb.crop((x - 12, y, x + 12, y + 1))).mean
+        if b > r + 40 and b > 120:
+            cur = [y, y] if cur is None else [cur[0], y]
+        elif cur:
+            runs.append(cur)
+            cur = None
+    if cur:
+        runs.append(cur)
+    runs = [run for run in runs if run[1] - run[0] + 1 >= min_run]
+    if not runs:
+        return None
+    top, bottom = max(runs, key=lambda run: run[1] - run[0])
+    # 本のページの青い領域（表紙・図版）と区別する。「全て」の行の上下は白い余白
+    for y in (top - 10, bottom + 10):
+        if not (0 <= y < rgb.height):
+            return None
+        mean = ImageStat.Stat(rgb.crop((x - 12, y, x + 12, y + 1))).mean
+        if min(mean) < 240:
+            return None
+    return (top + bottom) // 2
+
+
+def is_library(image):
+    """ライブラリ画面にいるか（ウィンドウ全体の画像で見る）。"""
+    return find_library_anchor(image) is not None
 
 
 def _to_library(hwnd, *, tries=3):
@@ -265,14 +352,14 @@ def _to_library(hwnd, *, tries=3):
         for _ in range(2):
             pyautogui.press("esc")  # 開いたままのダイアログを閉じる
             time.sleep(0.4)
-        if is_library(_shot(hwnd, _cover_box(LIBRARY_MARK, 12))):
+        if is_library(_shot(hwnd)):
             return True
         pyautogui.hotkey("ctrl", "w")
         time.sleep(2.0)
-        if is_library(_shot(hwnd, _cover_box(LIBRARY_MARK, 12))):
+        if is_library(_shot(hwnd)):
             return True
         _click(hwnd, *BACK_ARROW, wait=2.0)
-    return is_library(_shot(hwnd, _cover_box(LIBRARY_MARK, 12)))
+    return is_library(_shot(hwnd))
 
 
 def open_book(hwnd, title, *, emit=print):
@@ -282,27 +369,151 @@ def open_book(hwnd, title, *, emit=print):
     """
     import pyautogui
 
+    from core.win32_utils import activate_window
+
     if not _to_library(hwnd):
         emit("  ライブラリに戻れない")
+        return False
+    anchor = find_library_anchor(_shot(hwnd))
+    if anchor is None:
+        emit("  ライブラリの「全て」の行が見つからない")
         return False
     if not _to_clipboard(title):
         emit("  クリップボードに題名を入れられない")
         return False
-    _click(hwnd, *SEARCH_BOX, wait=0.6)
-    pyautogui.hotkey("ctrl", "a")
-    pyautogui.hotkey("ctrl", "v")
-    time.sleep(0.6)
+    # クリップボードに入れる PowerShell が前面を奪う。奪われたままだと、検索窓への
+    # クリックはウィンドウを前面に戻すだけでフォーカスが移らない（実測: 貼り付けが空振り）
+    activate_window(hwnd, click_position="none")
+    # **題名が検索窓に入ったことを見てから Enter を押す。** 入っていないまま Enter を押すと
+    # 絞り込まれず、蔵書全体の 1 冊目が「検索結果」に見える
+    search_y = anchor + SEARCH_DY
+    search_box = (20, search_y - 16, 240, search_y + 16)
+    for attempt in range(4):
+        if attempt % 2 == 0:
+            # Esc で何も選ばれていない状態にしてから Tab を押すと検索窓に入る（実測）。
+            # クリックは検索窓にフォーカスを移さないことがある（実測: F11 全画面から
+            # 戻したあとは何度クリックしても入らなかった）ので、両方を交互に試す
+            pyautogui.press("esc")
+            time.sleep(0.3)
+            pyautogui.press("tab")
+            time.sleep(0.5)
+        else:
+            _click(hwnd, LIBRARY_X, search_y, wait=0.8)
+        pyautogui.hotkey("ctrl", "a")
+        pyautogui.press("backspace")
+        time.sleep(0.4)
+        # 見るのは暗い画素（文字）が増えたか。画像の同一性で見るとキャレットの点滅で「入った」になる
+        empty = _dark_pixels(_shot(hwnd, search_box))
+        pyautogui.hotkey("ctrl", "v")
+        time.sleep(0.8)
+        if _dark_pixels(_shot(hwnd, search_box)) > empty + 20:
+            break
+    else:
+        emit("  検索窓に題名が入らない")
+        return False
     pyautogui.press("enter")
-    time.sleep(3.0)
-    if not is_cover(_shot(hwnd, _cover_box(FIRST_COVER))):
-        emit("  検索に当たらない")
+    first, second = ((x, anchor + COVER_DY) for x in COVER_XS)
+    # 結果が出るまで待つ（起動直後は 3 秒で出なかった。実測）。絞り込む前の並びでも
+    # 1 冊目の枠には表紙があるので、「2 冊目の枠が空」になるまでを結果の確定と見る
+    for _ in range(SEARCH_WAIT):
+        time.sleep(1.0)
+        if is_cover(_shot(hwnd, _cover_box(first))) and not is_cover(
+            _shot(hwnd, _cover_box(second))
+        ):
+            break
+    else:
+        if not is_cover(_shot(hwnd, _cover_box(first))):
+            emit("  検索に当たらない")
+        else:
+            emit("  検索が 2 冊以上に当たる")
         return False
-    if is_cover(_shot(hwnd, _cover_box(SECOND_COVER))):
-        emit("  検索が 2 冊以上に当たる")
-        return False
-    _click(hwnd, *FIRST_COVER, wait=OPEN_WAIT)
-    if is_library(_shot(hwnd, _cover_box(LIBRARY_MARK, 12))):
-        emit("  本が開かない（未ダウンロードで時間がかかっている可能性）")
+    # 結果が出た直後のクリックは飲まれることがある（実測: 同じ状態でもう一度押すと開いた）。
+    # 開いたことをライブラリ画面が消えたかで確かめ、8 秒反応が無ければもう一度押す
+    time.sleep(1.0)
+    for attempt in range(2):
+        _click(hwnd, *first, wait=2.0)
+        waited = 2.0
+        while waited < OPEN_WAIT:
+            if not is_library(_shot(hwnd)):
+                return True
+            time.sleep(1.0)
+            waited += 1.0
+            if attempt == 0 and waited >= 8.0:
+                break
+    emit("  本が開かない（未ダウンロードで時間がかかっている可能性）")
+    return False
+
+
+def title_bar_height(image, *, x=(300, 900), limit=100):
+    """アプリのタイトルバー（「← Kindle」の帯）の高さ。無ければ 0。
+
+    アプリは、タイトルバーを出してその下にページを置く表示と、ページを上端まで広げる
+    表示を行き来する（実測: 同じ日に両方あった。何で切り替わるかは分かっていない）。
+    バーは薄い灰色（実測 247,249,250。高さ 48px）でページの白（255）と違うので、
+    上端から続く灰色の行を数える。ページを上端まで広げているときは 0 行目が白か本文。
+    """
+    from PIL import ImageStat
+
+    rgb = image.convert("RGB")
+
+    def gray(y):
+        mean = ImageStat.Stat(rgb.crop((x[0], y, x[1], y + 1))).mean
+        return all(236 <= v <= 253 for v in mean)
+
+    # 0 行目はウィンドウの枠線で暗いことがある（実測: 前面のとき 75）。2 行目までに
+    # 灰色が始まらなければバーは無い
+    start = next((y for y in range(3) if gray(y)), None)
+    if start is None:
+        return 0
+    y = start
+    while y < min(limit, rgb.height) and gray(y):
+        y += 1
+    return y
+
+
+def reader_top(hwnd, *, emit=print):
+    """いま開いている本の、ページが始まる y（タイトルバーの高さ）。測れなければ None。
+
+    0（バー無し）か実測のレンジ（TITLE_BAR_RANGE）だけを信じる。範囲外の値は「バーではない
+    薄い色の何か」（淡い表紙・表示テーマ・読書 UI のバー）なので、そのまま削ると全ページの
+    上が欠けた本が完成扱いになる。撮らない（安全側）。
+    """
+    top = title_bar_height(_shot(hwnd))
+    if top == 0 or TITLE_BAR_RANGE[0] <= top <= TITLE_BAR_RANGE[1]:
+        return top
+    emit(f"  タイトルバーの高さを測れない（{top}px）")
+    return None
+
+
+def _dark_pixels(image, *, dark=150):
+    return sum(1 for p in image.convert("L").tobytes() if p < dark)
+
+
+def reader_chrome_shown(image, *, top=0, box=CHROME_BOX, dark=150, count=30):
+    """読書 UI（上のバー）が出ているか。左上の「戻る」矢印の暗い画素で見る。
+
+    ``top`` はタイトルバーの高さ。タイトルバーにも「←」があるので、ずらして見ないと
+    タイトルバーを読書 UI と取り違える（実測）。
+    """
+    left, upper, right, lower = box
+    pixels = image.crop((left, upper + top, right, lower + top)).convert("L").tobytes()
+    return sum(1 for p in pixels if p < dark) >= count
+
+
+def hide_reader_chrome(hwnd, *, top=0, tries=2, emit=print):
+    """読書 UI を消す。消せなければ False。
+
+    UI はページに**かぶさる**（出しても消してもページは動かない。実測）ので、出たまま
+    撮ると上下が UI の分だけ隠れる。消えていれば、ページ以外に写るのは右上の
+    ウィンドウ操作ボタン（とタイトルバー）だけ。本を開いた直後にどちらの状態かは
+    決まっていない。
+    """
+    for _ in range(tries):
+        if not reader_chrome_shown(_shot(hwnd), top=top):
+            return True
+        _click(hwnd, CHROME_TOGGLE[0], CHROME_TOGGLE[1] + top, wait=1.2)
+    if reader_chrome_shown(_shot(hwnd), top=top):
+        emit("  読書 UI を消せない")
         return False
     return True
 
@@ -367,6 +578,37 @@ def rewind_to_start(hwnd, *, max_presses=1500, step=10, interval=0.05, emit=prin
     return False
 
 
+def quarantine(library, title, work_dir):
+    """完了でない本の PDF を蔵書から作業フォルダへ退避する。退避したら行き先、無ければ None。
+
+    このスクリプトが撮る本は、撮る前に pending() が「PDF が無い」と確かめたものなので、
+    ここにある PDF はこの実行が作ったもの。他の経路で作った完成本を動かすことはない。
+    """
+    src = book_pdf_path(library, title)
+    if not os.path.exists(src):
+        return None
+    folder = os.path.join(work_dir or ".", "failed_pdfs")
+    os.makedirs(folder, exist_ok=True)
+    dst = os.path.join(folder, f"{int(time.time())}_{os.path.basename(src)}")
+    os.replace(src, dst)
+    return dst
+
+
+def _config():
+    """run_book に渡す設定。**`kindle` プロファイルのクリックを止める。**
+
+    ビルトインの `kindle` は前面化のときウィンドウの左上（60, 10）をクリックする。
+    読書 UI を消した状態ではそこが本文なので、クリックで UI が出たり表示が変わったりして、
+    撮れたページが拡大された断片になった（実測: 2448x1360）。前面化だけさせる。
+    """
+    from core.config import load_config
+
+    cfg = load_config()
+    profiles = cfg.setdefault("capture", {}).setdefault("profiles", {})
+    profiles.setdefault("kindle", {})["click_position"] = "none"
+    return cfg
+
+
 class _Watch:
     """run_book のイベントから、ページ数・止まった理由・**失敗の理由**を拾う。
 
@@ -429,9 +671,12 @@ def main(argv=None):
         return 0
 
     from core.pipeline import EXIT_OK, run_book
+    from core.win32_utils import get_window_rect
 
     exists = os.path.exists(args.state)
     counts: dict[str, int] = {}
+    # 前の実行で崩れた状態（全画面・入力が効かない）を引きずらない
+    need_restart = True
     with open(args.state, "a" if exists else "w", encoding="utf-8-sig", newline="") as state:
         writer = csv.DictWriter(state, fieldnames=COLUMNS, extrasaction="ignore")
         if not exists:
@@ -441,27 +686,50 @@ def main(argv=None):
             row = {"asin": asin, "title": title}
             started = time.time()
             print(f"[{n}/{len(todo)}] {title[:46]}", flush=True)
+            if need_restart:
+                # 起動し直せないなら一括処理ごと止める（1 冊ずつ 60 秒待って失敗を積むより分かりやすい）
+                restart_app()
+                need_restart = False
             try:
                 hwnd = _app()
                 _place(hwnd)
+                top: int | None = 0
                 if not open_book(hwnd, title):
                     row["status"] = "開けない"
+                    need_restart = (
+                        True  # 入力が効かなくなっている可能性がある。次の本の前に起動し直す
+                    )
+                elif (top := reader_top(hwnd)) is None:
+                    row["status"] = "タイトルバーを測れない"
+                elif not hide_reader_chrome(hwnd, top=top):
+                    row["status"] = "読書 UI を消せない"
+                elif reader_top(hwnd) != top:
+                    # 読書 UI が出ていた状態で測った高さは信用しない（UI のバーを測っていたかもしれない）
+                    row["status"] = "タイトルバーを測れない"
                 elif not rewind_to_start(hwnd):
                     row["status"] = "先頭に戻れない"
                 elif not verify_title(hwnd, title):
                     row["status"] = "本を確かめられない"
                 else:
                     pages = _Watch()
+                    placed = get_window_rect(hwnd)
                     # run_book は**終了コード**を返す（真偽値ではない）
                     code = run_book(
                         title=title,
                         output=args.library,
                         profile_key="kindle",
-                        asin=asin or None,  # 表紙を商品ページから取る（本を開く経路には使わない）
+                        config=_config(),
+                        # **asin を渡さない。** 渡すと run_book が Cloud Reader 用の「URL で開いて
+                        # F11」を前面のウィンドウ（＝アプリ）に対して行い、全画面になって
+                        # 2560x1440 の断片が撮れる（実測）。本はこのスクリプトが開いている。
+                        # 表紙は先頭まで戻して撮った 1 ページ目がそのまま表紙なので取りに行かない
+                        asin=None,
+                        no_cover=True,
                         fmt=args.fmt or book.get("format", "searchable_pdf"),
                         headless=False,
                         page_turn="right",  # アプリは縦書きでも → が次ページ
-                        min_margins=MIN_MARGINS,
+                        # タイトルバーが出ている表示のときだけ、その高さを削る
+                        min_margins=(0, 0, top + 2, 0) if top else MIN_MARGINS,
                         max_pages=args.max_pages,
                         # 失敗した本は次にやり直す。途中で終わった残骸画像は消して撮り直す
                         # （完成した本は pending() が先に飛ばしている）
@@ -474,15 +742,37 @@ def main(argv=None):
                     row["detail"] = pages.error or (f"exit={code}" if code else "")
                     if code != EXIT_OK:
                         row["status"] = "失敗"
+                    elif (moved := get_window_rect(hwnd)) != placed:
+                        # 撮っている間にウィンドウが最大化・移動されると、拡大された断片が
+                        # ページとして入る（実測: 2448x1360 のページになった）。完成扱いにしない
+                        row["status"] = "失敗"
+                        row["detail"] = f"撮影中にウィンドウが動いた {placed} → {moved}"
+                    elif title_bar_height(_shot(hwnd)) != top or reader_chrome_shown(
+                        _shot(hwnd), top=top
+                    ):
+                        # 表示の切り替わりの条件が分かっていないので、撮り終えたあとに測り直す。
+                        # 途中で変わっていれば、上が欠けた／UI の写ったページが混ざっている
+                        row["status"] = "失敗"
+                        row["detail"] = "撮影中に表示が変わった（タイトルバーか読書 UI）"
                     elif pages.total < MIN_PAGES and not args.allow_partial:
                         # 撮れていない本を完成扱いにしない（次からずっと飛ばされる）
                         row["status"] = "ページが少なすぎる"
                         row["detail"] = f"{pages.total} ページ"
+                    elif args.max_pages:
+                        # 試し撮りを完了として記録しない（本番の state に混ざると永久に飛ばされる）
+                        row["status"] = "試し撮り"
                     else:
                         row["status"] = DONE
             except Exception as exc:  # noqa: BLE001 - 1 冊の失敗で一括処理を止めない
                 row["status"] = "失敗"
                 row["detail"] = f"{type(exc).__name__}: {exc}"
+            if row["status"] != DONE:
+                # **完了でない本の PDF を蔵書に残さない。** run_book は撮れた分の PDF を蔵書に
+                # 書いてから返るので、そのままだと pending() が次から飛ばし、断片・少ページの本が
+                # 蔵書に固定される。作業フォルダに退避する（消さない）
+                quarantined = quarantine(args.library, title, os.path.dirname(args.state))
+                if quarantined:
+                    row["detail"] = f"{row.get('detail', '')} PDF を {quarantined} へ退避".strip()
             row["seconds"] = round(time.time() - started, 1)
             writer.writerow(row)
             state.flush()
