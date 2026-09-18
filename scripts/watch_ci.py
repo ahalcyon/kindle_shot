@@ -24,11 +24,16 @@ PR を出したあと、CI が通ったことを利用者から知らされる�
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 import time
 import urllib.parse
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.console import setup_stdio  # noqa: E402
 
 DEFAULT_INTERVAL = 30
 DEFAULT_TIMEOUT = 3600
@@ -210,6 +215,8 @@ def watch(pr, *, interval, timeout):
 
 
 def main(argv=None):
+    # 題名・語に cp932 で書けない字があっても、1 行の表示で処理を止めない
+    setup_stdio()
     parser = argparse.ArgumentParser(description="PR の CI が終わるまで待って結果を出す")
     parser.add_argument("pr", nargs="?", help="PR 番号（省略時は今のブランチの PR）")
     parser.add_argument(

@@ -43,7 +43,12 @@ import os
 import shutil
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import tempfile
+
+from core.console import setup_stdio  # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLI = os.path.join(REPO_ROOT, "cli.py")
@@ -355,6 +360,8 @@ def run_smoke_with_retry(asin, out, pages, python=None, echo=print, screen=False
 
 
 def main(argv=None):
+    # 題名・語に cp932 で書けない字があっても、1 行の表示で処理を止めない
+    setup_stdio()
     parser = argparse.ArgumentParser(
         prog="smoke_capture",
         description="Kindle Cloud Reader で数ページだけ取って PDF まで通す実機スモーク",

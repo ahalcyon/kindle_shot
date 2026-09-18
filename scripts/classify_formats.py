@@ -20,7 +20,6 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from core.book_format import (  # noqa: E402
     DEFAULT_THRESHOLD,
     IMAGE,
@@ -33,9 +32,12 @@ from core.book_format import (  # noqa: E402
     measured_labels,
     series_labels,
 )
+from core.console import setup_stdio  # noqa: E402
 
 
 def main(argv=None):
+    # 題名に cp932 で書けない字があっても、進捗の 1 行で一括処理を止めない
+    setup_stdio()
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--books", required=True, help="入力の books.json")
     p.add_argument("--out", required=True, help="format を入れた books.json の出力先")

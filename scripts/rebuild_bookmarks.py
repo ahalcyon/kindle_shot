@@ -92,6 +92,8 @@ def load_books(path):
 
 
 def main(argv=None):
+    # 題名に cp932 で書けない字があっても、進捗の 1 行で一括処理を止めない
+    setup_stdio()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("--books", required=True, help="books.json（title / asin / format）")
     ap.add_argument("--library", required=True, help="蔵書フォルダ（撮影時の --out と同じ場所）")
@@ -107,8 +109,6 @@ def main(argv=None):
     ap.add_argument("--asin", action="append", help="この ASIN の本だけ（複数指定可）")
     ap.add_argument("--profile-dir", help="ブラウザプロファイル（省略時は既定）")
     args = ap.parse_args(argv)
-    # 題名に cp932 で書けない字があっても、進捗の 1 行で一括処理を止めない
-    setup_stdio()
 
     books = load_books(args.books)
     if args.asin:

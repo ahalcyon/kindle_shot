@@ -50,6 +50,7 @@ import sys
 # リポジトリ直下を import パスに足す（scripts/ から core を使うため）
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.console import setup_stdio  # noqa: E402
 from core.pipeline import load_batch_file  # noqa: E402
 
 EXIT_OK = 0
@@ -243,6 +244,8 @@ def _validate_output(out_path):
 
 
 def main(argv=None):
+    # 題名に cp932 で書けない字があっても、進捗の 1 行で一括処理を止めない
+    setup_stdio()
     parser = argparse.ArgumentParser(
         description="Kindle 蔵書ダンプ + 選書定義から batch 用 books.json を生成する",
     )

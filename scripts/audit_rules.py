@@ -64,6 +64,7 @@ sys.path.insert(0, os.path.dirname(_HERE))
 
 from mine_misreads import load_corpus  # noqa: E402
 
+from core.console import setup_stdio  # noqa: E402
 from core.text_replacements import default_path, load_replacer  # noqa: E402
 
 KATAKANA_RUN = re.compile(r"[\u30a0-\u30ff\u31f0-\u31ff\u3099-\u309c]+")
@@ -175,6 +176,8 @@ def rule_detail(runs, replacer, key):
 
 
 def main(argv=None):
+    # 題名に cp932 で書けない字があっても、進捗の 1 行で一括処理を止めない
+    setup_stdio()
     p = argparse.ArgumentParser(description="置換規則をコーパスに当てて点検する")
     p.add_argument("paths", nargs="+", help="PDF / テキスト / それらを含むディレクトリ")
     p.add_argument("--rules", help="置換辞書 (既定: リポジトリの replacements.json)")

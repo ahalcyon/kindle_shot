@@ -33,6 +33,7 @@ from core.book_format import (  # noqa: E402
     book_pdf_path,
     measured_labels,
 )
+from core.console import setup_stdio  # noqa: E402
 from core.text_layer import strip_file  # noqa: E402
 
 
@@ -45,6 +46,8 @@ def titles_from_books(path):
 
 
 def main(argv=None):
+    # 題名に cp932 で書けない字があっても、進捗の 1 行で一括処理を止めない
+    setup_stdio()
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--folder", required=True, help="PDF の入っているフォルダ")
     p.add_argument("--books", help="format 付きの books.json（image_pdf の本を剥がす）")

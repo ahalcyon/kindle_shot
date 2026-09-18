@@ -41,6 +41,7 @@ sys.path.insert(0, _REPO_ROOT)
 
 # 出力ファイルの決め方とスキップ判定は batch 本体と同じものを使う
 # （生成側に書き写すと「batch はスキップするのにこちらは作り直す」というズレが出る）
+from core.console import setup_stdio  # noqa: E402
 from core.pipeline import FORMATS, _batch_output_path, load_batch_file  # noqa: E402
 from core.safe_names import book_path_name  # noqa: E402
 
@@ -111,6 +112,8 @@ def convert_one(trimmed, out, fmt, title, source, log):
 
 
 def main(argv=None):
+    # 題名に cp932 で書けない字があっても、進捗の 1 行で一括処理を止めない
+    setup_stdio()
     parser = argparse.ArgumentParser(
         description="トリミング済み画像から2つ目の出力形式を作る"
         "（キャプチャ・トリミングをやり直さない）",
