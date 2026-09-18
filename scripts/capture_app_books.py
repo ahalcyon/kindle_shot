@@ -94,13 +94,16 @@ TITLE_BAR_RANGE = (40, 60)
 SHOT_DIR: str | None = None
 
 
+CURRENT_BOOK = ""  # 保存する画面のファイル名に使う（main が本ごとに設定する）
+
+
 def _keep_shot(hwnd, name):
-    """いまの画面を SHOT_DIR に残す。残せなくても処理は止めない。"""
+    """いまの画面を SHOT_DIR に残す（本ごとに上書き。増え続けない）。残せなくても処理は止めない。"""
     if not SHOT_DIR:
         return
     try:
         os.makedirs(SHOT_DIR, exist_ok=True)
-        _shot(hwnd).save(os.path.join(SHOT_DIR, f"{int(time.time())}_{name}.png"))
+        _shot(hwnd).save(os.path.join(SHOT_DIR, f"{CURRENT_BOOK or 'book'}_{name}.png"))
     except Exception:  # noqa: BLE001 - 記録の失敗で本を落とさない
         pass
 
@@ -620,15 +623,37 @@ def verify_title(hwnd, title, *, top=0, emit=print):
     # OUTPUT の英字しか読めなかった）。読書 UI を出すと上のバーに**アプリが持つ題名**が出るので、
     # そちらも読む。読んだら UI を消し直す（消せなければ撮らない）
     _click(hwnd, CHROME_TOGGLE[0], CHROME_TOGGLE[1] + top, wait=1.2)
+    if not reader_chrome_shown(_shot(hwnd), top=top):
+        # 出したつもりの UI が見えないなら、バーを読んだことにも UI の状態にも確信が持てない。
+        # ここで通すと、検出器の偽陰性のまま UI が写った本が完成扱いになる（レビュー指摘）
+        emit("  読書 UI が出ない（題名のバーを読めない）")
+        _keep_shot(hwnd, "title")
+        return False
     bar = _shot(hwnd, (CHROME_BAND[0], top, CHROME_BAND[1], top + CHROME_BOX[3] + 8))
     seen_bar = _ocr(bar)
     if not hide_reader_chrome(hwnd, top=top, emit=emit):
         return False
-    if title_matches(title, seen_bar):
+    if bar_title_matches(title, seen_bar):
         return True
     emit(f"  開いた本を確かめられない（読めた文字: {seen[:60]!r} / バー: {seen_bar[:40]!r}）")
     _keep_shot(hwnd, "title")
     return False
+
+
+def bar_title_matches(want, bar, *, min_chars=8):
+    """読書 UI のバーの題名が、撮りたい本のものか。表紙より厳しく**前方一致**で見る。
+
+    バーはアプリが持つ書誌の題名そのもの（ノイズ無し）で、長いと末尾が「…」で省略される。
+    表紙と同じ最長共通部分の照合だと、巻数・版・号だけ違う本（❶ と ❷、third と fourth
+    edition）が先頭の共通部分で通る（レビューで実測）。省略前の文字列が題名の先頭と
+    一致することを要求すれば、省略される前に見えている巻数の違いで弾ける。
+    OCR の揺れで落ちるのは撮らない側なので安全。
+    """
+    seen = _norm(bar.replace("…", " ").replace("...", " "))
+    full = _norm(want)
+    if len(seen) < min_chars or not full:
+        return False
+    return full.startswith(seen) or seen.startswith(full)
 
 
 def _digest(image):
@@ -782,6 +807,8 @@ def main(argv=None):
         for n, book in enumerate(todo, 1):
             title, asin = book.get("title", ""), book.get("asin", "")
             row = {"asin": asin, "title": title}
+            global CURRENT_BOOK
+            CURRENT_BOOK = asin or _norm(title)[:20]
             started = time.time()
             print(f"[{n}/{len(todo)}] {title[:46]}", flush=True)
             if need_restart:
