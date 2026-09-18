@@ -221,6 +221,7 @@ kindle_shot.bat check --profile kindle_cloud
 | `--overwrite` | オフ | 保存先・トリミング先の既存画像を削除してから実行 |
 | `--no-rewind` / `--max-rewind` / `--load-wait` | - / `1000` / `45` | open の巻き戻し・読み込み待ちの調整 |
 | `--no-cover` | - | 表紙を 1 ページ目に足さない（既定は商品ページから取って足す） |
+| `--no-toc-bookmarks` | - | PDF ができたあと、Kindle の本が持つ目次でしおりを作り直す仕上げを行わない（`--asin` を付けた `image_pdf` / `searchable_pdf` で既定は行う） |
 | `--ocr-workers` | config の `ocr.workers` | ndlocr-lite の並列プロセス数 |
 | `--faithful` / `--no-cleanup` / `--split-words` | - | Markdown の形式・クリーニング・分割出力（[Markdown 出力](#markdown-出力notebooklm-最適化)） |
 
@@ -230,7 +231,7 @@ kindle_shot.bat check --profile kindle_cloud
 |-----------|------|------|
 | `--books` | （必須） | 本リストの JSON ファイル（[batch ファイル形式](#batch-ファイル形式)） |
 | `--out` | （必須） | 全本共通の保存先フォルダ（直下に `<title>.pdf` / `.md` が並ぶ） |
-| `--profile` / `--format` / `--page-turn` / `--page-wait` / `--expect-pages` / `--max-pages` / `--max-rewind` / `--load-wait` / `--no-rewind` / `--safety` / `--min-margins` / `--no-ui-bands` / `--ocr-workers` / `--faithful` / `--no-cleanup` / `--no-cover` / `--split-words` | `run` と同じ | **全本の既定**。JSON 側の本ごとの指定がこれを上書きする |
+| `--profile` / `--format` / `--page-turn` / `--page-wait` / `--expect-pages` / `--max-pages` / `--max-rewind` / `--load-wait` / `--no-rewind` / `--safety` / `--min-margins` / `--no-ui-bands` / `--ocr-workers` / `--faithful` / `--no-cleanup` / `--no-cover` / `--no-toc-bookmarks` / `--split-words` | `run` と同じ | **全本の既定**。JSON 側の本ごとの指定がこれを上書きする |
 | `--keep-images` | オフ（＝消す） | `run` と同じ。**全本共通で、JSON 側の本ごとの指定はできない** |
 | `--overwrite` | オフ | 完成済み（出力ファイルがある）本も再処理する。既定は完成済みをスキップして途中から再開 |
 | `--stop-on-error` | オフ | 1冊でも失敗したらバッチを中断（既定は続行して末尾に成功/失敗の一覧を出す） |
@@ -770,6 +771,14 @@ python scripts\convert_2nd.py --books books_c.json --out C:\books --format markd
 - **`cover` イベント**: 表紙を 1 ページ目にしたか。`human` に「1 ページ目にしました」と
   出れば付いており、PDF のページ数は本文より 1 多くなります。取れなかった本でも処理は
   続きます（表紙なしで本文だけの PDF になります）
+- **`bookmarks_rebuilt` イベント（`--asin` 付きの `image_pdf` / `searchable_pdf`）**: PDF ができたあと、
+  Kindle の本が持つ目次でしおりを作り直した結果。`entries`（しおりの件数）/ `confirmed`（テキスト層で
+  章名を確かめられた件数）/ `shifts`（区間ごとのずれ幅。例 `0→1→0→2`）。要確認の印が付いた本
+  （テキスト層なし・ページ数の差が表紙で説明できない・テキストからずれ幅を選んだ）は書き換えず、
+  `status` イベントで理由を出します。まとめて見てから入れるときは
+  `scripts/rebuild_bookmarks.py --apply --include-flagged`。
+  **しおりは仕上げなので、失敗しても PDF の成否は変わりません**（OCR から推測したしおりが残ります）
+
 - **`margins_clip_content` イベント**: 自動検出したトリミングが内容の位置を超えた辺と
   超過ピクセル数。本文が欠ける可能性があります（要素撮影の本では削らないので出ません）
 - **`ocr_layout` イベント（`searchable_pdf` のみ）**: 文字の位置つきで読めたページ数

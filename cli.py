@@ -423,6 +423,7 @@ def cmd_run(args, rep):
         faithful=args.faithful,
         no_cleanup=args.no_cleanup,
         no_cover=args.no_cover,
+        no_toc_bookmarks=args.no_toc_bookmarks,
         split_words=args.split_words,
         emit=rep.event,
     )
@@ -476,6 +477,7 @@ def cmd_batch(args, rep):
         "faithful": args.faithful,
         "no_cleanup": args.no_cleanup,
         "no_cover": args.no_cover,
+        "no_toc_bookmarks": args.no_toc_bookmarks,
         "split_words": args.split_words,
     }
     return run_batch(
@@ -779,6 +781,11 @@ def build_parser():
         help="表紙を 1 ページ目に足さない（既定は商品ページから取って足す）",
     )
     p_run.add_argument(
+        "--no-toc-bookmarks",
+        action="store_true",
+        help="PDF ができたあと、Kindle の目次でしおりを作り直す仕上げを行わない",
+    )
+    p_run.add_argument(
         "--split-words",
         type=int,
         metavar="N",
@@ -929,6 +936,11 @@ def build_parser():
         "--no-cover",
         action="store_true",
         help="表紙を 1 ページ目に足さない（全本の既定。既定は商品ページから取って足す）",
+    )
+    p_batch.add_argument(
+        "--no-toc-bookmarks",
+        action="store_true",
+        help="Kindle の目次でしおりを作り直す仕上げを行わない（全本の既定）",
     )
     p_batch.add_argument(
         "--split-words",

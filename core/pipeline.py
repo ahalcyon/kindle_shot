@@ -910,6 +910,51 @@ def add_cover_page(trimmed_dir, asin, *, emit=null_emit, fetch=None):
     return True
 
 
+# しおりを作り直せる出力形式。テキスト PDF は撮影のページと 1 対 1 でないので外す
+TOC_BOOKMARK_FORMATS = ("searchable_pdf", "image_pdf")
+# 描画 API から取った目次の置き場（蔵書フォルダの下）
+TOC_CACHE_DIR = "_toc_cache"
+
+
+def rebuild_toc_bookmarks(pdf_path, asin, cache_dir, *, emit=null_emit, profile_dir=None):
+    """撮影した PDF のしおりを、Kindle の本が持つ目次で作り直す (#114)。
+
+    **仕上げなので、失敗しても本の成否は変えない。** OCR から推測したしおり
+    （`core.chapter_detector`）は残る。要確認の印が付いた本も書き換えない
+    （まとめて見てから `scripts/rebuild_bookmarks.py --apply --include-flagged` で入れる）。
+
+    Returns:
+        書き換えたら True。
+    """
+    from core.bookmark_rebuild import UnsupportedBook, cached_structure, rebuild_book
+
+    try:
+        structure = cached_structure(cache_dir, asin, profile_dir=profile_dir)
+        result = rebuild_book(pdf_path, structure)
+    except UnsupportedBook as exc:
+        emit("status", human=f"しおりの作り直しは省略（Cloud Reader 非対応）: {exc}")
+        return False
+    except Exception as exc:  # noqa: BLE001 - 仕上げの失敗で PDF を失敗扱いにしない
+        emit("status", human=f"しおりを作り直せませんでした（PDF はできています）: {exc}")
+        return False
+    row = result["row"]
+    if result["written"]:
+        emit(
+            "bookmarks_rebuilt",
+            human=f"しおりを {result['entries']} 件にしました"
+            f"（章名を確かめた {row['confirmed']} 件 / ずれ幅 {row['shifts']}）",
+            entries=result["entries"],
+            confirmed=row["confirmed"],
+            shifts=row["shifts"],
+        )
+        return True
+    emit(
+        "status",
+        human=f"しおりは作り直しませんでした（{result['reason']}: {' / '.join(result['flags'])}）",
+    )
+    return False
+
+
 def run_book(
     *,
     title,
@@ -935,11 +980,12 @@ def run_book(
     faithful=False,
     no_cleanup=False,
     no_cover=False,
+    no_toc_bookmarks=False,
     split_words=None,
     config=None,
     emit=null_emit,
 ):
-    """1冊を通しで実行する: open → capture → validate → trim → convert。
+    """1冊を通しで実行する: open → capture → validate → trim → convert → bookmarks。
 
     asin / url を指定すると Cloud Reader で本を開くところから実行する。
     各ステップの所要時間を計測し、最後に run_summary イベントで報告する。
@@ -950,6 +996,7 @@ def run_book(
         profile_key: キャプチャプロファイルのキー
         min_margins: トリミングで最低限削る余白 (L,R,T,B)。None かつ
             kindle_cloud の場合は書名ヘッダー/ページ番号フッター分 (0,0,80,80)
+        no_toc_bookmarks: Kindle の目次でしおりを作り直す仕上げを行わない
         ui_bands: ページ間の変化からビューアの固定 UI 帯を検出して併用する
         他の引数は open_book / run_capture / run_validate / run_trim /
         run_convert の同名引数へそのまま渡る。
@@ -991,6 +1038,10 @@ def run_book(
     if not no_cover:
         # 表紙のステップを足したぶん分母も増やす。増やさないと [5/4] が出る。
         # current / total は README の JSON Lines 仕様（外部契約）
+        total_steps += 1
+    # しおりの作り直し（#114）。PDF を作る形式で、本を指定して開いたときだけ走る
+    toc_bookmarks = bool(asin) and fmt in TOC_BOOKMARK_FORMATS and not no_toc_bookmarks
+    if toc_bookmarks:
         total_steps += 1
     step_no = 0
     t_start = time.perf_counter()
@@ -1146,6 +1197,15 @@ def run_book(
             source=(asin or None),
             emit=emit,
         )
+        if code == EXIT_OK and toc_bookmarks:
+            step("bookmarks: Kindle の目次でしおりを作り直す")
+            rebuild_toc_bookmarks(
+                os.path.join(out, _ensure_ext(path_name, ".pdf")),
+                asin,
+                os.path.join(out, TOC_CACHE_DIR),
+                emit=emit,
+            )
+
         # 成功した本だけ消す。失敗した本の中間ファイルを消すと原因を追えなくなり、
         # 再取得にも 1 冊あたり 10 分かかる。所要時間サマリを最後にするため
         # finish() より前に消す
