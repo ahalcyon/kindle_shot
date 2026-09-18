@@ -124,6 +124,21 @@ def test_clipboard_round_trips_a_japanese_title():
     assert cab._norm(cab._clipboard()) == cab._norm(title)
 
 
+def test_place_waits_until_the_window_stays_where_it_was_put(monkeypatch):
+    """起動し直したアプリは遅れて最後の本を開き直し、最大化し直す（実測）。置いた直後に
+    確かめただけでは、そのあと最大化されて検索窓が窓の外になる。"""
+    monkeypatch.setattr(cab, "_move_window", lambda hwnd, w, h: None)
+    monkeypatch.setattr(cab.time, "sleep", lambda s: None)
+    placed = (cab.WINDOW_LEFT, 0, cab.WINDOW_LEFT + cab.WIDTH, cab.HEIGHT)
+    maximized = (-2568, -8, 8, 1400)
+    rects = iter([placed, maximized, placed, placed])
+    monkeypatch.setattr("core.win32_utils.get_window_rect", lambda hwnd: next(rects))
+    cab._place(object())  # 最大化を挟んでも、2 回続けて置いた通りになるまで待つ
+    monkeypatch.setattr("core.win32_utils.get_window_rect", lambda hwnd: maximized)
+    with pytest.raises(RuntimeError):
+        cab._place(object(), tries=3)
+
+
 def test_is_cover_tells_a_book_from_the_background():
     """検索結果がちょうど 1 冊かを、この判定で見る（別の本を撮らないため）。"""
     from PIL import Image
@@ -171,6 +186,15 @@ def test_library_anchor_is_none_off_the_library():
         for y in range(140, 169):
             figure.putpixel((x, y), (120, 120, 120))  # 青い帯の上が白くない（図版の一部）
     assert cab.find_library_anchor(figure) is None
+    # 章見出しの青い箱（実測: x=115〜270、高さ 42px、上下は白）を「全て」の行と見ない。
+    # 実測でこれを取り違え、本を開いたままライブラリにいると判定した
+    chapter = Image.new("RGB", (1200, 600), (255, 255, 255))
+    for x in range(115, 271):
+        for y in range(118, 160):
+            chapter.putpixel((x, y), (30, 140, 220))
+    assert cab.find_library_anchor(chapter) is None
+    # 欄の幅いっぱいでも、高さが違えば「全て」の行ではない
+    assert cab.find_library_anchor(_library_screen(169, 240)) is None
 
 
 def _arrow(page, top=0):
