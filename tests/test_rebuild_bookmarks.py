@@ -147,8 +147,8 @@ def test_a_shift_chosen_from_text_is_listed_and_flagged(tmp_path):
     assert rb.FLAG_SHIFTED in flags
 
 
-def test_cached_structure_stops_at_an_unsupported_book(tmp_path, monkeypatch):
-    """非対応の本は描画 API の要求が出ない。開いた画面のダイアログで見分ける (#114)。"""
+def test_cached_structure_looks_for_the_dialog_only_after_a_failed_fetch(tmp_path, monkeypatch):
+    """非対応のダイアログは開いた直後には出ていない。取れなかった本だけ見る (#114)。"""
     import contextlib
 
     import core.headless_browser as hb
@@ -160,35 +160,88 @@ def test_cached_structure_stops_at_an_unsupported_book(tmp_path, monkeypatch):
         yield object()
 
     monkeypatch.setattr(hb, "open_reader", fake_open_reader)
-    monkeypatch.setattr(hc, "unsupported_reason", lambda page: "Kindleアプリが必要です")
+    looked = []
 
-    def must_not_run(*args, **kwargs):
-        raise AssertionError("非対応の本で描画 API を叩いてはいけない")
+    def dialog(page):
+        looked.append(1)
+        return "Kindleアプリが必要です"
 
-    monkeypatch.setattr(kt, "fetch_book_structure", must_not_run)
-    with pytest.raises(rb.UnsupportedBook):
-        rb.cached_structure(str(tmp_path), "B0TEST")
+    monkeypatch.setattr(hc, "unsupported_reason", dialog)
 
-    monkeypatch.setattr(hc, "unsupported_reason", lambda page: None)
+    # 取れた本ではダイアログを見に行かない（誤判定で取れる本を飛ばす経路を作らない）
     monkeypatch.setattr(kt, "fetch_book_structure", lambda page: {"toc": [], "pages": []})
     assert rb.cached_structure(str(tmp_path), "B0TEST") == {"toc": [], "pages": []}
+    assert looked == []
+
+    # 取れなかった本はダイアログを見て、非対応なら失敗ではなく UnsupportedBook にする
+    def no_render(page):
+        raise RuntimeError("描画要求が出ませんでした（本を開けていない可能性）")
+
+    monkeypatch.setattr(kt, "fetch_book_structure", no_render)
+    with pytest.raises(rb.UnsupportedBook):
+        rb.cached_structure(str(tmp_path), "B0TEST")
+    assert looked == [1]
+
+    # ダイアログが無ければ元の失敗のまま（非対応にすり替えない）
+    monkeypatch.setattr(hc, "unsupported_reason", lambda page: None)
+    with pytest.raises(RuntimeError):
+        rb.cached_structure(str(tmp_path), "B0TEST")
 
 
 def test_an_unsupported_book_is_not_counted_as_a_failure(tmp_path, monkeypatch):
     """Kindle アプリでしか開けない本は直しようが無い。失敗に数えると内訳がずれる (#114)。"""
+    import shutil
+
+    from core.book_format import book_pdf_path
+
     pdf, books, lib, cache = _library(
         tmp_path, pdf_pages=2, structure=_structure([[0, 9], [10, 19]])
     )
+    # 非対応 1 冊 + 本物の失敗 1 冊。終了コードは失敗の 1 冊だけで決まる
+    listed = json.loads(books.read_text(encoding="utf-8"))
+    listed.append({"title": "本2", "asin": "B0FAIL", "format": "searchable_pdf"})
+    books.write_text(json.dumps(listed), encoding="utf-8")
+    shutil.copyfile(pdf, book_pdf_path(str(lib), "本2"))
 
-    def unsupported(*args, **kwargs):
+    def structures(cache_dir, asin, **kwargs):
+        if asin == "B0FAIL":
+            raise RuntimeError("描画要求が出ませんでした（本を開けていない可能性）")
+        raise rb.UnsupportedBook("Kindleアプリが必要です")
+
+    monkeypatch.setattr(rb, "cached_structure", structures)
+    before = pathlib.Path(pdf).read_bytes()
+    code, rows = _run(tmp_path, books, lib, cache, "--apply", "--include-flagged")
+    assert code == 1
+    status = {r["title"]: r["status"] for r in rows}
+    assert status["本"].startswith("Cloud Reader 非対応")
+    assert status["本2"].startswith("失敗")
+    assert pathlib.Path(pdf).read_bytes() == before
+
+
+def test_unsupported_books_still_count_towards_the_stop_rule(tmp_path, monkeypatch):
+    """非対応でもブラウザは開いている。続くなら打ち切る (#114)。"""
+    import shutil
+
+    from core.book_format import book_pdf_path
+
+    pdf, books, lib, cache = _library(
+        tmp_path, pdf_pages=2, structure=_structure([[0, 9], [10, 19]])
+    )
+    listed = json.loads(books.read_text(encoding="utf-8"))
+    for i in range(rb.MAX_CONSECUTIVE_FAILURES + 3):
+        listed.append({"title": f"本{i}", "asin": f"B0U{i}", "format": "searchable_pdf"})
+        shutil.copyfile(pdf, book_pdf_path(str(lib), f"本{i}"))
+    books.write_text(json.dumps(listed), encoding="utf-8")
+    opened = []
+
+    def unsupported(cache_dir, asin, **kwargs):
+        opened.append(asin)
         raise rb.UnsupportedBook("Kindleアプリが必要です")
 
     monkeypatch.setattr(rb, "cached_structure", unsupported)
-    before = pathlib.Path(pdf).read_bytes()
-    code, rows = _run(tmp_path, books, lib, cache, "--apply", "--include-flagged")
-    assert code == 0
-    assert rows[0]["status"].startswith("Cloud Reader 非対応")
-    assert pathlib.Path(pdf).read_bytes() == before
+    code, rows = _run(tmp_path, books, lib, cache)
+    assert len(opened) == rb.MAX_CONSECUTIVE_FAILURES
+    assert len(rows) == rb.MAX_CONSECUTIVE_FAILURES
 
 
 def test_a_badly_ordered_toc_blocks_writing(tmp_path):
