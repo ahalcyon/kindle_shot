@@ -207,7 +207,7 @@ def _place(hwnd, width=WIDTH, height=HEIGHT, *, settle=2.0, tries=10):
     """
     from core.win32_utils import get_window_rect
 
-    want = (WINDOW_LEFT, 0, WINDOW_LEFT + width, height)
+    want = _wanted_rect(width, height)
     stable = 0
     for _ in range(tries):
         _move_window(hwnd, width, height)
@@ -226,10 +226,14 @@ def _move_window(hwnd, width, height):
     ctypes.windll.user32.SetWindowPos(hwnd, None, WINDOW_LEFT, 0, width, height, 0x0040)
 
 
+def _wanted_rect(width=WIDTH, height=HEIGHT):
+    return (WINDOW_LEFT, 0, WINDOW_LEFT + width, height)
+
+
 def _is_placed(hwnd, width=WIDTH, height=HEIGHT):
     from core.win32_utils import get_window_rect
 
-    return get_window_rect(hwnd) == (WINDOW_LEFT, 0, WINDOW_LEFT + width, height)
+    return get_window_rect(hwnd) == _wanted_rect(width, height)
 
 
 def _shot(hwnd, box=None):
@@ -400,6 +404,9 @@ def _to_library(hwnd, *, tries=3):
         for _ in range(2):
             pyautogui.press("esc")  # 開いたままのダイアログを閉じる
             time.sleep(0.4)
+        if not _is_placed(hwnd):
+            # 最大化されていると欄の幅が変わり、「全て」の行の検出が当てにならない。先に置き直す
+            _place(hwnd)
         if is_library(_shot(hwnd)):
             return True
         pyautogui.hotkey("ctrl", "w")
@@ -817,6 +824,8 @@ def main(argv=None):
             except Exception as exc:  # noqa: BLE001 - 1 冊の失敗で一括処理を止めない
                 row["status"] = "失敗"
                 row["detail"] = f"{type(exc).__name__}: {exc}"
+                # 置けない・窓が見つからない等は、起動し直しが唯一の復旧手段
+                need_restart = True
             if row["status"] != DONE:
                 # **完了でない本の PDF を蔵書に残さない。** run_book は撮れた分の PDF を蔵書に
                 # 書いてから返るので、そのままだと pending() が次から飛ばし、断片・少ページの本が

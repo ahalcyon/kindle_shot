@@ -134,6 +134,8 @@ def test_place_waits_until_the_window_stays_where_it_was_put(monkeypatch):
     rects = iter([placed, maximized, placed, placed])
     monkeypatch.setattr("core.win32_utils.get_window_rect", lambda hwnd: next(rects))
     cab._place(object())  # 最大化を挟んでも、2 回続けて置いた通りになるまで待つ
+    with pytest.raises(StopIteration):
+        next(rects)  # 4 回とも見ている（1 回一致で返る実装ではない）
     monkeypatch.setattr("core.win32_utils.get_window_rect", lambda hwnd: maximized)
     with pytest.raises(RuntimeError):
         cab._place(object(), tries=3)
@@ -195,6 +197,18 @@ def test_library_anchor_is_none_off_the_library():
     assert cab.find_library_anchor(chapter) is None
     # 欄の幅いっぱいでも、高さが違えば「全て」の行ではない
     assert cab.find_library_anchor(_library_screen(169, 240)) is None
+    # 左端だけ欠ける箱（x=40〜232）は「左端まで青い」だけで弾く
+    left_short = Image.new("RGB", (1200, 600), (255, 255, 255))
+    for x in range(40, 233):
+        for y in range(169, 205):
+            left_short.putpixel((x, y), (0, 90, 200))
+    assert cab.find_library_anchor(left_short) is None
+    # 欄の外まで続く帯（x=20〜300）は「欄の外が白い」だけで弾く
+    wide = Image.new("RGB", (1200, 600), (255, 255, 255))
+    for x in range(20, 301):
+        for y in range(169, 205):
+            wide.putpixel((x, y), (0, 90, 200))
+    assert cab.find_library_anchor(wide) is None
 
 
 def _arrow(page, top=0):
@@ -514,3 +528,20 @@ def test_a_trial_capture_is_not_recorded_as_done(tmp_path, monkeypatch):
     )
     assert _rows(state)[0]["status"] == "試し撮り"
     assert cab.load_state(state) == set()
+
+
+def test_restarts_the_app_after_an_exception_too(tmp_path, monkeypatch):
+    """置けない・窓が見つからない等の例外でも、次の本の前に起動し直す（唯一の復旧手段）。"""
+    entries = [{"title": "本K", "asin": "K1"}, {"title": "本L", "asin": "K2"}]
+    books, library, state = _prepare(tmp_path, entries, [])
+    _stub_screen(monkeypatch)
+    restarts: list[int] = []
+    monkeypatch.setattr(cab, "restart_app", lambda **kw: restarts.append(1))
+
+    def broken_place(hwnd):
+        raise RuntimeError("ウィンドウを置けない")
+
+    monkeypatch.setattr(cab, "_place", broken_place)
+    assert cab.main(["--books", books, "--library", library, "--state", state]) == 1
+    assert len(restarts) == 2  # 最初に 1 回、例外で失敗した本のあとに 1 回
+    assert all(r["status"] == "失敗" for r in _rows(state))
