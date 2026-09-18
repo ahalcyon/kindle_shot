@@ -225,6 +225,15 @@ def test_reader_chrome_is_seen_by_the_back_arrow():
     assert not cab.reader_chrome_shown(page)
     _arrow(page)
     assert cab.reader_chrome_shown(page)
+    # 幅いっぱいが黒い表紙は、矢印の位置に暗い画素があっても UI ではない（帯が暗い）。
+    # 実測: これを「出ている」と見て消せず、その本を撮れなかった
+    dark_cover = Image.new("RGB", (1200, 1390), (5, 5, 5))
+    assert not cab.reader_chrome_shown(dark_cover)
+    for x in range(0, 1200):
+        for y in range(0, 48):
+            dark_cover.putpixel((x, y), (255, 255, 255))  # 黒い表紙の上に白い UI のバーが出た
+    _arrow(dark_cover)
+    assert cab.reader_chrome_shown(dark_cover)
 
 
 def _with_title_bar(height=48):
