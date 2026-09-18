@@ -38,7 +38,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.book_format import book_pdf_path, load_books  # noqa: E402
+from core.book_format import IMAGE, SEARCHABLE, book_pdf_path, load_books  # noqa: E402
 from core.console import setup_stdio  # noqa: E402
 
 # ウィンドウの大きさ。幅 1200 で 1 段組（1400 以上だと 2 段組になる。実測）
@@ -57,7 +57,12 @@ BACK_ARROW = (32, 32)
 # 実測: Beginning in Algebraic Geometry）ので、ここで一律に削ると中身を切る。
 # 残りはページ間の変化から UI 帯を見つける仕組み（run の ui_bands）に任せる
 MIN_MARGINS = (0, 0, 65, 0)
-COLUMNS = ["asin", "title", "status", "pages", "seconds", "detail"]
+# 本を開いてから読めるようになるまで待つ秒数。未ダウンロードの本はここで落ちる
+OPEN_WAIT = 25.0
+# これ未満のページ数で「完了」にしない。撮れていない本が完成扱いで固定されるのを防ぐ
+MIN_PAGES = 10
+DONE = "完了"
+COLUMNS = ["asin", "title", "status", "pages", "stopped_reason", "seconds", "detail"]
 
 
 def _norm(text):
@@ -68,18 +73,27 @@ def _norm(text):
     return re.sub(r"[^\w]", "", unicodedata.normalize("NFKC", text or "")).lower()
 
 
-def title_matches(want, seen, *, head=8):
+def title_matches(want, seen, *, ratio=0.7, cap=24):
     """OCR で読んだ文字が、開きたかった本のものか。
 
-    見るのは 2 通り。**書名ヘッダー**（題名が途中で切れる）と、**表紙のページ全体**
-    （表紙にはヘッダーが出ないので、題名が絵の中の文字として入っている）。
-    どちらでも効くよう、正規化した先頭 head 文字が相手に含まれていれば同じ本とみなす。
-    副題・出版社名・レーベル名の違いで落とさない。
+    見るのは、**題名と読んだ文字の最長共通部分**が題名の ``ratio`` 以上あること
+    （長い題名で無理を言わないよう ``cap`` 文字で頭打ち）。表紙のページ全体を読むので、
+    相手には著者名・出版社名・帯の文句が混ざる。部分一致で見るのはそのため。
+
+    **先頭 8 文字の一致では緩すぎる。** 対象は英語の数学書・技術書が多く、
+    `Linear Algebra Done Right` と `Linear Algebra and Its Applications` のように
+    先頭が同じ本が普通にある（実測でこの 2 つが同じ本と判定された）。
     """
+    from difflib import SequenceMatcher
+
     a, b = _norm(want), _norm(seen)
     if not a or not b:
         return False
-    return a[:head] in b or b[:head] in a
+    need = min(int(len(a) * ratio), cap)
+    if need <= 0:
+        return False
+    match = SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b))
+    return match.size >= need
 
 
 def load_state(path):
@@ -107,11 +121,21 @@ def pending(books, done, library):
 
 
 def _app():
-    from core.win32_utils import activate_window, find_window
+    """Kindle アプリのウィンドウ。**プロセス名まで確かめる。**
+
+    ``find_window`` の ``process_name`` は絞り込みではなく点数の加算なので、アプリが
+    落ちていると「題名に kindle を含む別のウィンドウ」（エディタ・エクスプローラ・
+    ターミナル）が返る。そこへ Ctrl+A / Ctrl+V や ← を何百回も送ると実害が出る。
+    ``core/capture_runner.find_verified_window`` と同じ考え方で、一致しなければ落とす。
+    """
+    from core.win32_utils import activate_window, find_window, get_window_process_name
 
     hwnd = find_window("kindle", process_name="Kindle.exe")
     if not hwnd:
         raise RuntimeError("Kindle アプリのウィンドウが見つかりません")
+    seen = (get_window_process_name(hwnd) or "").lower()
+    if seen != "kindle.exe":
+        raise RuntimeError(f"Kindle アプリではないウィンドウでした（{seen}）")
     activate_window(hwnd, click_position="none")
     time.sleep(0.8)
     return hwnd
@@ -174,6 +198,16 @@ def is_cover(image, *, threshold=6.0):
     return max(ImageStat.Stat(image.convert("RGB")).stddev) > threshold
 
 
+def _clipboard():
+    """いまクリップボードに入っている文字。読めなければ空文字。"""
+    got = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
+        check=False,
+        capture_output=True,
+    )
+    return got.stdout.decode("utf-8", errors="replace").strip()
+
+
 def _to_clipboard(text):
     """題名をクリップボードに入れる（IME を通さずに検索窓へ貼るため）。
 
@@ -200,6 +234,10 @@ def _to_clipboard(text):
         )
     finally:
         os.unlink(path)
+    # **貼れたことを確かめる。** Set-Clipboard は他のプロセスがクリップボードを
+    # 掴んでいると失敗する。黙って失敗すると 1 冊前の題名が残り、前の本を開いて
+    # **今の本の題名で蔵書に保存**してしまう
+    return _norm(_clipboard()) == _norm(text)
 
 
 def _cover_box(point, size=60):
@@ -247,7 +285,9 @@ def open_book(hwnd, title, *, emit=print):
     if not _to_library(hwnd):
         emit("  ライブラリに戻れない")
         return False
-    _to_clipboard(title)
+    if not _to_clipboard(title):
+        emit("  クリップボードに題名を入れられない")
+        return False
     _click(hwnd, *SEARCH_BOX, wait=0.6)
     pyautogui.hotkey("ctrl", "a")
     pyautogui.hotkey("ctrl", "v")
@@ -260,11 +300,28 @@ def open_book(hwnd, title, *, emit=print):
     if is_cover(_shot(hwnd, _cover_box(SECOND_COVER))):
         emit("  検索が 2 冊以上に当たる")
         return False
-    _click(hwnd, *FIRST_COVER, wait=10.0)
+    _click(hwnd, *FIRST_COVER, wait=OPEN_WAIT)
     if is_library(_shot(hwnd, _cover_box(LIBRARY_MARK, 12))):
-        emit("  本が開かない")
+        emit("  本が開かない（未ダウンロードで時間がかかっている可能性）")
         return False
     return True
+
+
+def verify_title(hwnd, title, *, emit=print):
+    """いま開いているページの文字が、撮りたい本のものか。
+
+    **先頭（表紙）まで戻してから呼ぶこと。** 表紙には題名が大きく入っているので、
+    ページ全体を OCR すれば照合できる。本文ページの書名ヘッダーは題名が途中で切れる。
+
+    検索が 1 件でも、部分一致で別の本（巻数違い・シリーズの別冊）が当たりうる。
+    ここを飛ばすと、**別の本の中身が撮りたかった本の題名で蔵書に入る**。
+    読めなかったときも撮らない（安全側。あとで手で確かめる）。
+    """
+    seen = _ocr(_shot(hwnd))
+    if title_matches(title, seen):
+        return True
+    emit(f"  開いた本を確かめられない（読めた文字: {seen[:60]!r}）")
+    return False
 
 
 def _digest(image):
@@ -273,44 +330,60 @@ def _digest(image):
     return hashlib.sha1(image.convert("L").resize((160, 180)).tobytes()).hexdigest()
 
 
-def rewind_to_start(hwnd, *, max_presses=400, step=5, emit=print):
+def rewind_to_start(hwnd, *, max_presses=1500, step=10, interval=0.05, emit=print):
     """本の先頭まで戻す。戻り切ったら True。
 
     **画面キャプチャ経路には「先頭から撮る」処理が無い**（headless 経路の `max_rewind` は
     Cloud Reader を開くときの話）。アプリは前回の続きから開くので、戻さずに撮ると
     途中から始まる。実測: 8 ページ撮ったら xiii ページから始まった。
+
+    **先に「キーが届くこと」を確かめる。** 画面が変わらないことだけを見ると、
+    「先頭にいる」と「キーが届いていない」（フォーカスを奪われた・別のウィンドウを
+    掴んでいる）が区別できず、本の途中から撮った部分本が完成扱いになる。
     """
     import pyautogui
 
+    # **どちらの向きでも動かないときだけ「効かない」と見なす。**
+    # 最終ページでは → が、先頭では ← が効かない（実測: 前回の続きが最終ページだった本を
+    # → だけで見て「効かない」と誤判定した）
+    start = _digest(_shot(hwnd))
+    for key in ("right", "left"):
+        pyautogui.press(key)
+        time.sleep(1.0)
+        if _digest(_shot(hwnd)) != start:
+            break
+    else:
+        emit("  ページ送りが効かない")
+        return False
     before = _digest(_shot(hwnd))
     for _pressed in range(0, max_presses, step):
-        for _ in range(step):
-            pyautogui.press("left")
-            time.sleep(0.12)
+        pyautogui.press("left", presses=step, interval=interval)
         time.sleep(0.6)
         after = _digest(_shot(hwnd))
         if after == before:
             return True
         before = after
-    emit(f"  先頭まで戻り切らない（{max_presses} 回）")
+    emit(f"  先頭まで戻り切らない（← を {max_presses} 回送っても変わり続ける）")
     return False
 
 
 class _Watch:
-    """run_book のイベントから、ページ数と**失敗の理由**を拾う。
+    """run_book のイベントから、ページ数・止まった理由・**失敗の理由**を拾う。
 
     無人で何十冊も回すので、落ちた理由が一覧に残らないと原因を追えない。
+    画面キャプチャ経路がページ数を出すのは ``result``（``core/capture_runner.py`` の
+    manifest と同じ内容）。``capture_stopped`` は headless 経路のイベントで、ここには来ない。
     """
 
     def __init__(self):
         self.total = 0
+        self.stopped = ""
         self.error = ""
 
     def __call__(self, event, **kw):
-        if event == "capture_stopped":
-            self.total = kw.get("total_pages", self.total)
-        elif event == "result" and kw.get("total_pages"):
+        if event == "result" and kw.get("total_pages"):
             self.total = kw["total_pages"]
+            self.stopped = str(kw.get("stopped_reason") or "")
         elif event == "error":
             self.error = str(kw.get("message") or kw)[:200]
 
@@ -324,9 +397,26 @@ def main(argv=None):
     ap.add_argument("--state", required=True, help="進捗の CSV。あれば続きから")
     ap.add_argument("--limit", type=int, help="この冊数だけ撮る")
     ap.add_argument("--max-pages", type=int, help="1 冊あたりのページ数の上限（試し撮り用）")
-    ap.add_argument("--format", dest="fmt", default=None, help="既定は books.json の format")
+    ap.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="--max-pages を付けたまま蔵書へ書くことを許す（ふつうは使わない）",
+    )
+    ap.add_argument(
+        "--format",
+        dest="fmt",
+        default=None,
+        choices=[IMAGE, SEARCHABLE],
+        help="既定は一覧の format",
+    )
     ap.add_argument("--dry-run", action="store_true", help="撮らずに、対象の一覧だけ出す")
     args = ap.parse_args(argv)
+    if args.max_pages and not args.allow_partial:
+        # 抜き取りの出力を蔵書に混ぜない（AGENTS.md）。PDF があると次から飛ばされるので、
+        # 途中までの本が完成扱いで固定される
+        ap.error(
+            "--max-pages を使うときは --library に作業フォルダを指定し --allow-partial を付ける"
+        )
 
     books = load_books(args.books)
     todo = pending(books, load_state(args.state), args.library)
@@ -341,7 +431,7 @@ def main(argv=None):
     from core.pipeline import EXIT_OK, run_book
 
     exists = os.path.exists(args.state)
-    failures = 0
+    counts: dict[str, int] = {}
     with open(args.state, "a" if exists else "w", encoding="utf-8-sig", newline="") as state:
         writer = csv.DictWriter(state, fieldnames=COLUMNS, extrasaction="ignore")
         if not exists:
@@ -358,6 +448,8 @@ def main(argv=None):
                     row["status"] = "開けない"
                 elif not rewind_to_start(hwnd):
                     row["status"] = "先頭に戻れない"
+                elif not verify_title(hwnd, title):
+                    row["status"] = "本を確かめられない"
                 else:
                     pages = _Watch()
                     # run_book は**終了コード**を返す（真偽値ではない）
@@ -365,32 +457,48 @@ def main(argv=None):
                         title=title,
                         output=args.library,
                         profile_key="kindle",
+                        asin=asin or None,  # 表紙を商品ページから取る（本を開く経路には使わない）
                         fmt=args.fmt or book.get("format", "searchable_pdf"),
                         headless=False,
+                        page_turn="right",  # アプリは縦書きでも → が次ページ
                         min_margins=MIN_MARGINS,
                         max_pages=args.max_pages,
+                        # 失敗した本は次にやり直す。途中で終わった残骸画像は消して撮り直す
+                        # （完成した本は pending() が先に飛ばしている）
+                        overwrite=True,
                         no_toc_bookmarks=True,  # 非対応の本なので Kindle の目次は取れない
                         emit=pages,
                     )
-                    row["status"] = "完了" if code == EXIT_OK else "失敗"
                     row["pages"] = pages.total
+                    row["stopped_reason"] = pages.stopped
                     row["detail"] = pages.error or (f"exit={code}" if code else "")
-                    failures += code != EXIT_OK
+                    if code != EXIT_OK:
+                        row["status"] = "失敗"
+                    elif pages.total < MIN_PAGES and not args.allow_partial:
+                        # 撮れていない本を完成扱いにしない（次からずっと飛ばされる）
+                        row["status"] = "ページが少なすぎる"
+                        row["detail"] = f"{pages.total} ページ"
+                    else:
+                        row["status"] = DONE
             except Exception as exc:  # noqa: BLE001 - 1 冊の失敗で一括処理を止めない
                 row["status"] = "失敗"
                 row["detail"] = f"{type(exc).__name__}: {exc}"
-                failures += 1
             row["seconds"] = round(time.time() - started, 1)
             writer.writerow(row)
             state.flush()
+            counts[row["status"]] = counts.get(row["status"], 0) + 1
             print(
                 f"  → {row['status']} {row.get('pages', '')} ページ "
                 f"({row['seconds']} 秒) {row.get('detail', '')}",
                 flush=True,
             )
 
-    print(f"完了: {len(todo)} 冊中 {failures} 冊が失敗。一覧: {args.state}")
-    return 1 if failures else 0
+    done = counts.get(DONE, 0)
+    print(
+        f"完了: {len(todo)} 冊中 {done} 冊を撮った。内訳 {counts}。一覧: {args.state}", flush=True
+    )
+    # 撮れなかった本があるのに 0 で返すと、無人実行で異常に気づけない
+    return 0 if done == len(todo) else 1
 
 
 if __name__ == "__main__":
