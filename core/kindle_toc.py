@@ -22,6 +22,8 @@ Kindle Cloud Reader の描画 API（``renderer/render``）の応答には、本�
   それで前へ動かすと誤る（初期の目視で前への補正 4 件がすべて誤りだった）
 - 決めたずれ幅のページに章名が無ければ、後ろ ``SEARCH_AHEAD`` ページまで探す。
   すき間の項目で、次のページに無く 1 つ前のページにだけあれば 1 つ前にする（目視 6/8）
+- **章名が 1 つも見つからない区間は作らない**（#122）。区間を分けるのはテキストがそう
+  言っているときだけで、証拠の無い項目（「目次」「表紙」など）は隣の区間に付く
 - **柱（ランニングヘッダ）に章名が出る本では、章名のあるページは章の始まりを指さない**
   （#122）。章の終わりまで毎ページ出るうえ、章扉は飾り文字でテキストが無いことがあり、
   テキストで決めると必ず後ろへずれる。章名が ``RUNNING_HEAD_RUN`` ページ以上続けて
@@ -258,36 +260,77 @@ def _choose_shifts(count, shifts, default, matches):
 
     費用は「章名が見つからない項目の数」+「ずれ幅を切り替えた回数 × SWITCH_COST」。
     同じ費用なら既定のずれ幅に近いほう、その次に後ろ（前への補正は誤りが多かった）。
-    テキストが無ければ全項目が既定のずれ幅になる。
+
+    **章名が 1 つも見つからない区間は作らない** (#122)。区間を分けるのはテキストが
+    そう言っているときだけで、証拠の無い項目は隣の区間に付く。これが無いと、本の先頭や
+    区間の境目にある「目次」「表紙」のような項目だけが既定のずれ幅に取り残される
+    （実測: われわれはなぜ嘘つきで… の「目次」、コンピュータの構成と設計 の
+    「上巻 表紙」「上巻 目次」。どちらも目視で新しい付け先が正しいことを確かめた）。
+    ただし**本全体が 1 つの区間なら証拠は要らない**。テキストが無ければ全項目が既定の
+    ずれ幅になり、1〜2 項目の一致では区間を分けない（``SWITCH_COST``）という性質も変わらない。
+
+    この規則は「前付けにテキストが無い」ほうが「前付けの中でずれ幅が変わる」より多いほうに
+    賭けている。負ける形は「前付けは既定どおりで、本文の直前で 1 ページ落ちている本」で、
+    そこでは前付けが本文の区間に引かれて 1 ページ前に付く。蔵書 347 冊では 1 冊も無かった。
     """
     tie = 1e-4  # 同点を決めるだけの大きさ。候補の幅（数十）を掛けても 1 に届かない
+    inf = float("inf")
+    n = len(shifts)
 
     def bias(s):
         return tie * (2 * abs(s - default) + (1 if s < default else 0))
 
-    local = [[(0.0 if matches(k, s) else 1.0) + bias(s) for s in shifts] for k in range(count)]
-    total = [local[0][j] + (0.0 if s == default else SWITCH_COST) for j, s in enumerate(shifts)]
-    back: list[list[int]] = []
+    hit = [[bool(matches(k, s)) for s in shifts] for k in range(count)]
+    local = [
+        [(0.0 if hit[k][j] else 1.0) + bias(s) for j, s in enumerate(shifts)] for k in range(count)
+    ]
+
+    # 状態は（ずれ幅, その区間で章名が見つかったか）。見つかっていない区間からは切り替えられない
+    seen_no, seen_yes = [inf] * n, [inf] * n
+    for j, s in enumerate(shifts):
+        start = local[0][j] + (0.0 if s == default else SWITCH_COST)
+        (seen_yes if hit[0][j] else seen_no)[j] = start
+    back: list[list[tuple[int, int]]] = []
     for k in range(1, count):
-        best_j = min(range(len(shifts)), key=lambda j: total[j])
-        row, nxt = [], []
-        for j in range(len(shifts)):
-            stay = total[j]
-            move = total[best_j] + SWITCH_COST
-            if stay <= move:
-                row.append(j)
-                nxt.append(stay + local[k][j])
+        best_j = min(range(n), key=lambda j: seen_yes[j])
+        move = seen_yes[best_j] + SWITCH_COST
+        next_no, next_yes = [inf] * n, [inf] * n
+        # 届かない状態の値は使わない（経路をたどるのは、費用が有限だった状態だけ）
+        row: list[tuple[int, int]] = [(0, 0)] * (2 * n)
+        for j in range(n):
+            if hit[k][j]:
+                # 見つかったので、どこから来てもその区間は「見つかった」になる。同点は留まるほう
+                for cost, prev in (
+                    (seen_yes[j], (1, j)),
+                    (seen_no[j], (0, j)),
+                    (move, (1, best_j)),
+                ):
+                    if cost < next_yes[j]:
+                        next_yes[j], row[n + j] = cost, prev
+                next_yes[j] += local[k][j]
             else:
-                row.append(best_j)
-                nxt.append(move + local[k][j])
+                if seen_yes[j] < inf:  # 見つかった区間に留まる
+                    next_yes[j], row[n + j] = seen_yes[j] + local[k][j], (1, j)
+                for cost, prev in ((seen_no[j], (0, j)), (move, (1, best_j))):
+                    if cost < next_no[j]:
+                        next_no[j], row[j] = cost, prev
+                next_no[j] += local[k][j]
         back.append(row)
-        total = nxt
-    j = min(range(len(shifts)), key=lambda x: total[x])
-    chosen = [0] * count
+        seen_no, seen_yes = next_no, next_yes
+
+    # 区間が 2 つ以上あるなら、どの区間にも章名が見つかっていること。最後の区間の分（seen_yes を
+    # 選ぶこと）は費用からも従うが、規則として読めるように書いている
+    j = min(range(n), key=lambda x: seen_yes[x])
+    base = shifts.index(default)  # map_to_pages が作る候補には必ず既定のずれ幅が入っている
+    plain = sum(local[k][base] for k in range(count))  # 本全体で 1 区間にしたときの費用
+    # 章名がどこにも見つからない本では seen_yes が全部 inf なので、ここで必ず既定のずれ幅になる
+    if plain <= seen_yes[j]:  # 同点なら区間を分けない
+        return [default] * count
+    chosen, seen = [0] * count, 1
     for k in range(count - 1, -1, -1):
         chosen[k] = shifts[j]
         if k > 0:
-            j = back[k - 1][j]
+            seen, j = back[k - 1][seen * n + j]
     return chosen
 
 
