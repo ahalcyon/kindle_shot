@@ -1196,6 +1196,34 @@ python scripts\audit_rules.py C:\books\out --rule プロード   # 1 規則の�
 
 ---
 
+#### 形式の判定が当たっていたかを、あとから確かめる（`scripts\check_format.py`）
+
+本ごとに `image_pdf` / `searchable_pdf` を選んでいますが（「本ごとに形式を分ける」）、
+**`image_pdf` に倒した本は以後まったく実測されない**ので、判定が外れていても気づく道が
+ありませんでした（#96）。外れるとテキスト層の無い本が残り、直すには撮り直すしかありません。
+
+出来上がった PDF を描き直して OCR し、**撮影時と同じ「本文行だけ」**で 1 ページあたりの
+文字数を測って、形式と食い違う本を挙げます。
+
+```
+python scripts\check_format.py --books books_typed.json --library C:\books\out ^
+    --report C:\work\format_check.csv
+
+python scripts\check_format.py ... --only image_pdf      # 漫画側だけ点検する
+```
+
+| 実測（20 冊・抜き取り 20 ページ） | 文字数/ページ |
+|---|---|
+| `image_pdf` 13 冊 | 2.0 〜 70.1 |
+| `searchable_pdf` 7 冊 | 212.7 〜 493.7 |
+
+既定の境目は 150（この谷の中）。1 冊およそ 30 秒で、`--only image_pdf` の 175 冊なら
+約 1.5 時間です。**蔵書は読むだけで書き換えません。** 印が付いた本をどうするか
+（撮り直すか、テキスト層を剥がすか）は人が決めます。
+
+**全文字を数えてはいけません。** 柱・ノンブル・絵柄から拾ったノイズ行まで入り、漫画では
+桁が変わります（実測: 撮影時に空と判定されたページから平均 152.6 字。本文行だけなら 0.6 字）。
+
 ## batch ファイル形式
 
 `batch --books` に渡す JSON です。本オブジェクトの配列、または `{"books": [...]}` 形式。
@@ -1343,6 +1371,7 @@ kindle_shot/
 ├── scripts/                # 補助スクリプト
 │   ├── make_books.py       # 蔵書ダンプ + 選書定義 → batch 用 books.json
 │   ├── convert_2nd.py      # _trimmed から2形式目を作る
+│   ├── check_format.py     # 形式の判定が当たっていたかを後から測る
 │   └── selection.example.json
 ├── tests/                  # pytest（純ロジック + CLI JSON 契約）
 ├── config.example.json     # 設定の雛形（DEFAULT_CONFIG から機械生成）
