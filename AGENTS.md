@@ -115,6 +115,11 @@ git config kindleshot.smokeAsin B0XXXXXXXX
 - **終了コード 0 でも読めるとは限らない。** `scripts/check_readability.py` と
   `scripts/audit_rules.py`（誤読辞書を足したとき）で点検する。どちらも見えるのは一部の誤りだけで、ゲートではない
 - **誤読辞書の表記ゆれの正規化は、同じ本の中で数えてから入れる。** コーパス全体の多数決で決めない
+- **止めたつもりのプロセスが生きていないかを、Windows 側で確かめる。** WSL から `cmd.exe` 経由で起動した
+  本番プロセスは、WSL 側の親を止めても Windows 側の python は死なない。止めるときは
+  `Get-CimInstance Win32_Process` でスクリプト名（`check_format.py` / `capture_app_books.py` など）を探して
+  `Stop-Process` し、再開の前にも同じ確認をする。生き残った旧版と新版が同じ CSV に同時に追記し、
+  行が混ざって壊れた（2026-09-19、#96）
 
 ## 調査と報告の原則
 
