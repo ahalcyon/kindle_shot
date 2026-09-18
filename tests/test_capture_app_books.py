@@ -86,6 +86,26 @@ def test_title_matches_rejects_a_book_that_only_starts_the_same():
     )
 
 
+def test_title_matches_rejects_another_book_of_the_same_series():
+    """括弧書きのシリーズ名は同じシリーズの別の本の表紙にもある。それだけで通してはいけない。
+
+    レビューで実測: 括弧書きを照合に入れていたとき、この 2 組がどちらも「同じ本」になった。
+    """
+    assert not cab.title_matches(
+        "Linear Algebra Done Right (Undergraduate Texts in Mathematics)",
+        "Undergraduate Texts in Mathematics UTM Terence Tao Analysis I Springer",
+    )
+    assert not cab.title_matches(
+        "Introduction to Smooth Manifolds (Graduate Texts in Mathematics)",
+        "Graduate Texts in Mathematics Serge Lang Algebra Springer",
+    )
+    # 括弧書きを落としても、本題名が丸ごと読めていれば通る
+    assert cab.title_matches(
+        "Beginning in Algebraic Geometry (Undergraduate Texts in Mathematics)",
+        "UTM Emily Clader Dustin Ross Beginning in Algebraic Geometry Springer",
+    )
+
+
 def test_title_matches_survives_the_noise_around_a_cover():
     """表紙のページ全体を読むので、著者名・出版社名・帯の文句が混ざる。"""
     assert cab.title_matches(
@@ -134,6 +154,14 @@ def test_library_anchor_is_none_off_the_library():
     # 1〜2 行だけ青い（本文中の下線リンクなど）のを「全て」の行と見ない
     assert cab.find_library_anchor(_library_screen(200, 203)) is None
     assert not cab.is_library(Image.new("RGB", (1200, 600), (255, 255, 255)))
+    # 本のページの青い領域（青い表紙・図版）を「全て」の行と見ない。行の上下は白い余白のはず
+    page = Image.new("RGB", (1200, 600), (0, 90, 200))
+    assert cab.find_library_anchor(page) is None
+    figure = _library_screen(169, 204)
+    for x in range(0, 1200):
+        for y in range(140, 169):
+            figure.putpixel((x, y), (120, 120, 120))  # 青い帯の上が白くない（図版の一部）
+    assert cab.find_library_anchor(figure) is None
 
 
 def _arrow(page, top=0):
@@ -184,10 +212,21 @@ def test_title_bar_is_measured_and_not_taken_for_the_reader_ui():
     assert cab.reader_chrome_shown(page, top=48)
 
 
+def test_title_bar_outside_the_measured_range_is_not_trusted(monkeypatch):
+    """淡い色のページや表示テーマで上限まで灰色が続くと 100 が返る。それを削ると全ページの上が欠ける。"""
+    pale = _with_title_bar(100)
+    assert cab.title_bar_height(pale) == 100
+    monkeypatch.setattr(cab, "_shot", lambda hwnd, box=None: pale)
+    assert cab.reader_top(object(), emit=lambda *a: None) is None
+    monkeypatch.setattr(cab, "_shot", lambda hwnd, box=None: _with_title_bar(48))
+    assert cab.reader_top(object(), emit=lambda *a: None) == 48
+
+
 def test_cuts_the_title_bar_only_when_it_is_there(tmp_path, monkeypatch):
     books, library, state = _prepare(tmp_path, [{"title": "本G", "asin": "A7"}], [])
     _stub_screen(monkeypatch)
-    monkeypatch.setattr(cab, "reader_top", lambda hwnd: 48)
+    monkeypatch.setattr(cab, "reader_top", lambda hwnd, **kw: 48)
+    monkeypatch.setattr(cab, "title_bar_height", lambda image, **kw: 48)
     seen = {}
 
     def fake_run_book(**kw):
@@ -263,8 +302,12 @@ def _stub_screen(monkeypatch, *, opened=True, hidden=True, rewound=True, verifie
     monkeypatch.setattr("core.win32_utils.get_window_rect", lambda hwnd: (0, 0, 1200, 1390))
     monkeypatch.setattr("core.config.load_config", lambda: {})
     monkeypatch.setattr(cab, "open_book", lambda hwnd, title, **kw: opened)
-    monkeypatch.setattr(cab, "reader_top", lambda hwnd: 0)
+    monkeypatch.setattr(cab, "reader_top", lambda hwnd, **kw: 0)
     monkeypatch.setattr(cab, "hide_reader_chrome", lambda hwnd, **kw: hidden)
+    # 撮り終えたあとの測り直し（表示が変わっていない）
+    monkeypatch.setattr(cab, "title_bar_height", lambda image, **kw: 0)
+    monkeypatch.setattr(cab, "reader_chrome_shown", lambda image, **kw: False)
+    monkeypatch.setattr(cab, "_shot", lambda hwnd, box=None: None)
     monkeypatch.setattr(cab, "rewind_to_start", lambda hwnd, **kw: rewound)
     monkeypatch.setattr(cab, "verify_title", lambda hwnd, title, **kw: verified)
 
@@ -372,3 +415,69 @@ def test_refuses_a_partial_capture_into_the_library(tmp_path, monkeypatch):
     books, library, state = _prepare(tmp_path, [{"title": "本D", "asin": "A4"}], [])
     with pytest.raises(SystemExit):
         cab.main(["--books", books, "--library", library, "--state", state, "--max-pages", "8"])
+
+
+def _run_book_writing_pdf(library, total=120):
+    def fake_run_book(**kw):
+        # 本物の run_book は撮れた分の PDF を蔵書に書いてから返る
+        with open(book_pdf_path(library, kw["title"]), "wb") as f:
+            f.write(b"%PDF-1.4\n")
+        kw["emit"]("result", total_pages=total, stopped_reason="timeout")
+        return 0
+
+    return fake_run_book
+
+
+def test_a_failed_book_does_not_leave_its_pdf_in_the_library(tmp_path, monkeypatch):
+    """**失敗にした本の PDF が蔵書に残ると、次から黙って飛ばされる**（pending は PDF の有無で見る）。
+
+    レビューで見つかった穴。run_book は EXIT_OK を返す前に PDF を蔵書に書いているので、
+    「ウィンドウが動いた」「ページが少なすぎる」と判定しても断片入りの PDF が残っていた。
+    """
+    books, library, state = _prepare(tmp_path, [{"title": "本H", "asin": "A8"}], [])
+    _stub_screen(monkeypatch)
+    rects = iter([(0, 0, 1200, 1390), (-8, -8, 2560, 1400)])
+    monkeypatch.setattr("core.win32_utils.get_window_rect", lambda hwnd: next(rects))
+    monkeypatch.setattr("core.pipeline.run_book", _run_book_writing_pdf(library))
+    assert cab.main(["--books", books, "--library", library, "--state", state]) == 1
+    assert not os.path.exists(book_pdf_path(library, "本H"))
+    assert "退避" in _rows(state)[0]["detail"]
+    assert os.listdir(tmp_path / "failed_pdfs")
+    # 次の実行で、もう一度対象になる
+    with open(books, encoding="utf-8") as f:
+        entries = json.load(f)
+    assert [b["title"] for b in cab.pending(entries, cab.load_state(state), library)] == ["本H"]
+
+
+def test_a_book_whose_display_changed_while_capturing_is_not_finished(tmp_path, monkeypatch):
+    """タイトルバーの有無や読書 UI が撮影中に切り替わると、欠けた／UI の写ったページが混ざる。"""
+    books, library, state = _prepare(tmp_path, [{"title": "本I", "asin": "A9"}], [])
+    _stub_screen(monkeypatch)
+    monkeypatch.setattr(cab, "title_bar_height", lambda image, **kw: 48)  # 開いたときは 0 だった
+    monkeypatch.setattr("core.pipeline.run_book", _run_book_writing_pdf(library))
+    assert cab.main(["--books", books, "--library", library, "--state", state]) == 1
+    row = _rows(state)[0]
+    assert row["status"] == "失敗" and "表示が変わった" in row["detail"]
+    assert not os.path.exists(book_pdf_path(library, "本I"))
+
+
+def test_a_trial_capture_is_not_recorded_as_done(tmp_path, monkeypatch):
+    """試し撮りを本番の state に「完了」で残すと、蔵書に PDF が無いのに永久に飛ばされる。"""
+    books, library, state = _prepare(tmp_path, [{"title": "本J", "asin": "A10"}], [])
+    _stub_screen(monkeypatch)
+    monkeypatch.setattr("core.pipeline.run_book", _run_book_writing_pdf(library, total=8))
+    cab.main(
+        [
+            "--books",
+            books,
+            "--library",
+            library,
+            "--state",
+            state,
+            "--max-pages",
+            "8",
+            "--allow-partial",
+        ]
+    )
+    assert _rows(state)[0]["status"] == "試し撮り"
+    assert cab.load_state(state) == set()
