@@ -774,6 +774,7 @@ python scripts\convert_2nd.py --books books_c.json --out C:\books --format markd
 - **`bookmarks_rebuilt` / `bookmarks_skipped` イベント（`--asin` 付きの `image_pdf` / `searchable_pdf`）**:
   PDF ができたあと、Kindle の本が持つ目次でしおりを作り直した結果。`bookmarks_rebuilt` は
   `entries`（しおりの件数）/ `confirmed`（テキスト層で章名を確かめられた件数）/
+  `running_head`（章名が柱に出ていて場所を決められず、位置だけで決めた件数）/
   `shifts`（区間ごとのずれ幅。例 `0→1→0→2`）/ `asin`。書き換えなかった本は `bookmarks_skipped` で、
   `reason`（`要確認` / `しおりを付けられない` / `unsupported` / `error`）と `flags` が付きます。
   要確認の本をまとめて見てから入れるときは `scripts/rebuild_bookmarks.py --apply --include-flagged`。

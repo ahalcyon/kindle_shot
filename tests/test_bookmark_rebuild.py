@@ -77,8 +77,39 @@ def test_plan_book_keeps_the_numbers_for_the_report(tmp_path):
     pdf = _pdf(tmp_path / "f.pdf", 4)
     entries, row, flags = br.plan_book(pdf, _structure(4))
     assert row["toc_entries"] == 4 and row["confirmed"] == 4 and row["shifts"] == "0"
+    assert row["running_head"] == 0
     assert json.dumps(flags, ensure_ascii=False) == "[]"
     assert [e.page for e in entries] == [0, 1, 2, 3]
+
+
+def _running_head_pdf(path, pages):
+    """章名が章の終わりまで柱に出る本（章扉にはテキストが無い）。"""
+    c = canvas.Canvas(str(path))
+    for i in range(pages):
+        chapter = i // 4  # 4 ページごとに章が変わる
+        if i % 4:  # 章扉（各章の先頭）には章名が無い
+            c.drawString(72, 760, f"chapter{chapter * 4:02d}")  # 柱
+            c.drawString(72, 720, "body text " * 8)
+        c.showPage()
+    c.save()
+    return str(path)
+
+
+def test_plan_book_flags_a_book_decided_only_by_running_heads(tmp_path):
+    """柱の項目ばかりの本は、ずれ幅をテキストで確かめていない。黙って書き換えない (#122)。"""
+    pages = 12
+    pdf = _running_head_pdf(tmp_path / "g.pdf", pages)
+    structure = {
+        "toc": [{"label": f"chapter{i:02d}", "tocPositionId": i * 10} for i in range(0, pages, 4)],
+        "pages": [[p, p + 9] for p in range(0, pages * 10, 10)],
+        "complete": True,
+        "unrenderable": [],
+    }
+    entries, row, flags = br.plan_book(pdf, structure)
+    assert row["running_head"] == 3 and row["confirmed"] == 0
+    assert [e.page for e in entries] == [0, 4, 8]  # 章扉。柱に釣られて後ろへ動かない
+    assert br.FLAG_RUNNING_HEAD in flags
+    assert br.rebuild_book(pdf, structure)["written"] is False
 
 
 def test_unsupported_book_is_its_own_error():

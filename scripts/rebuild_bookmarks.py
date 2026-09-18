@@ -78,9 +78,10 @@ COLUMNS = [
     "moved",
     "unconfirmed",
     "unsearched",
-    "running_head",
     "flags",
     "status",
+    # 列を足すときは末尾に（過去の一覧と列の位置で突き合わせる手作業を壊さない）
+    "running_head",
 ]
 
 

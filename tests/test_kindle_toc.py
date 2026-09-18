@@ -239,6 +239,27 @@ def test_map_does_not_move_an_entry_onto_a_running_head():
     assert (entries[0].page, entries[0].how) == (2, RUNNING_HEAD)
 
 
+def test_map_does_not_treat_scattered_mentions_as_a_running_head():
+    """柱は**続けて**出る。飛び飛びの一致（目次ページ・本文中の言及）は柱ではない。"""
+    texts = ["なまえ", "", "本文", "なまえ", "", "なまえ"]
+    entries = map_to_pages(_entries(("なまえ", 25)), RANGES, 6, page_text=lambda i: texts[i])
+    assert (entries[0].page, entries[0].how) == (3, MOVED)
+
+
+def test_map_finds_a_running_head_outside_the_shift_candidates(monkeypatch):
+    """柱の判定はずれ幅の候補の広さ（SHIFT_MARGIN）に左右されない (#122)。
+
+    柱かどうかは本の組版で決まる。候補幅を狭めただけで見落とすと、直した本が黙って戻る。
+    """
+    monkeypatch.setattr(kindle_toc, "SHIFT_MARGIN", 1)
+    ranges = [[p, p + 9] for p in range(0, 100, 10)]
+    texts = [""] * 10
+    for p in (5, 6, 7):  # base=2 から 3〜5 ページ後ろ。候補のずれ幅（-1〜+1）の外
+        texts[p] = "なまえ"
+    entries = map_to_pages(_entries(("なまえ", 25)), ranges, 10, page_text=lambda i: texts[i])
+    assert (entries[0].page, entries[0].how) == (2, RUNNING_HEAD)
+
+
 def test_map_still_follows_a_title_that_appears_on_two_pages():
     """見出しと次ページの本文中の言及くらい（2 ページ）では柱とみなさない。"""
     texts = ["", "", "本文", "なまえ", "なまえ", ""]

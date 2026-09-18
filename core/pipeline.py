@@ -967,10 +967,12 @@ def rebuild_toc_bookmarks(pdf_path, asin, cache_dir, *, emit=null_emit, fmt="sea
         emit(
             "bookmarks_rebuilt",
             human=f"しおりを {result['entries']} 件にしました"
-            f"（章名を確かめた {row['confirmed']} 件 / ずれ幅 {row['shifts']}）",
+            f"（章名を確かめた {row['confirmed']} 件 / 柱で決められない {row['running_head']} 件"
+            f" / ずれ幅 {row['shifts']}）",
             asin=asin,
             entries=result["entries"],
             confirmed=row["confirmed"],
+            running_head=row["running_head"],
             shifts=row["shifts"],
             flags=result["flags"],
         )

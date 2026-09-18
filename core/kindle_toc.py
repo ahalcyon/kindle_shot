@@ -200,23 +200,29 @@ def map_to_pages(entries, page_ranges, pdf_pages, page_text=None, offset=0):
         range(min(diff, 0, offset) - SHIFT_MARGIN, max(diff, 0, offset) + SHIFT_MARGIN + 1)
     )
 
+    # 柱かどうかは本の組版で決まることで、ずれ幅の候補の広さとは関係が無い。``shifts`` だけを
+    # 見ると、``SHIFT_MARGIN`` を変えたり表紙の無い本になったりしただけで柱を見落とす。
+    # 後ろへの補正の範囲（``SEARCH_AHEAD``）+ 柱とみなす連なりの分は必ず見る（連続した範囲）
+    head_window = range(min(shifts[0], -1), max(shifts[-1], SEARCH_AHEAD + RUNNING_HEAD_RUN) + 1)
+
     def running_head(k):
-        """章名が候補の範囲で続けて出るなら、どのページも章の始まりを指していない (#122)。
+        """章名が**続けて** ``RUNNING_HEAD_RUN`` ページ以上出るなら、どのページも章の始まりを
+        指していない (#122)。
 
         柱のある本では章名が章の終わりまで毎ページ出る。章扉にテキストが無いと、当たるのは
         柱だけになり、テキストで決めると必ず後ろへずれる。そういう項目はテキストを使わず、
-        位置の示すページに付ける（``shifts`` は連続した範囲なので、続けて当たった数が
-        そのままページの連なりになる）。
+        位置の示すページに付ける。飛び飛びの一致（目次ページ・本文中の言及）は柱ではない。
         """
         run = 0
-        for s in shifts:
+        for s in head_window:
             run = run + 1 if found(k, bases[k] + s) else 0
             if run >= RUNNING_HEAD_RUN:
                 return True
         return False
 
     heads = [probes[k] is not None and running_head(k) for k in range(len(entries))]
-    # 柱の項目はどのずれ幅でも「見つからない」。費用が一定なので、ずれ幅の判断に効かない
+    # 柱の項目はどのずれ幅でも「見つからない」ので、その項目自身のずれ幅はテキストで選ばれない。
+    # ただし**正の根拠を捨てる**ので、区間の境目の置き場所が変わり、隣の項目が動くことはある
     shift = _choose_shifts(
         len(entries), shifts, offset, lambda k, s: not heads[k] and found(k, bases[k] + s)
     )
