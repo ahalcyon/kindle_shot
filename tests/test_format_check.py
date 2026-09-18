@@ -4,6 +4,7 @@ import pytest
 from reportlab.pdfgen import canvas
 
 from core import format_check as fc
+from core.ocr_layout import Line, PageLayout
 
 
 def test_sample_avoids_the_cover_and_the_colophon():
@@ -34,36 +35,67 @@ def _pdf(path, pages):
     return str(path)
 
 
-class _Layout:
-    def __init__(self, filename, chars):
-        self.filename = filename
-        self.lines = [_Line(chars)]
-        self.positioned = True
+def _line(text, category):
+    return Line(text=text, left=0, top=0, right=10, bottom=10, confidence=0.9, category=category)
 
 
-class _Line:
-    def __init__(self, chars):
-        self.text = "あ" * chars
-        self.is_body = True
-        self.category = "body"
-        self.confidence = 0.99
+def _layout(filename):
+    """本文・柱・ノンブル・図版が混ざった実物と同じ形のページ。"""
+    return PageLayout(
+        filename=filename,
+        width=1600,
+        height=1200,
+        lines=[
+            _line("ほんぶん", "本文"),  # 4 字
+            _line("みだし", "タイトル本文"),  # 3 字
+            _line("柱に出る書名ヘッダー", "柱"),  # UI。数えない
+            _line("123", "ノンブル"),  # UI。数えない
+            _line("絵から拾ったノイズ", "図版"),  # 本文でない。数えない
+        ],
+    )
 
 
-def test_measure_counts_body_characters_per_page(tmp_path, monkeypatch):
-    """1 ページあたりの本文の文字数。**全文字ではない**（柱・ノイズ行を数えない）。"""
+def test_measure_counts_only_body_lines(tmp_path, monkeypatch):
+    """**本文行だけ**を数える。全文字を数えると漫画で桁が変わる（#96 の実測）。
+
+    柱・ノンブル・図版の行を混ぜてあるので、全文字に戻すとこのテストが落ちる。
+    """
     pdf = _pdf(tmp_path / "a.pdf", 40)
     seen = {}
 
     def fake(folder, layout=False):
-        assert layout is True  # 行の種別が要る。layout なしだと全文字になる
-        names = sorted(n for n in __import__("os").listdir(folder))
+        assert layout is True  # 行の種別が要る。layout なしだと種別が無く全文字になる
+        import os
+
+        names = sorted(n for n in os.listdir(folder))
         seen["pages"] = len(names)
-        return True, [_Layout(n, 10) for n in names]
+        return True, [_layout(n) for n in names]
 
     monkeypatch.setattr("core.ocr_engine.process_folder_collect", fake)
     got = fc.measure_pdf(pdf, sample=5)
     assert seen["pages"] == 5
-    assert got == {"pdf_pages": 40, "sampled": 5, "chars": 50, "cpp": 10.0}
+    assert got == {"pdf_pages": 40, "sampled": 5, "chars": 35, "cpp": 7.0}  # (4+3) × 5 ページ
+
+
+def test_measure_renders_at_the_size_of_the_captured_image(tmp_path, monkeypatch):
+    """既定の解像度は等倍。蔵書の PDF はページの大きさが画像のピクセル数そのもの。"""
+    pdf = _pdf(tmp_path / "s.pdf", 10)
+    sizes = []
+
+    def fake(folder, layout=False):
+        import os
+
+        from PIL import Image
+
+        for name in sorted(os.listdir(folder)):
+            with Image.open(os.path.join(folder, name)) as image:
+                sizes.append(image.size)
+        return True, [_layout(n) for n in sorted(os.listdir(folder))]
+
+    monkeypatch.setattr("core.ocr_engine.process_folder_collect", fake)
+    fc.measure_pdf(pdf, sample=2)
+    # reportlab の既定ページは 595x842pt。72dpi なら同じ大きさで出る（引き伸ばさない）
+    assert sizes and all(abs(w - 595) <= 1 and abs(h - 842) <= 1 for w, h in sizes)
 
 
 def test_measure_reports_an_unusable_ocr(tmp_path, monkeypatch):
@@ -89,5 +121,11 @@ def test_verdict_flags_a_text_book_with_almost_no_text():
 
 def test_verdict_uses_the_measured_gap():
     """閾値は実測の谷（70.1〜212.7）の中。境目をまたぐと印が変わる。"""
-    assert fc.verdict(fc.IMAGE, fc.DEFAULT_THRESHOLD + 0.1) == fc.SUSPECT_TEXT
-    assert fc.verdict(fc.IMAGE, fc.DEFAULT_THRESHOLD) == fc.OK
+    assert fc.verdict(fc.IMAGE, fc.THRESHOLD + 0.1) == fc.SUSPECT_TEXT
+    assert fc.verdict(fc.IMAGE, fc.THRESHOLD) == fc.OK
+
+
+def test_verdict_does_not_pass_an_unknown_format(tmp_path):
+    """形式が分からない本を黙って ok にしない（format の無い一覧を渡したとき）。"""
+    assert fc.verdict("", 1000.0) == fc.UNKNOWN
+    assert fc.verdict("text_pdf", 1.0) == fc.UNKNOWN
