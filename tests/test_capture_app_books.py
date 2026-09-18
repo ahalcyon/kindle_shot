@@ -141,6 +141,49 @@ def test_place_waits_until_the_window_stays_where_it_was_put(monkeypatch):
         cab._place(object(), tries=3)
 
 
+def test_bar_title_rejects_another_volume_and_accepts_a_truncated_title():
+    """バーの題名は省略されるが、省略される前に見えている巻数の違いで弾く（前方一致）。"""
+    assert cab.bar_title_matches(
+        "ゼロから作るDeep Learning ❷ ―自然言語処理編", "ゼロから作るDeep Learning ❷ ―自然言語…"
+    )
+    assert not cab.bar_title_matches(
+        "ゼロから作るDeep Learning ❷ ―自然言語処理編", "ゼロから作るDeep Learning ❶ ―Python…"
+    )
+    assert not cab.bar_title_matches(
+        "Introduction to Algorithms, fourth edition", "Introduction to Algorithms, third edition"
+    )
+    assert cab.bar_title_matches(
+        "学びを結果に変えるアウトプット大全", "学びを結果に変えるアウトプット大全"
+    )
+    assert not cab.bar_title_matches("学びを結果に変えるアウトプット大全", "学び…")  # 短すぎる
+
+
+def _verify_stubs(monkeypatch, *, cover, bar, shown_after_click=True, hidden=True):
+    """verify_title の画面まわりを差し替える。cover / bar は OCR が返す文字。"""
+    monkeypatch.setattr(cab, "_shot", lambda hwnd, box=None: box)
+    monkeypatch.setattr(cab, "_ocr", lambda image: bar if image else cover)  # box 付きはバー
+    monkeypatch.setattr(cab, "_click", lambda hwnd, x, y, wait=0: None)
+    monkeypatch.setattr(cab, "reader_chrome_shown", lambda image, **kw: shown_after_click)
+    monkeypatch.setattr(cab, "hide_reader_chrome", lambda hwnd, **kw: hidden)
+    monkeypatch.setattr(cab, "_keep_shot", lambda hwnd, name: None)
+
+
+def test_verify_title_falls_back_to_the_reader_bar(monkeypatch):
+    """表紙の題名が飾り文字で読めない本（実測: アウトプット大全）は、読書 UI のバーで確かめる。"""
+    title = "学びを結果に変えるアウトプット大全"
+    _verify_stubs(monkeypatch, cover="OUTPUT THE POWER OF OUTPUT", bar=title)
+    assert cab.verify_title(object(), title, emit=lambda *a: None)
+
+
+def test_verify_title_refuses_when_the_ui_cannot_be_shown_or_hidden(monkeypatch):
+    """バーを読むために出した UI が見えない／消せないなら撮らない（UI が写った本を完成にしない）。"""
+    title = "学びを結果に変えるアウトプット大全"
+    _verify_stubs(monkeypatch, cover="OUTPUT", bar=title, shown_after_click=False)
+    assert not cab.verify_title(object(), title, emit=lambda *a: None)
+    _verify_stubs(monkeypatch, cover="OUTPUT", bar=title, hidden=False)
+    assert not cab.verify_title(object(), title, emit=lambda *a: None)
+
+
 def test_is_cover_tells_a_book_from_the_background():
     """検索結果がちょうど 1 冊かを、この判定で見る（別の本を撮らないため）。"""
     from PIL import Image
@@ -225,6 +268,15 @@ def test_reader_chrome_is_seen_by_the_back_arrow():
     assert not cab.reader_chrome_shown(page)
     _arrow(page)
     assert cab.reader_chrome_shown(page)
+    # 幅いっぱいが黒い表紙は、矢印の位置に暗い画素があっても UI ではない（帯が暗い）。
+    # 実測: これを「出ている」と見て消せず、その本を撮れなかった
+    dark_cover = Image.new("RGB", (1200, 1390), (5, 5, 5))
+    assert not cab.reader_chrome_shown(dark_cover)
+    for x in range(0, 1200):
+        for y in range(0, 48):
+            dark_cover.putpixel((x, y), (255, 255, 255))  # 黒い表紙の上に白い UI のバーが出た
+    _arrow(dark_cover)
+    assert cab.reader_chrome_shown(dark_cover)
 
 
 def _with_title_bar(height=48):

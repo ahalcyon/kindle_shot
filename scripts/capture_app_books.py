@@ -62,6 +62,8 @@ BACK_ARROW = (32, 32)
 CHROME_TOGGLE = (600, 60)
 # 読書 UI の「戻る」矢印が出る範囲（左上）。ここに暗い画素があれば UI が出ている
 CHROME_BOX = (14, 8, 64, 44)
+# 読書 UI のバーの帯の x 範囲（矢印の右から右側のアイコンの手前まで）。白地なので明るい
+CHROME_BAND = (70, 980)
 
 # 最低限削る余白。読書 UI を消して撮るので無し。UI はページに**かぶさる**（ページは動かない。
 # 実測）ので、固定で削ると UI の無い状態では中身を切る。書名ヘッダー・ページ番号フッターも
@@ -87,6 +89,23 @@ LAUNCH_WAIT = 20.0
 SEARCH_WAIT = 10
 # タイトルバーの高さとして信じる範囲（実測 48px）。外れたら測れないものとして撮らない
 TITLE_BAR_RANGE = (40, 60)
+# 撮らずに飛ばしたときの画面を残す先（main が state のフォルダに設定する）。無人実行の
+# 失敗は画面が残っていないと原因を追えない（実測: 「読書 UI を消せない」が続いても分からなかった）
+SHOT_DIR: str | None = None
+
+
+CURRENT_BOOK = ""  # 保存する画面のファイル名に使う（main が本ごとに設定する）
+
+
+def _keep_shot(hwnd, name):
+    """いまの画面を SHOT_DIR に残す（本ごとに上書き。増え続けない）。残せなくても処理は止めない。"""
+    if not SHOT_DIR:
+        return
+    try:
+        os.makedirs(SHOT_DIR, exist_ok=True)
+        _shot(hwnd).save(os.path.join(SHOT_DIR, f"{CURRENT_BOOK or 'book'}_{name}.png"))
+    except Exception:  # noqa: BLE001 - 記録の失敗で本を落とさない
+        pass
 
 
 def _norm(text):
@@ -548,14 +567,24 @@ def _dark_pixels(image, *, dark=150):
 
 
 def reader_chrome_shown(image, *, top=0, box=CHROME_BOX, dark=150, count=30):
-    """読書 UI（上のバー）が出ているか。左上の「戻る」矢印の暗い画素で見る。
+    """読書 UI（上のバー）が出ているか。
+
+    見るのは 2 つ: 左上の「戻る」矢印の暗い画素があること、**バーの帯（矢印の右、題名の
+    まわり）が明るいこと**。矢印だけで見ると、幅いっぱいが黒い表紙で暗い画素だらけになり
+    「出ている」と誤判定して、その本を撮れない（実測: Kaggle に挑む深層学習…）。
+    UI のバーは白地なので、帯が暗ければ UI ではなくページの絵。
 
     ``top`` はタイトルバーの高さ。タイトルバーにも「←」があるので、ずらして見ないと
     タイトルバーを読書 UI と取り違える（実測）。
     """
+    from PIL import ImageStat
+
     left, upper, right, lower = box
     pixels = image.crop((left, upper + top, right, lower + top)).convert("L").tobytes()
-    return sum(1 for p in pixels if p < dark) >= count
+    if sum(1 for p in pixels if p < dark) < count:
+        return False
+    band = image.crop((CHROME_BAND[0], upper + top, CHROME_BAND[1], lower + top)).convert("L")
+    return ImageStat.Stat(band).mean[0] > 200
 
 
 def hide_reader_chrome(hwnd, *, top=0, tries=2, emit=print):
@@ -572,11 +601,12 @@ def hide_reader_chrome(hwnd, *, top=0, tries=2, emit=print):
         _click(hwnd, CHROME_TOGGLE[0], CHROME_TOGGLE[1] + top, wait=1.2)
     if reader_chrome_shown(_shot(hwnd), top=top):
         emit("  読書 UI を消せない")
+        _keep_shot(hwnd, "chrome")
         return False
     return True
 
 
-def verify_title(hwnd, title, *, emit=print):
+def verify_title(hwnd, title, *, top=0, emit=print):
     """いま開いているページの文字が、撮りたい本のものか。
 
     **先頭（表紙）まで戻してから呼ぶこと。** 表紙には題名が大きく入っているので、
@@ -589,8 +619,41 @@ def verify_title(hwnd, title, *, emit=print):
     seen = _ocr(_shot(hwnd))
     if title_matches(title, seen):
         return True
-    emit(f"  開いた本を確かめられない（読めた文字: {seen[:60]!r}）")
+    # 表紙の題名が飾り文字で読めない本がある（実測: 「学びを結果に変えるアウトプット大全」は
+    # OUTPUT の英字しか読めなかった）。読書 UI を出すと上のバーに**アプリが持つ題名**が出るので、
+    # そちらも読む。読んだら UI を消し直す（消せなければ撮らない）
+    _click(hwnd, CHROME_TOGGLE[0], CHROME_TOGGLE[1] + top, wait=1.2)
+    if not reader_chrome_shown(_shot(hwnd), top=top):
+        # 出したつもりの UI が見えないなら、バーを読んだことにも UI の状態にも確信が持てない。
+        # ここで通すと、検出器の偽陰性のまま UI が写った本が完成扱いになる（レビュー指摘）
+        emit("  読書 UI が出ない（題名のバーを読めない）")
+        _keep_shot(hwnd, "title")
+        return False
+    bar = _shot(hwnd, (CHROME_BAND[0], top, CHROME_BAND[1], top + CHROME_BOX[3] + 8))
+    seen_bar = _ocr(bar)
+    if not hide_reader_chrome(hwnd, top=top, emit=emit):
+        return False
+    if bar_title_matches(title, seen_bar):
+        return True
+    emit(f"  開いた本を確かめられない（読めた文字: {seen[:60]!r} / バー: {seen_bar[:40]!r}）")
+    _keep_shot(hwnd, "title")
     return False
+
+
+def bar_title_matches(want, bar, *, min_chars=8):
+    """読書 UI のバーの題名が、撮りたい本のものか。表紙より厳しく**前方一致**で見る。
+
+    バーはアプリが持つ書誌の題名そのもの（ノイズ無し）で、長いと末尾が「…」で省略される。
+    表紙と同じ最長共通部分の照合だと、巻数・版・号だけ違う本（❶ と ❷、third と fourth
+    edition）が先頭の共通部分で通る（レビューで実測）。省略前の文字列が題名の先頭と
+    一致することを要求すれば、省略される前に見えている巻数の違いで弾ける。
+    OCR の揺れで落ちるのは撮らない側なので安全。
+    """
+    seen = _norm(bar.replace("…", " ").replace("...", " "))
+    full = _norm(want)
+    if len(seen) < min_chars or not full:
+        return False
+    return full.startswith(seen) or seen.startswith(full)
 
 
 def _digest(image):
@@ -731,6 +794,8 @@ def main(argv=None):
     from core.pipeline import EXIT_OK, run_book
     from core.win32_utils import get_window_rect
 
+    global SHOT_DIR
+    SHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(args.state)), "failed_shots")
     exists = os.path.exists(args.state)
     counts: dict[str, int] = {}
     # 前の実行で崩れた状態（全画面・入力が効かない）を引きずらない
@@ -742,6 +807,8 @@ def main(argv=None):
         for n, book in enumerate(todo, 1):
             title, asin = book.get("title", ""), book.get("asin", "")
             row = {"asin": asin, "title": title}
+            global CURRENT_BOOK
+            CURRENT_BOOK = asin or _norm(title)[:20]
             started = time.time()
             print(f"[{n}/{len(todo)}] {title[:46]}", flush=True)
             if need_restart:
@@ -766,7 +833,7 @@ def main(argv=None):
                     row["status"] = "タイトルバーを測れない"
                 elif not rewind_to_start(hwnd):
                     row["status"] = "先頭に戻れない"
-                elif not verify_title(hwnd, title):
+                elif not verify_title(hwnd, title, top=top):
                     row["status"] = "本を確かめられない"
                 else:
                     pages = _Watch()
