@@ -1224,6 +1224,51 @@ python scripts\check_format.py ... --only image_pdf      # 漫画側だけ点検
 **全文字を数えてはいけません。** 柱・ノンブル・絵柄から拾ったノイズ行まで入り、漫画では
 桁が変わります（実測: 撮影時に空と判定されたページから平均 152.6 字。本文行だけなら 0.6 字）。
 
+#### Cloud Reader 非対応の本を Kindle アプリで撮る（`scripts\capture_app_books.py`）
+
+蔵書 405 冊のうち **56 冊は Cloud Reader が開けません**（`Kindle App Is Required`）。
+この本たちは Kindle アプリ（Microsoft Store 版）を画面キャプチャするしかありません。
+
+```
+python scripts\capture_app_books.py --books books_unsupported.json --library C:\books\out ^
+    --state C:\work\app_capture.csv
+
+rem まず 1 冊試す。**抜き取りは蔵書に混ぜない**ので作業フォルダへ出す
+python scripts\capture_app_books.py ... --library C:\work\probe --limit 1 ^
+    --max-pages 8 --allow-partial
+```
+
+`--books` の一覧は、バッチのログに出る `book_unsupported` イベント（`exit_code: 8`）の本を
+集めて作ります（`title` / `asin` / `format`）。`--dry-run` で対象だけ確かめられます。
+
+進捗は `--state` の CSV に 1 冊ずつ残ります（`status` / `pages` / `stopped_reason` / `detail`）。
+**`完了` の本だけを済みとして飛ばす**ので、失敗した本は次に流したときもう一度撮ります。
+撮れなかった本が 1 冊でもあれば終了コードは 1 です。
+
+本ごとに「ライブラリで題名を検索 → 1 件目を開く → 先頭まで戻す → 撮る」を繰り返します。
+**画面を占有します。**
+
+実測で決めたこと（ウィンドウ 1200x1390）:
+
+| | |
+|---|---|
+| 本の開き方 | ライブラリの検索窓に題名を貼って 1 件目をクリック。`kindle://book?action=open&asin=` は無反応 |
+| 段組 | 幅 1200 で 1 段組（1 ページ）。1400 以上だと 2 段組の見開きになる |
+| ページ送り | **→ が常に次ページ**（縦書きでも同じ）。Cloud Reader のような向きの判定が要らない |
+| 削る UI | アプリのタイトルバー（実測 62px。安全側に 65px）だけを固定で削り、書名ヘッダーと<br>ページ番号フッターはページ間の変化から自動で見つける（固定レイアウトの本には最初から無い） |
+
+**別の本を撮らないための決め事**:
+
+- 検索が 1 冊に絞れなかった本は撮らずに飛ばす
+- 開いて先頭まで戻したあと、**表紙を OCR して題名と突き合わせる**。確かめられない本は撮らない
+- 操作の前に毎回「ライブラリにいるか」を画面の色で確かめる（本を開いたままだと Ctrl+A が
+  読書補助機能になるなど、別の操作になってしまうため）
+- ウィンドウのプロセス名が `Kindle.exe` であることを確かめる（アプリが落ちていると、
+  題名に kindle を含む別のウィンドウを掴んでキーを送ってしまう）
+- クリップボードに題名を入れられたことを読み返して確かめる（失敗すると 1 冊前の題名が残り、
+  前の本を今の本の題名で保存してしまう）
+- 撮れたページが 10 ページ未満なら「完了」にしない
+
 ## batch ファイル形式
 
 `batch --books` に渡す JSON です。本オブジェクトの配列、または `{"books": [...]}` 形式。
@@ -1372,6 +1417,7 @@ kindle_shot/
 │   ├── make_books.py       # 蔵書ダンプ + 選書定義 → batch 用 books.json
 │   ├── convert_2nd.py      # _trimmed から2形式目を作る
 │   ├── check_format.py     # 形式の判定が当たっていたかを後から測る
+│   ├── capture_app_books.py # Cloud Reader 非対応の本を Kindle アプリで撮る
 │   └── selection.example.json
 ├── tests/                  # pytest（純ロジック + CLI JSON 契約）
 ├── config.example.json     # 設定の雛形（DEFAULT_CONFIG から機械生成）
