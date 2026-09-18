@@ -504,6 +504,7 @@ def open_book(hwnd, title, *, emit=print):
             emit("  検索に当たらない")
         else:
             emit("  検索が 2 冊以上に当たる")
+        _keep_shot(hwnd, "search")
         return False
     # 結果が出た直後のクリックは飲まれることがある（実測: 同じ状態でもう一度押すと開いた）。
     # 開いたことをライブラリ画面が消えたかで確かめ、8 秒反応が無ければもう一度押す
@@ -519,6 +520,7 @@ def open_book(hwnd, title, *, emit=print):
             if attempt == 0 and waited >= 8.0:
                 break
     emit("  本が開かない（未ダウンロードで時間がかかっている可能性）")
+    _keep_shot(hwnd, "open")
     return False
 
 
