@@ -566,44 +566,75 @@ def _dark_pixels(image, *, dark=150):
     return sum(1 for p in image.convert("L").tobytes() if p < dark)
 
 
-def reader_chrome_shown(image, *, top=0, box=CHROME_BOX, dark=150, count=30):
-    """読書 UI（上のバー）が出ているか。
+def has_slider(image, *, y_from_bottom=64, x=(300, 900), contrast=40, flat=12):
+    """読書 UI のスライダー（下端から 64px の横線）が写っているか。
 
-    見るのは 2 つ: 左上の「戻る」矢印の暗い画素があること、**バーの帯（矢印の右、題名の
-    まわり）が明るいこと**。矢印だけで見ると、幅いっぱいが黒い表紙で暗い画素だらけになり
-    「出ている」と誤判定して、その本を撮れない（実測: Kaggle に挑む深層学習…）。
-    UI のバーは白地なので、帯が暗ければ UI ではなくページの絵。
-
-    ``top`` はタイトルバーの高さ。タイトルバーにも「←」があるので、ずらして見ないと
-    タイトルバーを読書 UI と取り違える（実測）。
+    UI の有無を色の多寡で見る方法は表紙で誤った（黒い表紙、左右が黒い表紙、リフロー本が
+    ページ自体に描く「ページ 9/253」。実測）。スライダーは**決まった y に引かれる一様な横線**で、
+    その上下 6px はページ（白か絵）なので、「行が一様で、上下の行と明るさが違う」で見る。
+    本文にこの位置・この長さの罫線が来ることはまず無く、来ても切り替え前後の比較で弾く。
     """
     from PIL import ImageStat
 
-    left, upper, right, lower = box
-    pixels = image.crop((left, upper + top, right, lower + top)).convert("L").tobytes()
-    if sum(1 for p in pixels if p < dark) < count:
+    gray = image.convert("L")
+    y = image.height - y_from_bottom
+
+    def row(dy):
+        return ImageStat.Stat(gray.crop((x[0], y + dy, x[1], y + dy + 1)))
+
+    line = row(0)
+    if line.stddev[0] > flat:
         return False
-    band = image.crop((CHROME_BAND[0], upper + top, CHROME_BAND[1], lower + top)).convert("L")
-    return ImageStat.Stat(band).mean[0] > 200
+    above, below = row(-6).mean[0], row(6).mean[0]
+    return abs(line.mean[0] - above) > contrast and abs(line.mean[0] - below) > contrast
 
 
-def hide_reader_chrome(hwnd, *, top=0, tries=2, emit=print):
+def _toggle_chrome(hwnd, *, top=0):
+    """読書 UI を切り替え、(切り替え前, 切り替え後) の画面を返す。"""
+    before = _shot(hwnd)
+    _click(hwnd, CHROME_TOGGLE[0], CHROME_TOGGLE[1] + top, wait=1.2)
+    return before, _shot(hwnd)
+
+
+def chrome_hidden(hwnd, *, top=0):
+    """読書 UI が消えているか。**切り替えて比べ、元に戻す。** 分からなければ None。
+
+    出す→消すの 2 回切り替えて、(a) 2 回目で元の画面に戻ること、(b) 切り替え後にだけ
+    スライダーが写ること、を確かめる。(a)(b) なら元は「消えていた」。逆に元にだけ写れば
+    「出ていた」。どちらでもなければ（クリックが効いていない等）None。
+    """
+    before, shown = _toggle_chrome(hwnd, top=top)
+    _click(hwnd, CHROME_TOGGLE[0], CHROME_TOGGLE[1] + top, wait=1.2)
+    restored = _shot(hwnd)
+    if _digest(restored) != _digest(before):
+        return None
+    was, now = has_slider(before), has_slider(shown)
+    if now and not was:
+        return True
+    if was and not now:
+        return False
+    return None
+
+
+def hide_reader_chrome(hwnd, *, top=0, emit=print):
     """読書 UI を消す。消せなければ False。
 
     UI はページに**かぶさる**（出しても消してもページは動かない。実測）ので、出たまま
-    撮ると上下が UI の分だけ隠れる。消えていれば、ページ以外に写るのは右上の
-    ウィンドウ操作ボタン（とタイトルバー）だけ。本を開いた直後にどちらの状態かは
-    決まっていない。
+    撮ると上下が UI の分だけ隠れる。本を開いた直後にどちらの状態かは決まっていない。
+    1 回切り替えてスライダーが消えれば消えた。現れたなら出したので、もう 1 回切り替えて
+    消えることを確かめる。
     """
-    for _ in range(tries):
-        if not reader_chrome_shown(_shot(hwnd), top=top):
+    before, after = _toggle_chrome(hwnd, top=top)
+    was, now = has_slider(before), has_slider(after)
+    if was and not now:
+        return True
+    if now and not was:
+        shown, hidden = _toggle_chrome(hwnd, top=top)
+        if has_slider(shown) and not has_slider(hidden):
             return True
-        _click(hwnd, CHROME_TOGGLE[0], CHROME_TOGGLE[1] + top, wait=1.2)
-    if reader_chrome_shown(_shot(hwnd), top=top):
-        emit("  読書 UI を消せない")
-        _keep_shot(hwnd, "chrome")
-        return False
-    return True
+    emit("  読書 UI を消せない（切り替えても変わらない）")
+    _keep_shot(hwnd, "chrome")
+    return False
 
 
 def verify_title(hwnd, title, *, top=0, emit=print):
@@ -622,14 +653,14 @@ def verify_title(hwnd, title, *, top=0, emit=print):
     # 表紙の題名が飾り文字で読めない本がある（実測: 「学びを結果に変えるアウトプット大全」は
     # OUTPUT の英字しか読めなかった）。読書 UI を出すと上のバーに**アプリが持つ題名**が出るので、
     # そちらも読む。読んだら UI を消し直す（消せなければ撮らない）
-    _click(hwnd, CHROME_TOGGLE[0], CHROME_TOGGLE[1] + top, wait=1.2)
-    if not reader_chrome_shown(_shot(hwnd), top=top):
+    before, shown = _toggle_chrome(hwnd, top=top)
+    if has_slider(before) or not has_slider(shown):
         # 出したつもりの UI が見えないなら、バーを読んだことにも UI の状態にも確信が持てない。
-        # ここで通すと、検出器の偽陰性のまま UI が写った本が完成扱いになる（レビュー指摘）
+        # ここで通すと、UI が写った本が完成扱いになる（レビュー指摘）
         emit("  読書 UI が出ない（題名のバーを読めない）")
         _keep_shot(hwnd, "title")
         return False
-    bar = _shot(hwnd, (CHROME_BAND[0], top, CHROME_BAND[1], top + CHROME_BOX[3] + 8))
+    bar = shown.crop((CHROME_BAND[0], top, CHROME_BAND[1], top + CHROME_BOX[3] + 8))
     seen_bar = _ocr(bar)
     if not hide_reader_chrome(hwnd, top=top, emit=emit):
         return False
@@ -872,8 +903,9 @@ def main(argv=None):
                         # ページとして入る（実測: 2448x1360 のページになった）。完成扱いにしない
                         row["status"] = "失敗"
                         row["detail"] = f"撮影中にウィンドウが動いた {placed} → {moved}"
-                    elif title_bar_height(_shot(hwnd)) != top or reader_chrome_shown(
-                        _shot(hwnd), top=top
+                    elif (
+                        title_bar_height(_shot(hwnd)) != top
+                        or chrome_hidden(hwnd, top=top) is not True
                     ):
                         # 表示の切り替わりの条件が分かっていないので、撮り終えたあとに測り直す。
                         # 途中で変わっていれば、上が欠けた／UI の写ったページが混ざっている

@@ -160,12 +160,16 @@ def test_bar_title_rejects_another_volume_and_accepts_a_truncated_title():
 
 def _verify_stubs(monkeypatch, *, cover, bar, shown_after_click=True, hidden=True):
     """verify_title の画面まわりを差し替える。cover / bar は OCR が返す文字。"""
-    monkeypatch.setattr(cab, "_shot", lambda hwnd, box=None: box)
-    monkeypatch.setattr(cab, "_ocr", lambda image: bar if image else cover)  # box 付きはバー
-    monkeypatch.setattr(cab, "_click", lambda hwnd, x, y, wait=0: None)
-    monkeypatch.setattr(cab, "reader_chrome_shown", lambda image, **kw: shown_after_click)
+    from PIL import Image
+
+    page = Image.new("RGB", (1200, 1390), (255, 255, 255))
+    shown = page.copy()
+    if shown_after_click:
+        _chrome(shown)
+    _reader_stub(monkeypatch, [page, shown])  # 表紙 → クリックで UI が出る（か出ない）
+    # 表紙全体の OCR は cover、バーの帯（幅 910）の OCR は bar
+    monkeypatch.setattr(cab, "_ocr", lambda image: bar if image.width < 1000 else cover)
     monkeypatch.setattr(cab, "hide_reader_chrome", lambda hwnd, **kw: hidden)
-    monkeypatch.setattr(cab, "_keep_shot", lambda hwnd, name: None)
 
 
 def test_verify_title_falls_back_to_the_reader_bar(monkeypatch):
@@ -260,23 +264,64 @@ def _arrow(page, top=0):
             page.putpixel((x, y), (30, 30, 30))  # ← の矢印
 
 
-def test_reader_chrome_is_seen_by_the_back_arrow():
-    """読書 UI はページにかぶさるので、出たまま撮ると上下が隠れる。出ているかを左上で見る。"""
+def _chrome(page, top=0):
+    """読書 UI の代わり: 上のバーのアイコン・下のスライダー・左右の矢印を暗く描く。"""
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(page)
+    draw.rectangle((0, top, 1200, top + 50), fill=(255, 255, 255))
+    draw.rectangle((20, top + 15, 60, top + 35), fill=(20, 20, 20))
+    draw.line((110, page.height - 64, 1090, page.height - 64), fill=(160, 160, 160), width=3)
+    draw.ellipse((16, 691, 64, 739), fill=(255, 255, 255), outline=(20, 20, 20), width=3)
+    draw.ellipse((1136, 691, 1184, 739), fill=(255, 255, 255), outline=(20, 20, 20), width=3)
+
+
+def _reader_stub(monkeypatch, shots):
+    """_toggle_chrome が返す画面を順に差し替える。クリックのたびに次の画面になる。"""
+    it = iter(shots)
+    state = {"cur": next(it)}
+
+    def click(hwnd, x, y, wait=0):
+        state["cur"] = next(it)
+
+    monkeypatch.setattr(cab, "_shot", lambda hwnd, box=None: state["cur"])
+    monkeypatch.setattr(cab, "_click", click)
+    monkeypatch.setattr(cab, "_keep_shot", lambda hwnd, name: None)
+
+
+def test_chrome_is_judged_by_the_change_when_toggled(monkeypatch):
+    """UI の有無は絶対値では決められない（表紙の色・リフロー本がページに描く見出しで誤る。
+    実測: 黒い表紙、左右が黒い表紙、「ページ 9/253」）。切り替えの前後で UI 領域の墨を比べる。"""
+    from PIL import Image
+
+    for bg in ((255, 255, 255), (5, 5, 5)):
+        page = Image.new("RGB", (1200, 1390), bg)
+        shown = page.copy()
+        _chrome(shown)
+        assert cab.has_slider(shown) and not cab.has_slider(page)
+        # 消えている状態から: 出す→消す で元に戻る → 消えていた
+        _reader_stub(monkeypatch, [page, shown, page])
+        assert cab.chrome_hidden(object()) is True
+        # 出ている状態から: 消す→出す で元に戻り、墨は減る → 出ていた
+        _reader_stub(monkeypatch, [shown, page, shown])
+        assert cab.chrome_hidden(object()) is False
+        # クリックが効かず何も変わらない → 分からない
+        _reader_stub(monkeypatch, [page, page, page])
+        assert cab.chrome_hidden(object()) is None
+
+
+def test_hide_reader_chrome_toggles_until_the_ink_drops(monkeypatch):
     from PIL import Image
 
     page = Image.new("RGB", (1200, 1390), (255, 255, 255))
-    assert not cab.reader_chrome_shown(page)
-    _arrow(page)
-    assert cab.reader_chrome_shown(page)
-    # 幅いっぱいが黒い表紙は、矢印の位置に暗い画素があっても UI ではない（帯が暗い）。
-    # 実測: これを「出ている」と見て消せず、その本を撮れなかった
-    dark_cover = Image.new("RGB", (1200, 1390), (5, 5, 5))
-    assert not cab.reader_chrome_shown(dark_cover)
-    for x in range(0, 1200):
-        for y in range(0, 48):
-            dark_cover.putpixel((x, y), (255, 255, 255))  # 黒い表紙の上に白い UI のバーが出た
-    _arrow(dark_cover)
-    assert cab.reader_chrome_shown(dark_cover)
+    shown = page.copy()
+    _chrome(shown)
+    _reader_stub(monkeypatch, [shown, page])  # 出ていた → 1 回で消える
+    assert cab.hide_reader_chrome(object(), emit=lambda *a: None)
+    _reader_stub(monkeypatch, [page, shown, page])  # 消えていた → 出してしまい、もう 1 回で消す
+    assert cab.hide_reader_chrome(object(), emit=lambda *a: None)
+    _reader_stub(monkeypatch, [page, page, page])  # 切り替わらない → 消せない
+    assert not cab.hide_reader_chrome(object(), emit=lambda *a: None)
 
 
 def _with_title_bar(height=48):
@@ -305,10 +350,6 @@ def test_title_bar_is_measured_and_not_taken_for_the_reader_ui():
     assert cab.title_bar_height(plain) == 0
     page = _with_title_bar(48)
     assert cab.title_bar_height(page) == 48
-    assert cab.reader_chrome_shown(page, top=0)  # ずらさないと取り違える
-    assert not cab.reader_chrome_shown(page, top=48)
-    _arrow(page, top=48)  # 読書 UI が出た
-    assert cab.reader_chrome_shown(page, top=48)
 
 
 def test_title_bar_outside_the_measured_range_is_not_trusted(monkeypatch):
@@ -405,7 +446,7 @@ def _stub_screen(monkeypatch, *, opened=True, hidden=True, rewound=True, verifie
     monkeypatch.setattr(cab, "hide_reader_chrome", lambda hwnd, **kw: hidden)
     # 撮り終えたあとの測り直し（表示が変わっていない）
     monkeypatch.setattr(cab, "title_bar_height", lambda image, **kw: 0)
-    monkeypatch.setattr(cab, "reader_chrome_shown", lambda image, **kw: False)
+    monkeypatch.setattr(cab, "chrome_hidden", lambda hwnd, **kw: True)
     monkeypatch.setattr(cab, "_shot", lambda hwnd, box=None: None)
     monkeypatch.setattr(cab, "rewind_to_start", lambda hwnd, **kw: rewound)
     monkeypatch.setattr(cab, "verify_title", lambda hwnd, title, **kw: verified)
