@@ -97,13 +97,14 @@ SHOT_DIR: str | None = None
 CURRENT_BOOK = ""  # 保存する画面のファイル名に使う（main が本ごとに設定する）
 
 
-def _keep_shot(hwnd, name):
-    """いまの画面を SHOT_DIR に残す（本ごとに上書き。増え続けない）。残せなくても処理は止めない。"""
+def _keep_shot(hwnd, name, *, image=None):
+    """いまの画面（または渡した画像）を SHOT_DIR に残す（本ごとに上書き。増え続けない）。
+    残せなくても処理は止めない。"""
     if not SHOT_DIR:
         return
     try:
         os.makedirs(SHOT_DIR, exist_ok=True)
-        _shot(hwnd).save(os.path.join(SHOT_DIR, f"{CURRENT_BOOK or 'book'}_{name}.png"))
+        (image or _shot(hwnd)).save(os.path.join(SHOT_DIR, f"{CURRENT_BOOK or 'book'}_{name}.png"))
     except Exception:  # noqa: BLE001 - 記録の失敗で本を落とさない
         pass
 
@@ -603,20 +604,25 @@ def _toggle_chrome(hwnd, *, top=0):
 def chrome_hidden(hwnd, *, top=0):
     """読書 UI が消えているか。**切り替えて比べ、元に戻す。** 分からなければ None。
 
-    出す→消すの 2 回切り替えて、(a) 2 回目で元の画面に戻ること、(b) 切り替え後にだけ
-    スライダーが写ること、を確かめる。(a)(b) なら元は「消えていた」。逆に元にだけ写れば
-    「出ていた」。どちらでもなければ（クリックが効いていない等）None。
+    出す→消すの 2 回切り替えて、スライダーが「無い→有る→無い」なら元は「消えていた」。
+    「有る→無い」なら「出ていた」。どちらでもなければ（クリックが効いていない、
+    2 回目で消えない等）None。
+
+    画面全体が元に戻ることは要求しない。撮り終えたあとの確認で、最終ページ（奥付）では
+    切り替えの前後で画面がわずかに変わり、撮れていた本が「表示が変わった」で退避された
+    （実測: OAuth 徹底入門、531 ページ）。知りたいのは撮っている間に UI が消えていたか
+    だけなので、スライダーの出方で見る。
     """
     before, shown = _toggle_chrome(hwnd, top=top)
     _click(hwnd, CHROME_TOGGLE[0], CHROME_TOGGLE[1] + top, wait=1.2)
     restored = _shot(hwnd)
-    if _digest(restored) != _digest(before):
-        return None
-    was, now = has_slider(before), has_slider(shown)
-    if now and not was:
+    was, now, after = has_slider(before), has_slider(shown), has_slider(restored)
+    if now and not was and not after:
         return True
     if was and not now:
         return False
+    for name, image in (("post_before", before), ("post_shown", shown), ("post_after", restored)):
+        _keep_shot(hwnd, name, image=image)
     return None
 
 

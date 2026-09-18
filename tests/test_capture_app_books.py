@@ -286,7 +286,7 @@ def _reader_stub(monkeypatch, shots):
 
     monkeypatch.setattr(cab, "_shot", lambda hwnd, box=None: state["cur"])
     monkeypatch.setattr(cab, "_click", click)
-    monkeypatch.setattr(cab, "_keep_shot", lambda hwnd, name: None)
+    monkeypatch.setattr(cab, "_keep_shot", lambda hwnd, name, **kw: None)
 
 
 def test_chrome_is_judged_by_the_change_when_toggled(monkeypatch):
@@ -329,8 +329,9 @@ def test_slider_is_seen_even_with_the_knob_in_the_middle():
     assert not cab.has_slider(page)
 
 
-def test_chrome_hidden_needs_the_screen_to_come_back(monkeypatch):
-    """2 回目の切り替えで元の画面に戻らなければ（ページが進んだ等）分からない扱い。"""
+def test_chrome_hidden_needs_the_slider_to_go_away_again(monkeypatch):
+    """2 回目の切り替えで線が消えなければ分からない扱い。画面全体の一致は求めない
+    （最終ページでは切り替え前後で画面がわずかに変わり、撮れていた本を退避していた。実測）。"""
     from PIL import Image
 
     page = Image.new("RGB", (1200, 1390), (255, 255, 255))
@@ -338,6 +339,11 @@ def test_chrome_hidden_needs_the_screen_to_come_back(monkeypatch):
     _chrome(shown)
     _reader_stub(monkeypatch, [page, shown, shown])
     assert cab.chrome_hidden(object()) is None
+    other = Image.new(
+        "RGB", (1200, 1390), (250, 250, 250)
+    )  # 戻った画面が少し違っても線が無ければよい
+    _reader_stub(monkeypatch, [page, shown, other])
+    assert cab.chrome_hidden(object()) is True
 
 
 def test_a_book_is_not_finished_when_the_ui_state_is_unknown_after_capture(tmp_path, monkeypatch):
