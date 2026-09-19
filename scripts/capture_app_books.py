@@ -59,6 +59,11 @@ COVER_XS = (358, 599)  # 検索結果の 1 冊目・2 冊目の中心 x
 BACK_ARROW = (32, 32)
 # 読書 UI（上のバー・スライダー・← →）を出し入れするクリック位置。上の余白なので本文の
 # リンクを踏まない。実測: 左端のクリックは前のページに戻る、下端は無反応
+# 本を開こうとして出るダイアログ。「サポートされていないコンテンツ」（Windows 版が対応しない本）は
+# 表紙をクリックすると窓の中央にこの箱で出て、後ろのライブラリを灰色（実測 112,112,113）に暗くする
+DIALOG_BOX = (425, 590, 775, 795)
+BACKDROP_POINTS = ((600, 300), (300, 1000), (900, 1000), (1100, 500), (600, 1200))
+UNSUPPORTED = "Windows 版で非対応"
 CHROME_TOGGLE = (600, 60)
 # 読書 UI の「戻る」矢印が出る範囲（左上）。ここに暗い画素があれば UI が出ている
 CHROME_BOX = (14, 8, 64, 44)
@@ -421,6 +426,34 @@ def is_library(image):
     return find_library_anchor(image) is not None
 
 
+def has_modal_backdrop(image, *, points=BACKDROP_POINTS, gray=(100, 125), spread=4):
+    """ダイアログの暗幕（画面全体を一様な中間の灰色にする）が出ているか。
+
+    見るのはダイアログの箱の外の数点。ライブラリ（白）にもページ（白か本文）にも
+    一様な中間の灰色は無いので、全点がその灰色なら暗幕と見る。
+    """
+    rgb = image.convert("RGB")
+    for x, y in points:
+        r, g, b = rgb.getpixel((x, y))
+        if not (gray[0] <= r <= gray[1] and max(r, g, b) - min(r, g, b) <= spread):
+            return False
+    return True
+
+
+def _dialog_status(hwnd, image):
+    """暗幕が出ていれば、ダイアログの文字を読んで返す。出ていなければ None。
+
+    「サポートされていないコンテンツ」は Windows 版 Kindle が対応しない本で、
+    開けないのは本の側の事情なので `UNSUPPORTED` にする（アプリの起動し直しは要らない）。
+    それ以外は読めた文字をそのまま返す（呼ぶ側が待つか諦めるかを決める）。
+    """
+    if not has_modal_backdrop(image):
+        return None
+    text = _ocr(image.crop(DIALOG_BOX))
+    _keep_shot(hwnd, "dialog", image=image)
+    return UNSUPPORTED if "サポート" in text else text
+
+
 def _to_library(hwnd, *, tries=3):
     """どの画面にいても、ライブラリに戻す。戻せなければ False。"""
     import pyautogui
@@ -446,6 +479,8 @@ def open_book(hwnd, title, *, emit=print):
     """ライブラリで題名を検索し、**1 件だけに絞れたとき**その本を開く。
 
     2 件以上に絞れなかった本は開かない（別の本を蔵書に入れない）。
+    開けたら True、開けなければ False。Windows 版が対応しない本（開こうとすると
+    ダイアログが出る）は `UNSUPPORTED` を返す（真なので「開けなかった」とは区別する）。
     """
     import pyautogui
 
@@ -514,12 +549,25 @@ def open_book(hwnd, title, *, emit=print):
     # 結果が出た直後のクリックは飲まれることがある（実測: 同じ状態でもう一度押すと開いた）。
     # 開いたことをライブラリ画面が消えたかで確かめ、8 秒反応が無ければもう一度押す
     time.sleep(1.0)
+    seen_dialog = False
     for attempt in range(2):
         _click(hwnd, *first, wait=2.0)
         waited = 2.0
         while waited < OPEN_WAIT:
-            if not is_library(_shot(hwnd)):
-                return True
+            shot = _shot(hwnd)
+            if not is_library(shot):
+                # 開けない本はライブラリの上にダイアログを出す（ライブラリは暗くなって見えなくなる）
+                dialog = _dialog_status(hwnd, shot)
+                if dialog is None:
+                    return True
+                if dialog == UNSUPPORTED:
+                    emit("  Windows 版 Kindle が対応していない本（アプリのダイアログ）")
+                    pyautogui.press("esc")  # ダイアログを閉じる（次の本の検索を邪魔しない）
+                    return UNSUPPORTED
+                # 他のダイアログ（や画面の切り替わりの途中）は、消えて本が開くかもしれないので待ち続ける
+                if not seen_dialog:
+                    emit(f"  ダイアログが出ている（読めた文字: {dialog[:60]!r}）")
+                    seen_dialog = True
             time.sleep(1.0)
             waited += 1.0
             if attempt == 0 and waited >= 8.0:
@@ -872,7 +920,9 @@ def main(argv=None):
                 hwnd = _app()
                 _place(hwnd)
                 top: int | None = 0
-                if not open_book(hwnd, title):
+                if (opened := open_book(hwnd, title)) == UNSUPPORTED:
+                    row["status"] = UNSUPPORTED  # 本の側の事情。アプリは正常なので起動し直さない
+                elif not opened:
                     row["status"] = "開けない"
                     need_restart = (
                         True  # 入力が効かなくなっている可能性がある。次の本の前に起動し直す

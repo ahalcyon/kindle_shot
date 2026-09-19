@@ -701,3 +701,57 @@ def test_restarts_the_app_after_an_exception_too(tmp_path, monkeypatch):
     assert cab.main(["--books", books, "--library", library, "--state", state]) == 1
     assert len(restarts) == 2  # 最初に 1 回、例外で失敗した本のあとに 1 回
     assert all(r["status"] == "失敗" for r in _rows(state))
+
+
+def _dialog_screen(gray=(112, 112, 113)):
+    """「サポートされていないコンテンツ」のダイアログ: 一様な灰色の暗幕に白い箱（実測の色）。"""
+    from PIL import Image, ImageDraw
+
+    screen = Image.new("RGB", (1200, 1390), gray)
+    ImageDraw.Draw(screen).rectangle(cab.DIALOG_BOX, fill=(255, 255, 255))
+    return screen
+
+
+def test_modal_backdrop_is_a_uniform_mid_gray_outside_the_box():
+    from PIL import Image
+
+    assert cab.has_modal_backdrop(_dialog_screen())
+    assert not cab.has_modal_backdrop(Image.new("RGB", (1200, 1390), (255, 255, 255)))
+    assert not cab.has_modal_backdrop(_library_screen(200, 236).resize((1200, 1390)))
+    # 灰色でも色が付いていれば暗幕ではない（本文の図版など）
+    assert not cab.has_modal_backdrop(Image.new("RGB", (1200, 1390), (112, 112, 130)))
+
+
+def test_an_unsupported_book_is_recorded_and_the_app_is_not_restarted(tmp_path, monkeypatch):
+    """Windows 版が対応しない本はダイアログで分かる。読書 UI の異常と取り違えず、起動し直しもしない。"""
+    entries = [{"title": "本U", "asin": "U1"}, {"title": "本V", "asin": "U2"}]
+    books, library, state = _prepare(tmp_path, entries, [])
+    _stub_screen(monkeypatch)
+    restarts: list[int] = []
+    monkeypatch.setattr(cab, "restart_app", lambda **kw: restarts.append(1))
+    opened = iter([cab.UNSUPPORTED, True])
+    monkeypatch.setattr(cab, "open_book", lambda hwnd, title, **kw: next(opened))
+
+    def fake_run_book(**kw):
+        kw["emit"]("result", total_pages=120, stopped_reason="no_change")
+        return 0
+
+    monkeypatch.setattr("core.pipeline.run_book", fake_run_book)
+    assert cab.main(["--books", books, "--library", library, "--state", state]) == 1
+    rows = _rows(state)
+    assert [r["status"] for r in rows] == [cab.UNSUPPORTED, "完了"]
+    assert len(restarts) == 1  # 最初の 1 回だけ
+
+
+def test_dialog_status_reads_the_box_and_tells_unsupported_from_other_dialogs(monkeypatch):
+    from PIL import Image
+
+    texts = iter(
+        ["サポートされていないコンテンツ この本はWindows版Kindleでは", "ダウンロードできません"]
+    )
+    monkeypatch.setattr(cab, "_ocr", lambda image: next(texts))
+    monkeypatch.setattr(cab, "_keep_shot", lambda *a, **kw: None)
+    assert cab._dialog_status(None, _dialog_screen()) == cab.UNSUPPORTED
+    # 他のダイアログは読めた文字をそのまま返す（呼ぶ側が待つ）
+    assert cab._dialog_status(None, _dialog_screen()) == "ダウンロードできません"
+    assert cab._dialog_status(None, Image.new("RGB", (1200, 1390), (255, 255, 255))) is None
