@@ -13,7 +13,7 @@ import pyautogui as pag
 from PIL import ImageGrab
 
 from .boundary_detector import create_detector
-from .win32_utils import activate_window, find_window, get_window_rect
+from .win32_utils import activate_window_report, find_window, get_window_rect
 
 pag.FAILSAFE = False
 
@@ -109,15 +109,12 @@ class CaptureEngine:
 
     def activate_target_window(self, hwnd, emit=None):
         """対象ウィンドウを前面に出す。前面にできなければ False（emit があれば何が前面にいたかを残す）。"""
-        in_front = activate_window(
+        in_front, front = activate_window_report(
             hwnd,
             click_position=self.profile.click_position,
             use_bring_to_top=self.profile.use_bring_to_top,
         )
         if not in_front and emit is not None:
-            from core.win32_utils import foreground_window_title
-
-            front = foreground_window_title()
             emit(
                 "activate_failed",
                 human=f"ウィンドウを前面にできませんでした（前面にいるのは {front!r}）",
