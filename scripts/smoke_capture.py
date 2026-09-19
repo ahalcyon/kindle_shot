@@ -246,6 +246,8 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
         env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
     )
     covered = False
+    cover_reason = None
+    saw_cover = False
     for line in proc.stdout.splitlines():
         if not line.strip():
             continue
@@ -260,6 +262,8 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
             # ということで、#50 で問題にした偽陰性と同じ形 (#27)
             # **human ではなく added を見る。** human は --json の出力に入らない
             covered = bool(event.get("added"))
+            cover_reason = event.get("reason")
+            saw_cover = True
         if event.get("event") in ("error", "run_summary", "result", "cover"):
             echo(f"  [{event['event']}] {json.dumps(event, ensure_ascii=False)}")
 
@@ -295,8 +299,17 @@ def run_smoke(asin, out, pages, python=None, echo=print, screen=False):
         count = pdf_page_count(pdf)
         if count is not None and count != expected:
             problems.append(f"PDF のページ数が {expected} ではなく {count}")
-        if not covered:
+        # **1 ページ目が既に表紙の本は足さないのが正しい。** 画面経路は先頭ページ＝表紙から撮る
+        # （headless は表紙の次から始まる）ので、画面経路のスモークは毎回ここに来る。
+        # 取れなかった（外部サービス）・置けなかったは従来どおり赤
+        if not saw_cover:
+            # cover の段階まで来ていない（画像が無い・1 枚目が開けない）。従来どおり赤
             problems.append("表紙を 1 ページ目にできませんでした（cover イベントが出ていない）")
+        elif not covered and cover_reason != "already_cover":
+            problems.append(
+                "表紙を 1 ページ目にできませんでした"
+                f"（cover イベントが added=false、reason={cover_reason}）"
+            )
     return problems, retryable, argv
 
 
