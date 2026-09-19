@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import tempfile
+import traceback
 
 from PIL import Image
 
@@ -68,9 +69,9 @@ def null_emit(event, human=None, **fields):
     """emit 省略時の何もしないコールバック。"""
 
 
-def emit_error(emit, message):
+def emit_error(emit, message, **fields):
     """Reporter.error と同形の error イベントを発行する。"""
-    emit("error", human=f"エラー: {message}", message=message)
+    emit("error", human=f"エラー: {message}", message=message, **fields)
 
 
 def phase_progress(emit, phase):
@@ -1692,7 +1693,8 @@ def _run_batch_impl(books, out, defaults, cfg, overwrite, stop_on_error, min_fre
         try:
             code = run_book(output=out, config=cfg, emit=watch, overwrite=True, **merged)
         except Exception as e:  # noqa: BLE001 - 1冊の想定外エラーでバッチを止めない
-            emit_error(emit, f"予期しないエラー: {e}")
+            # トレースバックも残す (#142)。文言だけでは、どの本のどこで落ちたかを追えない
+            emit_error(emit, f"予期しないエラー: {e}", traceback=traceback.format_exc())
             code = EXIT_ERROR
 
         ok = code == EXIT_OK

@@ -366,6 +366,23 @@ def test_run_batch_per_book_overrides_defaults(tmp_path, monkeypatch):
     assert (out / "本2.md").exists()
 
 
+def test_run_batch_keeps_the_traceback_of_an_unexpected_error(tmp_path, monkeypatch):
+    """1 冊の想定外エラーはバッチを止めないが、トレースバックは残す (#142)。"""
+
+    def broken(**kw):
+        raise TypeError("Object of type int64 is not JSON serializable")
+
+    monkeypatch.setattr(pipeline, "run_book", broken)
+    out = tmp_path / "out"
+    out.mkdir()
+    books = [{"asin": "B0X", "title": "本X", "fmt": "image_pdf"}]
+    emit, events = collect_emit()
+    pipeline.run_batch(books, output=str(out), emit=emit)
+    (error,) = by_name(events, "error")
+    assert error["message"].startswith("予期しないエラー: Object of type int64")
+    assert "TypeError" in error["traceback"] and "broken" in error["traceback"]
+
+
 def test_run_batch_skip_uses_per_book_format_extension(tmp_path, monkeypatch):
     calls: list = []
     monkeypatch.setattr(pipeline, "run_book", make_fake_run_book(calls))
