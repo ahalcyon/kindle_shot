@@ -8,16 +8,17 @@ import sys
 
 import pytest
 
-from core.capture_engine import CaptureEngine
-from core.capture_profiles import get_profile
-
-win = pytest.importorskip("core.win32_utils") if sys.platform == "win32" else None
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Win32 API")
+# Windows 以外では ctypes.windll が無く import できないので、collect の時点で skip にする
+win = pytest.importorskip("core.win32_utils")
+
+from core.capture_engine import CaptureEngine  # noqa: E402
+from core.capture_profiles import get_profile  # noqa: E402
 
 
 def test_waits_only_until_the_window_is_in_front():
     """既に前面なら待たない。途中で前面になればそこで返る。"""
-    sleeps = []
+    sleeps: list[float] = []
     assert win.wait_for_foreground(lambda: True, sleep=sleeps.append)
     assert sleeps == []
     seen = iter([False, False, True])
@@ -26,7 +27,7 @@ def test_waits_only_until_the_window_is_in_front():
 
 
 def test_gives_up_after_the_timeout():
-    sleeps = []
+    sleeps: list[float] = []
     assert not win.wait_for_foreground(
         lambda: False, timeout=0.5, interval=0.1, sleep=sleeps.append
     )
