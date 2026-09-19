@@ -261,7 +261,10 @@ def _fake_run(manifest, tmp_path, monkeypatch):
 
 
 def _fake_run_with_cover(tmp_path, monkeypatch, reason):
-    """manifest と空の PDF を置き、cover イベントだけを stdout に流して run_smoke を通す。"""
+    """manifest と空の PDF を置き、cover イベントだけを stdout に流して run_smoke を通す。
+
+    reason が None なら cover イベントを出さない（cover の段階まで来なかった形）。
+    """
     out = str(tmp_path)
     os.makedirs(smoke_capture.capture_dir(out), exist_ok=True)
     with open(
@@ -271,7 +274,11 @@ def _fake_run_with_cover(tmp_path, monkeypatch, reason):
     open(smoke_capture.output_pdf(out), "wb").close()
     monkeypatch.setattr(smoke_capture, "pdf_page_count", lambda _p: 3)
     monkeypatch.setattr(smoke_capture, "check_pages_differ", lambda _pngs: [])  # 画像は置かない
-    stdout = json.dumps({"event": "cover", "asin": "B0TEST", "added": False, "reason": reason})
+    stdout = (
+        json.dumps({"event": "cover", "asin": "B0TEST", "added": False, "reason": reason})
+        if reason is not None
+        else ""
+    )
     monkeypatch.setattr(
         smoke_capture.subprocess,
         "run",
@@ -289,6 +296,9 @@ def test_a_cover_already_on_page_one_is_not_a_failure(tmp_path, monkeypatch):
     assert _fake_run_with_cover(tmp_path, monkeypatch, "already_cover") == []
     problems = _fake_run_with_cover(tmp_path, monkeypatch, "fetch_failed")
     assert any("表紙" in p and "fetch_failed" in p for p in problems)
+    # cover の段階まで来なかった（イベント無し）も従来どおり赤。文言で区別する
+    problems = _fake_run_with_cover(tmp_path, monkeypatch, None)
+    assert any("cover イベントが出ていない" in p for p in problems)
 
 
 def test_run_smoke_reads_retryable_from_the_manifest(tmp_path, monkeypatch):

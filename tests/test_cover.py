@@ -154,8 +154,19 @@ def test_a_missing_folder_is_not_an_error(tmp_path):
 def test_a_broken_cover_does_not_stop_the_book(tmp_path):
     """壊れた画像でも本を落とさない。"""
     (tmp_path / "001.png").write_bytes(_patterned((1600, 1200)))
-    assert add_cover_page(str(tmp_path), "B0TEST", fetch=lambda _asin: b"not an image") is False
+    events = []
+    assert (
+        add_cover_page(
+            str(tmp_path),
+            "B0TEST",
+            fetch=lambda _asin: b"not an image",
+            emit=lambda name, **kw: events.append((name, kw)),
+        )
+        is False
+    )
     assert os.listdir(tmp_path) == ["001.png"]
+    # 「置けなかった」も構造化した理由で伝える（スモークが赤にする側）
+    assert [kw["reason"] for name, kw in events if name == "cover"] == ["error"]
 
 
 # ------------------------------------------------------------
