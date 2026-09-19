@@ -248,7 +248,7 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind, max_rewind, load
         process=get_window_process_name(hwnd),
     )
 
-    engine.activate_target_window(hwnd)
+    engine.activate_target_window(hwnd, emit=emit)
 
     def grab_thumb():
         rect = get_window_rect(hwnd)

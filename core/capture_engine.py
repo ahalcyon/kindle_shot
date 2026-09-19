@@ -107,13 +107,23 @@ class CaptureEngine:
             process_name=self.profile.process_name or None,
         )
 
-    def activate_target_window(self, hwnd):
-        """対象ウィンドウを前面に出す。"""
-        activate_window(
+    def activate_target_window(self, hwnd, emit=None):
+        """対象ウィンドウを前面に出す。前面にできなければ False（emit があれば何が前面にいたかを残す）。"""
+        in_front = activate_window(
             hwnd,
             click_position=self.profile.click_position,
             use_bring_to_top=self.profile.use_bring_to_top,
         )
+        if not in_front and emit is not None:
+            from core.win32_utils import foreground_window_title
+
+            front = foreground_window_title()
+            emit(
+                "activate_failed",
+                human=f"ウィンドウを前面にできませんでした（前面にいるのは {front!r}）",
+                foreground=front,
+            )
+        return in_front
 
     def detect_boundaries(self, image=None):
         """画面をキャプチャして境界を検出する。
