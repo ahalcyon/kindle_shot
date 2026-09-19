@@ -248,7 +248,7 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind, max_rewind, load
         process=get_window_process_name(hwnd),
     )
 
-    engine.activate_target_window(hwnd)
+    engine.activate_target_window(hwnd, emit=emit)
 
     def grab_thumb():
         rect = get_window_rect(hwnd)
@@ -305,7 +305,7 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind, max_rewind, load
         # 1ページめくって本文に移してから再判定する。まず進み、終端で
         # 変化しなければ戻る。この後で先頭ページへ巻き戻すため、ここで
         # 位置を動かしても結果には影響しない。
-        engine.activate_target_window(hwnd)
+        engine.activate_target_window(hwnd, emit=emit)
         fwd = profile.page_turn_key
         for key in (fwd, reverse_page_turn_key(fwd)):
             emit(
@@ -336,7 +336,7 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind, max_rewind, load
             x=btn[0],
             y=btn[1],
         )
-        engine.activate_target_window(hwnd)
+        engine.activate_target_window(hwnd, emit=emit)
         pag.click(btn[0], btn[1])
         time.sleep(2)
         wait_stable(load_wait)
@@ -352,7 +352,7 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind, max_rewind, load
         if is_window_fullscreen(hwnd):
             emit("fullscreen", human="すでに全画面表示です", entered=False)
         else:
-            engine.activate_target_window(hwnd)
+            engine.activate_target_window(hwnd, emit=emit)
             pag.press("f11")
             time.sleep(2)
             wait_stable(15)

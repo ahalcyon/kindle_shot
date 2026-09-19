@@ -135,6 +135,36 @@ def get_window_title(hwnd):
     return buff.value
 
 
+def foreground_window_title():
+    """いま前面にあるウィンドウのタイトル。前面化に失敗したとき何がいたかを残す (#74)。"""
+    try:
+        return get_window_title(windll.user32.GetForegroundWindow())
+    except Exception:  # noqa: BLE001 - 記録のためだけなので落とさない
+        return ""
+
+
+# 前面化の確認に待つ上限。SetForegroundWindow は非同期に効くことがあり、
+# 直後の GetForegroundWindow はまだ前のウィンドウを返す
+FOREGROUND_TIMEOUT = 2.0
+FOREGROUND_POLL = 0.1
+
+
+def wait_for_foreground(
+    is_foreground, *, timeout=FOREGROUND_TIMEOUT, interval=FOREGROUND_POLL, sleep=time.sleep
+):
+    """is_foreground() が True になるまで interval ごとに見る。timeout までに True にならなければ False。
+
+    固定スリープの代わり。前面になった時点で返るので、既に前面のときは待たない。
+    回数で数える（float の累積だと 1.0 / 0.1 が 11 回になる）。
+    """
+    polls = int(round(timeout / interval)) if interval > 0 and timeout > 0 else 0
+    for _ in range(polls):
+        if is_foreground():
+            return True
+        sleep(interval)
+    return is_foreground()
+
+
 def hwnd_value(hwnd):
     """ウィンドウハンドルを比較可能な整数に正規化する。
 
@@ -229,7 +259,15 @@ def get_window_process_name(hwnd):
 
 
 def activate_window(hwnd, click_position="center", use_bring_to_top=False):
-    """ウィンドウを前面に出してクリックする。
+    """ウィンドウを前面に出してクリックする。**前面になったかを確かめて** True / False を返す (#74)。
+
+    何が前面にいたかも要るときは `activate_window_report`。
+    """
+    return activate_window_report(hwnd, click_position, use_bring_to_top)[0]
+
+
+def activate_window_report(hwnd, click_position="center", use_bring_to_top=False):
+    """`activate_window` の本体。(前面になったか, 失敗した瞬間に前面にいたウィンドウの題名) を返す。
 
     click_position:
         'center': ウィンドウ中央をクリック
@@ -237,6 +275,11 @@ def activate_window(hwnd, click_position="center", use_bring_to_top=False):
         'none': クリックしない (Kindle Cloud Reader 等、クリックがリーダーUIの
                 表示をトグルしてキャプチャに写り込むアプリ向け。前面化だけで
                 キー入力は届くことを確認済み)
+
+    以前は前面化の結果を確かめずに固定で 1 秒寝て返していた。「戻った時点で前面にある」は
+    主張されているだけで検証されておらず、画面キャプチャが 4 回に 1 回 1 ページ目で止まる
+    不安定さの原因候補になっていた (#74)。前面になるまで最大 FOREGROUND_TIMEOUT 秒待ち、
+    ならなければ False を返す（呼ぶ側が何が前面にいたかを記録する）。クリックは従来どおり行う。
     """
     IsIconic = windll.user32.IsIconic
     ShowWindow = windll.user32.ShowWindow
@@ -286,9 +329,19 @@ def activate_window(hwnd, click_position="center", use_bring_to_top=False):
         if attached:
             AttachThreadInput(current_tid, fore_tid.value, False)
 
+    def is_front():
+        return hwnd_value(GetForegroundWindow()) == hwnd_value(hwnd)
+
+    in_front = wait_for_foreground(is_front)
+    # 題名は諦めた瞬間に取る。クリックや 1 秒の待ちのあとでは別のものに変わっている
+    # （クリックで対象自身が前面になっていることもある）
+    blocker = "" if in_front else foreground_window_title()
+
     if click_position == "none":
+        # 前面になってからも従来どおり 1 秒置く（アプリ経路の検索窓入力がこの間を当てにしている
+        # 可能性があるので、確認を足しただけで待ちは減らさない）
         time.sleep(1)
-        return
+        return in_front, blocker
 
     rect = RECT()
     GetWindowRect(hwnd, pointer(rect))
@@ -303,6 +356,10 @@ def activate_window(hwnd, click_position="center", use_bring_to_top=False):
     pag.moveTo(x, y)
     pag.click()
     time.sleep(1)
+    # クリック自体で前面になることがある。キー入力はこのあとなので、いま前面ならよい
+    if not in_front and is_front():
+        in_front = True
+    return in_front, blocker
 
 
 # SetThreadExecutionState のフラグ

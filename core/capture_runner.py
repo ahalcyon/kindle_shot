@@ -179,7 +179,9 @@ def run_capture(
     # 前面化のために先に矩形を取るが、これは確定値ではない。待機中に F11 で
     # 全画面化されると矩形が変わるため、待機後に取り直す（下記）。
     engine.set_target_window(hwnd)
-    engine.activate_target_window(hwnd)
+    # 前面化に失敗しても止めない（キー入力が届かなければ 1 ページ目で timeout になり、
+    # そのときログに何が前面にいたかが残る。#74 の原因を追う手がかり）
+    engine.activate_target_window(hwnd, emit=emit)
 
     import pyautogui as pag
 
