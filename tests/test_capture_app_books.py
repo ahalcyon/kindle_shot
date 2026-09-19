@@ -106,6 +106,22 @@ def test_title_matches_rejects_another_book_of_the_same_series():
     )
 
 
+def test_title_matches_a_title_split_across_cover_lines():
+    """表紙では題名が行に分かれ、間に著者名や肩書きが挟まる（実測: バリュエーションの教科書）。"""
+    assert cab.title_matches(
+        "バリュエーションの教科書―企業価値・Ｍ＆Ａの本質と実務",
+        "バリュエーション グロービス経営大学院教授 の教科書 森生明〔著〕 企業価値・M&Aの本質と実務",
+    )
+
+
+def test_bar_title_tolerates_a_single_misread_character():
+    """バーの OCR が 1 字誤読しても（実測: 「バ」→「パ」）、正しい本を撮り損ねない。"""
+    assert cab.bar_title_matches(
+        "バリュエーションの教科書―企業価値・Ｍ＆Ａの本質と実務",
+        "パリュエーションの教科書-企業価値・M&Aの本質と実務",
+    )
+
+
 def test_title_matches_survives_the_noise_around_a_cover():
     """表紙のページ全体を読むので、著者名・出版社名・帯の文句が混ざる。"""
     assert cab.title_matches(

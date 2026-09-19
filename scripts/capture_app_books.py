@@ -143,8 +143,11 @@ def title_matches(want, seen, *, ratio=0.7, cap=24):
     need = min(int(len(a) * ratio), cap)
     if need <= 0:
         return False
-    match = SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b))
-    return match.size >= need
+    # 表紙では題名が行に分かれ、間に著者名や肩書きが挟まる（実測: 「バリュエーション /
+    # グロービス経営大学院教授 / の教科書 / 森生明 / 企業価値・M&Aの本質と実務」）。
+    # 最長の 1 か所ではなく、順序を保った一致（4 字以上の断片）の合計で見る
+    blocks = SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks()
+    return sum(m.size for m in blocks if m.size >= 4) >= need
 
 
 def load_state(path):
@@ -687,20 +690,23 @@ def verify_title(hwnd, title, *, top=0, emit=print):
     return False
 
 
-def bar_title_matches(want, bar, *, min_chars=8):
-    """読書 UI のバーの題名が、撮りたい本のものか。表紙より厳しく**前方一致**で見る。
+def bar_title_matches(want, bar, *, min_chars=8, ratio=0.9):
+    """読書 UI のバーの題名が、撮りたい本のものか。表紙より厳しく**前方の類似**で見る。
 
-    バーはアプリが持つ書誌の題名そのもの（ノイズ無し）で、長いと末尾が「…」で省略される。
-    表紙と同じ最長共通部分の照合だと、巻数・版・号だけ違う本（❶ と ❷、third と fourth
-    edition）が先頭の共通部分で通る（レビューで実測）。省略前の文字列が題名の先頭と
-    一致することを要求すれば、省略される前に見えている巻数の違いで弾ける。
-    OCR の揺れで落ちるのは撮らない側なので安全。
+    バーはアプリが持つ書誌の題名そのもので、長いと末尾が「…」で省略される。表紙と同じ
+    照合だと、巻数・版・号だけ違う本（❶ と ❷、third と fourth edition）が先頭の共通部分で
+    通る（レビューで実測）。省略前の文字列を題名の先頭の同じ長さと比べ、類似度 ``ratio``
+    以上を要求する。完全な前方一致にしないのは、OCR が 1 字誤読する（実測: 「バ」→「パ」）
+    ので、正しい本を撮り損ねるため。巻数・版の違いは複数字が違うので類似度で落ちる。
     """
+    from difflib import SequenceMatcher
+
     seen = _norm(bar.replace("…", " ").replace("...", " "))
     full = _norm(want)
     if len(seen) < min_chars or not full:
         return False
-    return full.startswith(seen) or seen.startswith(full)
+    n = min(len(seen), len(full))
+    return SequenceMatcher(None, seen[:n], full[:n], autojunk=False).ratio() >= ratio
 
 
 def _digest(image):
