@@ -64,6 +64,8 @@ BACK_ARROW = (32, 32)
 DIALOG_BOX = (425, 590, 775, 795)
 BACKDROP_POINTS = ((600, 300), (300, 1000), (900, 1000), (1100, 500), (600, 1200))
 UNSUPPORTED = "Windows 版で非対応"
+# バーの題名で 1 字しか違わなくても別の本になる文字（巻の上下・前後）
+VOLUME_CHARS = "上下前後"
 CHROME_TOGGLE = (600, 60)
 # 読書 UI の「戻る」矢印が出る範囲（左上）。ここに暗い画素があれば UI が出ている
 CHROME_BOX = (14, 8, 64, 44)
@@ -426,16 +428,23 @@ def is_library(image):
     return find_library_anchor(image) is not None
 
 
-def has_modal_backdrop(image, *, points=BACKDROP_POINTS, gray=(100, 125), spread=4):
+def has_modal_backdrop(
+    image, *, points=BACKDROP_POINTS, gray=(100, 125), spread=4, box=DIALOG_BOX, light=230
+):
     """ダイアログの暗幕（画面全体を一様な中間の灰色にする）が出ているか。
 
-    見るのはダイアログの箱の外の数点。ライブラリ（白）にもページ（白か本文）にも
-    一様な中間の灰色は無いので、全点がその灰色なら暗幕と見る。
+    見るのはダイアログの箱の外の数点と、箱の内側の四隅。ライブラリ（白）にもページ（白か本文）にも
+    一様な中間の灰色は無いが、灰色一色の図版のページを暗幕と取り違えないよう、箱の内側が明るい
+    （実測: 上の帯が (240, 241, 242)、本体が白）ことも要求する。
     """
     rgb = image.convert("RGB")
     for x, y in points:
         r, g, b = rgb.getpixel((x, y))
         if not (gray[0] <= r <= gray[1] and max(r, g, b) - min(r, g, b) <= spread):
+            return False
+    x0, y0, x1, y1 = box
+    for x, y in ((x0 + 8, y0 + 8), (x1 - 8, y0 + 8), (x0 + 8, y1 - 8), (x1 - 8, y1 - 8)):
+        if min(rgb.getpixel((x, y))) < light:
             return False
     return True
 
@@ -509,13 +518,15 @@ def open_book(hwnd, title, *, emit=print):
         _keep_shot(hwnd, "search")
         return False
     # 結果が出た直後のクリックは飲まれることがある（実測: 同じ状態でもう一度押すと開いた）。
-    # 開いたことをライブラリ画面が消えたかで確かめ、8 秒反応が無ければもう一度押す
+    # 開いたことをライブラリ画面が消えたかで確かめ、8 秒反応が無ければもう一度押す。
+    # ダイアログの OCR は 1 周に数秒かかるので、周回数ではなく時計で測る
     time.sleep(1.0)
     seen_dialog = False
     for attempt in range(2):
+        started = time.monotonic()
+        limit = 8.0 if attempt == 0 else OPEN_WAIT
         _click(hwnd, *first, wait=2.0)
-        waited = 2.0
-        while waited < OPEN_WAIT:
+        while time.monotonic() - started < limit:
             shot = _shot(hwnd)
             if not is_library(shot):
                 # 開けない本はライブラリの上にダイアログを出す（ライブラリは暗くなって見えなくなる）
@@ -531,9 +542,6 @@ def open_book(hwnd, title, *, emit=print):
                     emit(f"  ダイアログが出ている（読めた文字: {dialog[:60]!r}）")
                     seen_dialog = True
             time.sleep(1.0)
-            waited += 1.0
-            if attempt == 0 and waited >= 8.0:
-                break
     emit("  本が開かない（未ダウンロードで時間がかかっている可能性）")
     _keep_shot(hwnd, "open")
     return False
@@ -543,14 +551,17 @@ def search_terms(title):
     """ライブラリの検索窓に入れる文字列の候補（当たるまで順に試す）。
 
     題名そのもの → 最初の空白か括弧までの先頭部分 → その先頭部分を NFKC で半角に寄せたもの
-    （アプリ側の題名は全角数字が半角のことがある）。先頭部分が短すぎる（4 字未満）なら試さない。
+    （アプリ側の題名は全角数字が半角のことがある）。先頭部分が短すぎると 2 冊以上に当たるので
+    試さない: 日本語（全角の文字を含む）なら 4 字未満、英数字だけなら 8 字未満（"Linear" のような
+    1 語の英単語は他の本にも入っている）。
     """
     import re
     import unicodedata
 
     terms = [title]
-    head = re.split(r"[\s　（(［\[]", title, maxsplit=1)[0].strip()
-    if len(head) >= 4:
+    head = re.split(r"[\s（(［\[]", title, maxsplit=1)[0].strip()
+    wide = any(unicodedata.east_asian_width(c) in "WF" for c in head)
+    if len(head) >= (4 if wide else 8):
         terms += [head, unicodedata.normalize("NFKC", head)]
     return list(dict.fromkeys(t for t in terms if t))
 
@@ -779,8 +790,12 @@ def bar_title_matches(want, bar, *, min_chars=8, ratio=0.9):
     照合だと、巻数・版・号だけ違う本（❶ と ❷、third と fourth edition）が先頭の共通部分で
     通る（レビューで実測）。省略前の文字列を題名の先頭の同じ長さと比べ、類似度 ``ratio``
     以上を要求する。完全な前方一致にしないのは、OCR が 1 字誤読する（実測: 「バ」→「パ」）
-    ので、正しい本を撮り損ねるため。巻数・版の違いは複数字が違うので類似度で落ちる。
+    ので、正しい本を撮り損ねるため。ただし巻数・版・上下は 1 字しか違わないことがある
+    （❶/❷、Volume 1/2、第4版/第5版、上/下）ので、類似度が足りても、違っている文字に数字か
+    `VOLUME_CHARS` が含まれていたら別の本と見る（表紙の照合は同じシリーズの別巻を通すので、
+    ここが唯一の関門）。
     """
+    import unicodedata
     from difflib import SequenceMatcher
 
     seen = _norm(bar.replace("…", " ").replace("...", " "))
@@ -788,7 +803,16 @@ def bar_title_matches(want, bar, *, min_chars=8, ratio=0.9):
     if len(seen) < min_chars or not full:
         return False
     n = min(len(seen), len(full))
-    return SequenceMatcher(None, seen[:n], full[:n], autojunk=False).ratio() >= ratio
+    matcher = SequenceMatcher(None, seen[:n], full[:n], autojunk=False)
+    if matcher.ratio() < ratio:
+        return False
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        for c in seen[i1:i2] + full[j1:j2]:
+            if unicodedata.category(c).startswith("N") or c in VOLUME_CHARS:
+                return False
+    return True
 
 
 def _digest(image):

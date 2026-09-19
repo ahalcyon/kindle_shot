@@ -174,6 +174,25 @@ def test_bar_title_rejects_another_volume_and_accepts_a_truncated_title():
     assert not cab.bar_title_matches("学びを結果に変えるアウトプット大全", "学び…")  # 短すぎる
 
 
+def test_bar_title_rejects_a_volume_that_differs_in_one_character():
+    """1 字違いの誤読は許すが、その 1 字が巻数・版・上下なら別の本（レビューで実測: 類似度だけだと通る）。"""
+    assert not cab.bar_title_matches(
+        "ゼロから作るDeep Learning ❷ ―自然言語処理編", "ゼロから作るDeep Learning ❶ ―…"
+    )
+    assert not cab.bar_title_matches("Calculus Volume 1 (OpenStax)", "Calculus Volume 2")
+    assert not cab.bar_title_matches(
+        "プログラミング言語C++ 第4版 上", "プログラミング言語C++ 第4版 下"
+    )
+    assert not cab.bar_title_matches(
+        "プログラミング言語C++ 第4版 上", "プログラミング言語C++ 第3版 上"
+    )
+    # 数字が同じなら 1 字の誤読は通る
+    assert cab.bar_title_matches("プログラミング言語C++ 第4版 上", "プログラミング言語C++ 第4版 上")
+    assert cab.bar_title_matches(
+        "ゼロから作るDeep Learning ❷ ―自然言語処理編", "ゼロから作るDeep Learning ❷ ―自然言語…"
+    )
+
+
 def _verify_stubs(monkeypatch, *, cover, bar, shown_after_click=True, hidden=True):
     """verify_title の画面まわりを差し替える。cover / bar は OCR が返す文字。"""
     from PIL import Image
@@ -720,6 +739,79 @@ def test_modal_backdrop_is_a_uniform_mid_gray_outside_the_box():
     assert not cab.has_modal_backdrop(_library_screen(200, 236).resize((1200, 1390)))
     # 灰色でも色が付いていれば暗幕ではない（本文の図版など）
     assert not cab.has_modal_backdrop(Image.new("RGB", (1200, 1390), (112, 112, 130)))
+    # 一様な灰色でも、ダイアログの箱（白）が無ければ暗幕ではない（灰色一色の図版のページ）
+    assert not cab.has_modal_backdrop(Image.new("RGB", (1200, 1390), (112, 112, 113)))
+
+
+def _open_book_stubs(monkeypatch, *, search, library, dialog):
+    """open_book をライブラリから表紙のクリックまで通す偽物。
+
+    search は検索語 → _search の返り値、library はクリック後に is_library が返す値の列、
+    dialog は _dialog_status が返す値の列。時計は sleep で進む偽物にする（OCR の時間は無い）。
+    """
+    calls: dict[str, list] = {"terms": [], "clicks": [], "keys": [], "emit": []}
+    clock = [0.0]
+    monkeypatch.setattr(cab.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(cab.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(cab, "_to_library", lambda hwnd: True)
+    monkeypatch.setattr(cab, "_is_placed", lambda hwnd: True)
+    monkeypatch.setattr(cab, "_shot", lambda hwnd, box=None: None)
+    monkeypatch.setattr(cab, "find_library_anchor", lambda image: 200)
+    monkeypatch.setattr(cab, "_keep_shot", lambda *a, **kw: None)
+    monkeypatch.setattr(cab, "_click", lambda hwnd, x, y, wait=1.2: calls["clicks"].append((x, y)))
+    monkeypatch.setattr("pyautogui.press", lambda key: calls["keys"].append(key))
+
+    def fake_search(hwnd, anchor, term, *, emit):
+        calls["terms"].append(term)
+        return search[term]
+
+    monkeypatch.setattr(cab, "_search", fake_search)
+    library_it = iter(library)
+    dialog_it = iter(dialog)
+    monkeypatch.setattr(cab, "is_library", lambda image: next(library_it, library[-1]))
+    monkeypatch.setattr(cab, "_dialog_status", lambda hwnd, image: next(dialog_it, dialog[-1]))
+    return calls
+
+
+def test_open_book_searches_the_head_of_the_title_when_the_full_title_misses(monkeypatch):
+    title = "トリーズの９画面法　問題解決"
+    calls = _open_book_stubs(
+        monkeypatch,
+        search={title: "none", "トリーズの９画面法": "one"},
+        library=[False],
+        dialog=[None],
+    )
+    assert cab.open_book(None, title, emit=calls["emit"].append) is True
+    assert calls["terms"] == [title, "トリーズの９画面法"]
+    assert calls["clicks"] == [(cab.COVER_XS[0], 200 + cab.COVER_DY)]
+
+
+def test_open_book_does_not_click_when_the_search_hits_several_books(monkeypatch):
+    calls = _open_book_stubs(
+        monkeypatch, search={"経営学入門": "many"}, library=[False], dialog=[None]
+    )
+    assert cab.open_book(None, "経営学入門", emit=calls["emit"].append) is False
+    assert calls["clicks"] == []
+
+
+def test_open_book_tells_an_unsupported_book_and_closes_its_dialog(monkeypatch):
+    calls = _open_book_stubs(
+        monkeypatch, search={"企業参謀": "one"}, library=[False], dialog=[cab.UNSUPPORTED]
+    )
+    assert cab.open_book(None, "企業参謀", emit=calls["emit"].append) == cab.UNSUPPORTED
+    assert calls["keys"] == ["esc"]
+    assert len(calls["clicks"]) == 1
+
+
+def test_open_book_waits_out_another_dialog_and_gives_up_after_a_second_click(monkeypatch):
+    calls = _open_book_stubs(
+        monkeypatch, search={"本X": "one"}, library=[False], dialog=["ダウンロードしています"]
+    )
+    assert cab.open_book(None, "本X", emit=calls["emit"].append) is False
+    assert len(calls["clicks"]) == 2  # 8 秒で押し直し、OPEN_WAIT まで待って諦める
+    assert sum("ダイアログが出ている" in m for m in calls["emit"]) == 1  # 毎周は書かない
+    assert any("本が開かない" in m for m in calls["emit"])
+    assert calls["keys"] == []
 
 
 def test_an_unsupported_book_is_recorded_and_the_app_is_not_restarted(tmp_path, monkeypatch):
@@ -766,5 +858,10 @@ def test_search_terms_fall_back_to_the_head_of_the_title():
         "新・現代会計入門 (日本経済新聞出版)",
         "新・現代会計入門",
     ]
-    # 先頭部分が短すぎると 2 冊以上に当たるので試さない
+    # 先頭部分が短すぎると 2 冊以上に当たるので試さない（英単語 1 語は 8 字あっても他の本に入っている）
     assert cab.search_terms("経営 入門講座") == ["経営 入門講座"]
+    assert cab.search_terms("Linear Algebra Done Right") == ["Linear Algebra Done Right"]
+    assert cab.search_terms("Refactoring: Improving the Design") == [
+        "Refactoring: Improving the Design",
+        "Refactoring:",
+    ]
