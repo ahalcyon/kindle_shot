@@ -25,6 +25,23 @@ def by_name(events, name):
     return [e for e in events if e["event"] == name]
 
 
+def test_an_unexpected_error_carries_its_traceback(tmp_path, monkeypatch, capsys):
+    """予期しないエラーはトレースバックごと残す (#142)。文言だけでは落ちた場所を追えない。"""
+
+    def broken(args, rep):
+        raise TypeError("Object of type int64 is not JSON serializable")
+
+    monkeypatch.setattr(cli, "cmd_validate", broken)
+    code, events = run_cli(capsys, ["validate", "--in", str(tmp_path), "--json"])
+    assert code == 1
+    (error,) = by_name(events, "error")
+    assert error["message"].startswith("予期しないエラー: Object of type int64")
+    assert "TypeError" in error["traceback"] and "broken" in error["traceback"]
+    # 人間向けの出力では stderr に出す
+    assert cli.main(["validate", "--in", str(tmp_path)]) == 1
+    assert "TypeError" in capsys.readouterr().err
+
+
 # ------------------------------------------------------------
 # trim
 # ------------------------------------------------------------
