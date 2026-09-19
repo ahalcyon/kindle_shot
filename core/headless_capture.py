@@ -197,6 +197,10 @@ _PERCENT_RE = re.compile(r"(\d+)\s*%")
 # 読み値には単位を持たせ、比べる側で揃っているかを見る。
 UNIT_LOCATION = "位置"
 UNIT_PAGE = "ページ"
+# 単位は数字に隣接する語で決める。ラベルには「章に残った41分」のような文が続くので、
+# 文字列全体に「位置」が含まれるかでは誤る
+_UNIT_LOCATION_RE = re.compile(UNIT_LOCATION + r"\s*\d+\s*/\s*\d+")
+_UNIT_PAGE_RE = re.compile(r"\d+\s*/\s*\d+\s*" + UNIT_PAGE)
 
 
 class Footer(NamedTuple):
@@ -221,9 +225,9 @@ def parse_footer(text):
     matched = _POSITION_RE.search(text)
     if not matched:
         return NO_FOOTER
-    if UNIT_LOCATION in text:
+    if _UNIT_LOCATION_RE.search(text):
         unit = UNIT_LOCATION
-    elif UNIT_PAGE in text:
+    elif _UNIT_PAGE_RE.search(text):
         unit = UNIT_PAGE
     else:
         unit = None
@@ -301,7 +305,7 @@ def _stable_position_pair(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=3):
 def _stable_footer(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=3):
     """**同じ値を 2 回続けて**読めるまで待って Footer を返す。
 
-    `_settled_position_pair` は「読めるまで待つ」であって「落ち着くまで待つ」では
+    `_settled_footer` は「読めるまで待つ」であって「落ち着くまで待つ」では
     ない。読めた時点で待ち時間ゼロで返るので、遷移中の一過性の値を掴んだ直後に
     呼んでも**同じ一過性の値がそのまま返る**。一過性かどうかの判定には使えない。
 
@@ -948,13 +952,19 @@ def short_of_end(position, book_total, percent=None):
 
     判断材料が無ければ False（従来どおり最終ページとして扱う）。
     """
-    # 本全体の % が読めていれば、それでも見る (#110)。ページ番号のある合本は position/total が
-    # いま開いている巻のものなので、巻の終わりで position == total になっても本は途中
-    # （実測: `169/1358ページ ● 3%`）
-    if percent is not None and percent < 100 - END_OF_BOOK_SHORT_PERCENT:
-        return True
     if position is None or not book_total:
         return False
+    # 本全体の % が position/total の割合より 10 ポイント以上低ければ、total は本全体ではない
+    # （ページ番号のある合本: total はいま開いている巻のページ数。実測: `169/1358ページ ● 3%`）。
+    # そのときだけ % を信じる (#110)。% だけで判定しないのは、短い本では最終画面 1 枚ぶんのラグ
+    # （9/11 → 82%）が割合で 10% を超えて、位置判定が絶対量の下駄で通す本を落とすため（レビューで指摘）
+    if percent is not None:
+        ratio = 100 * position // book_total
+        if (
+            percent < 100 - END_OF_BOOK_SHORT_PERCENT
+            and percent + END_OF_BOOK_SHORT_PERCENT <= ratio
+        ):
+            return True
     allowed = max(END_OF_BOOK_SLACK, book_total * END_OF_BOOK_SHORT_PERCENT // 100)
     return (book_total - position) > allowed
 

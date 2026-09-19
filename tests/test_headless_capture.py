@@ -1030,6 +1030,8 @@ def test_footer_carries_the_unit_and_the_whole_book_percent():
     )
     assert parse_footer("") == NO_FOOTER
     assert parse_footer("6/339") == Footer(6, 339, None, None)
+    # 単位は数字に隣接する語で決める（あとに続く文に「位置」があっても引きずられない）
+    assert parse_footer("169/1358ページ ● 3% 位置を同期しています").unit == "ページ"
     assert unit_changed(Footer(455, 113618, "位置", 0), Footer(5, 1358, "ページ", 0))
     assert not unit_changed(Footer(6, 339, None, None), Footer(7, 339, "ページ", None))
 
@@ -2600,9 +2602,32 @@ def test_short_of_end_believes_the_whole_book_percent_over_the_volume_total():
     assert short_of_end(1358, 1358, 24)
     assert not short_of_end(1358, 1358, 100)
     assert not short_of_end(268, 292, 92)
+    # % だけでは判定しない: 短い本の最終画面 1 枚ぶんのラグ（9/11 → 82%）は位置判定の絶対量の下駄で
+    # 通す本で、% は position/total と食い違っていない（レビューで指摘）
+    assert not short_of_end(9, 11, 82)
+    assert not short_of_end(177, 198, 89)
     # % が読めなければ従来どおり
     assert not short_of_end(1358, 1358, None)
     assert short_of_end(10, 2999, None)
+
+
+def test_catching_up_does_not_trust_a_position_in_another_unit(tmp_path):
+    """追いつき待ちで単位が変わった読み値は「先へ進んだ」の根拠にしない（押す側に倒す）(#110)。"""
+    events = []
+    page = FakePage(
+        [b"a", b"b"],
+        read_positions=["1/2ページ", "2/2ページ"] + ["位置80/80 ● 100%"] * 60,
+    )
+    capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        max_retries=2,
+        emit=lambda n, **kw: events.append((n, kw)),
+    )
+    names = [n for n, _ in events]
+    assert names.count("position_unit_changed") == 1  # 取り直したあとは毎周言わない
+    assert "capture_waiting" not in names
 
 
 def test_a_reload_that_changes_the_footer_unit_is_not_a_jump(tmp_path):
@@ -2635,7 +2660,7 @@ def test_a_reload_that_changes_the_footer_unit_is_not_a_jump(tmp_path):
 def test_the_stop_event_carries_the_unit_and_percent(tmp_path):
     """止まった位置には単位と % も残す（あとから合本の途中止まりを洗える）。"""
     events = []
-    page = FakePage([b"a", b"b"], read_positions=["1/2ページ ● 50%"] * 40)
+    page = FakePage([b"a", b"b"], read_positions=["1358/1358ページ ● 24%"] * 40)
     capture_pages(
         page,
         str(tmp_path),
@@ -2644,8 +2669,8 @@ def test_the_stop_event_carries_the_unit_and_percent(tmp_path):
         emit=lambda n, **kw: events.append((n, kw)),
     )
     stopped = [kw for n, kw in events if n == "capture_stopped"]
-    assert stopped and stopped[0]["unit"] == "ページ" and stopped[0]["percent"] == 50
-    # 本全体の 50% で止まったので最終ページではない
+    assert stopped and stopped[0]["unit"] == "ページ" and stopped[0]["percent"] == 24
+    # 巻の終わり（1358/1358）でも本全体の 24% で止まったので最終ページではない
     assert stopped[0]["reason"] == "short_of_end"
 
 
