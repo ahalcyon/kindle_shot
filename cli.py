@@ -48,6 +48,7 @@ import json
 import math
 import os
 import sys
+import traceback
 
 from PIL import Image
 
@@ -86,8 +87,11 @@ class Reporter:
         elif human:
             print(human, flush=True)
 
-    def error(self, message):
-        self.event("error", human=f"エラー: {message}", message=message)
+    def error(self, message, **fields):
+        self.event("error", human=f"エラー: {message}", message=message, **fields)
+        if not self.as_json and fields.get("traceback"):
+            # 人間向けの出力でも、予期しないエラーはどこで落ちたかを見せる
+            print(fields["traceback"], file=sys.stderr, flush=True)
 
     def progress(self, phase):
         """on_progress コールバック (current, total, filename) を生成する。"""
@@ -1293,7 +1297,9 @@ def main(argv=None):
         rep.error("中断されました")
         return EXIT_ERROR
     except Exception as e:
-        rep.error(f"予期しないエラー: {e}")
+        # **トレースバックを捨てない (#142)。** 文言だけだと、どのイベントのどのフィールドで
+        # 落ちたか（例: numpy の整数が JSON にできない）が追えず、再現しない失敗は永久に分からない
+        rep.error(f"予期しないエラー: {e}", traceback=traceback.format_exc())
         return EXIT_ERROR
 
 
