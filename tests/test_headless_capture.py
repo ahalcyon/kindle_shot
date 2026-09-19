@@ -26,6 +26,7 @@ from core.headless_capture import (
     LEAVE_BUTTON_JS,
     MAX_RELOADS,
     MAX_START_POSITION,
+    NO_FOOTER,
     POSITION_SELECTOR,
     RELOAD_FAILED,
     RELOAD_JUMPED,
@@ -35,6 +36,7 @@ from core.headless_capture import (
     UNPAIRED_UNSUPPORTED_MARKERS,
     UNSUPPORTED_MARKER_PAIRS,
     UNSUPPORTED_MARKERS,
+    Footer,
     _keys_respond,
     _still_at_start,
     _wait_for_position_change,
@@ -48,6 +50,7 @@ from core.headless_capture import (
     is_signed_in,
     pad_shot,
     page_shot,
+    parse_footer,
     read_position,
     read_position_pair,
     reader_padding,
@@ -57,6 +60,7 @@ from core.headless_capture import (
     settled_shot,
     short_of_end,
     turn_key,
+    unit_changed,
     unsupported_reason,
 )
 
@@ -91,8 +95,12 @@ class FakePage:
         reload_raises=False,
         reload_swallows=0,
         animating=None,
+        relabel_after_reload=None,
     ):
         self.frames = list(frames)
+        # 開き直したあとフッターの単位が変わる本 (#110)。("位置", 40) なら、位置 = ページ x 40 の
+        # 「位置」表示になる（ページ番号のデータが遅れて届いた合本の形）
+        self.relabel_after_reload = relabel_after_reload
         # {index: n}。その index に来てから n 回の撮影は、毎回違う画像を返す
         # （読み込み中のスピナーが回っている形。#109）。n を大きくすると止まらない
         self.animating = dict(animating or {})
@@ -207,10 +215,15 @@ class FakePage:
                     page.position_reads += 1
                     if page.read_positions:
                         pos = page.read_positions.pop(0)
+                        if isinstance(pos, str):
+                            return pos  # 生のフッター文字列（単位や % を持つ形を作る）
                         return f"{pos}/{page.book_total}ページ"
                     if page.positions is None:
                         return ""
                     pos = page.positions[min(page.index, len(page.positions) - 1)]
+                    if page.relabel_after_reload and page.reloads:
+                        unit, scale = page.relabel_after_reload
+                        return f"{unit}{pos * scale}/{page.book_total * scale}"
                     return f"{pos}/{page.book_total}ページ"
 
             return PositionLoc()
@@ -1005,6 +1018,22 @@ def test_position_pair_reads_the_total():
     """総量も読む。先頭まで戻れたかの判断材料になる (#69)。"""
     assert read_position_pair(FakeReader(text="位置1/3495 ● 0%")) == (1, 3495)
     assert read_position_pair(FakeReader(text="")) == (None, None)
+
+
+def test_footer_carries_the_unit_and_the_whole_book_percent():
+    """フッターの単位（位置 / ページ）と本全体の % も読む (#110)。実測の文字列そのまま。"""
+    assert parse_footer("位置1/3495\u2002●\u20020%") == Footer(1, 3495, "位置", 0)
+    assert parse_footer("291/292ページ\u2002●\u2002100%") == Footer(291, 292, "ページ", 100)
+    # 合本: total は巻のページ数、% は本全体（#104 の実測）
+    assert parse_footer("169/1358ページ ● 3% 章に残った41分 本に残った170時間9分") == Footer(
+        169, 1358, "ページ", 3
+    )
+    assert parse_footer("") == NO_FOOTER
+    assert parse_footer("6/339") == Footer(6, 339, None, None)
+    # 単位は数字に隣接する語で決める（あとに続く文に「位置」があっても引きずられない）
+    assert parse_footer("169/1358ページ ● 3% 位置を同期しています").unit == "ページ"
+    assert unit_changed(Footer(455, 113618, "位置", 0), Footer(5, 1358, "ページ", 0))
+    assert not unit_changed(Footer(6, 339, None, None), Footer(7, 339, "ページ", None))
 
 
 def test_waiting_for_a_turn_stops_as_soon_as_the_page_moves():
@@ -2566,6 +2595,83 @@ def test_the_stop_event_and_manifest_carry_short_of_end(tmp_path, monkeypatch):
 # ------------------------------------------------------------
 # ページ送りが効かなくなったら開き直す (#91)
 # ------------------------------------------------------------
+
+
+def test_short_of_end_believes_the_whole_book_percent_over_the_volume_total():
+    """ページ番号のある合本は巻の終わりで position == total になるが、% は本全体を指す (#110)。"""
+    assert short_of_end(1358, 1358, 24)
+    assert not short_of_end(1358, 1358, 100)
+    assert not short_of_end(268, 292, 92)
+    # % だけでは判定しない: 短い本の最終画面 1 枚ぶんのラグ（9/11 → 82%）は位置判定の絶対量の下駄で
+    # 通す本で、% は position/total と食い違っていない（レビューで指摘）
+    assert not short_of_end(9, 11, 82)
+    assert not short_of_end(177, 198, 89)
+    # % が読めなければ従来どおり
+    assert not short_of_end(1358, 1358, None)
+    assert short_of_end(10, 2999, None)
+
+
+def test_catching_up_does_not_trust_a_position_in_another_unit(tmp_path):
+    """追いつき待ちで単位が変わった読み値は「先へ進んだ」の根拠にしない（押す側に倒す）(#110)。"""
+    events = []
+    page = FakePage(
+        [b"a", b"b"],
+        read_positions=["1/2ページ", "2/2ページ"] + ["位置80/80 ● 100%"] * 60,
+    )
+    capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        max_retries=2,
+        emit=lambda n, **kw: events.append((n, kw)),
+    )
+    names = [n for n, _ in events]
+    assert names.count("position_unit_changed") == 1  # 取り直したあとは毎周言わない
+    assert "capture_waiting" not in names
+
+
+def test_a_reload_that_changes_the_footer_unit_is_not_a_jump(tmp_path):
+    """開き直したらフッターが「位置」表示に変わっても、飛んだとは言わず新しい単位で続ける (#110)。
+
+    ハリー・ポッター全 7 巻で実測した形（位置 1/113618 → 1/1358ページ、番号は 455 → 5 と振り直される）。
+    ページ 5 と位置 200 を比べると「飛んだ」になり、間が抜けていない本を中止してしまう。
+    """
+    events = []
+    page = FakePage(
+        [bytes([i]) for i in range(10)],
+        stall_at=4,
+        positions=list(range(1, 11)),
+        book_total=10,
+        relabel_after_reload=("位置", 40),
+    )
+    total, reason = capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        emit=lambda e, human=None, **kw: events.append((e, kw)),
+    )
+    assert reason == "end_of_book", f"単位が変わっただけで止まった: {reason}"
+    assert total == 10
+    changed = [kw for e, kw in events if e == "position_unit_changed"]
+    assert changed and changed[0]["before_unit"] == "ページ" and changed[0]["after_unit"] == "位置"
+    assert not [kw for e, kw in events if e == "reader_reloaded" and kw["outcome"] == RELOAD_JUMPED]
+
+
+def test_the_stop_event_carries_the_unit_and_percent(tmp_path):
+    """止まった位置には単位と % も残す（あとから合本の途中止まりを洗える）。"""
+    events = []
+    page = FakePage([b"a", b"b"], read_positions=["1358/1358ページ ● 24%"] * 40)
+    capture_pages(
+        page,
+        str(tmp_path),
+        key="ArrowLeft",
+        max_retries=1,
+        emit=lambda n, **kw: events.append((n, kw)),
+    )
+    stopped = [kw for n, kw in events if n == "capture_stopped"]
+    assert stopped and stopped[0]["unit"] == "ページ" and stopped[0]["percent"] == 24
+    # 巻の終わり（1358/1358）でも本全体の 24% で止まったので最終ページではない
+    assert stopped[0]["reason"] == "short_of_end"
 
 
 def test_a_stalled_book_is_reloaded_and_keeps_going(tmp_path):

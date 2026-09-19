@@ -22,6 +22,7 @@ import io
 import json
 import os
 import re
+from typing import NamedTuple
 
 from PIL import Image
 
@@ -188,6 +189,74 @@ REWIND_REREAD_ATTEMPTS = 3
 # スクラバー (#kr-scrubber-bar) の値は縦書きだと逆行するため使わない。
 POSITION_SELECTOR = ".footer-label.position"
 _POSITION_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
+_PERCENT_RE = re.compile(r"(\d+)\s*%")
+# フッターの単位 (#110)。ページ番号を持つ本は開いた瞬間から「ページ」、持たない本はずっと「位置」で、
+# どちらも撮影中には切り替わらない（7 冊を headless で実測）。切り替わったのは、位置 1 で開いた
+# あとにページ番号のデータが遅れて届いた合本（ハリー・ポッター全 7 巻: 位置1/113618 → 5 回送って
+# 1/1358ページ）だけ。単位が違う 2 つの読み値を比べると「飛んだ」「戻った」と読み違えるので、
+# 読み値には単位を持たせ、比べる側で揃っているかを見る。
+UNIT_LOCATION = "位置"
+UNIT_PAGE = "ページ"
+# 単位は数字に隣接する語で決める。ラベルには「章に残った41分」のような文が続くので、
+# 文字列全体に「位置」が含まれるかでは誤る
+_UNIT_LOCATION_RE = re.compile(UNIT_LOCATION + r"\s*\d+\s*/\s*\d+")
+_UNIT_PAGE_RE = re.compile(r"\d+\s*/\s*\d+\s*" + UNIT_PAGE)
+
+
+class Footer(NamedTuple):
+    """フッターの読み値。position / total は unit（位置かページ）で数え、percent は本全体の進み。
+
+    合本にページ番号があると total は**いま開いている巻**のページ数で、percent だけが本全体を
+    指す（#104 の実測: `169/1358ページ ● 3%` で 169 ÷ 3% ≒ 5,600 ページ）。
+    """
+
+    position: "int | None"
+    total: "int | None"
+    unit: "str | None"
+    percent: "int | None"
+
+
+NO_FOOTER = Footer(None, None, None, None)
+
+
+def parse_footer(text):
+    """フッターの文字列を Footer にする。位置/総量が読めなければ NO_FOOTER。"""
+    text = text or ""
+    matched = _POSITION_RE.search(text)
+    if not matched:
+        return NO_FOOTER
+    if _UNIT_LOCATION_RE.search(text):
+        unit = UNIT_LOCATION
+    elif _UNIT_PAGE_RE.search(text):
+        unit = UNIT_PAGE
+    else:
+        unit = None
+    percent = _PERCENT_RE.search(text)
+    return Footer(
+        int(matched.group(1)),
+        int(matched.group(2)),
+        unit,
+        int(percent.group(1)) if percent else None,
+    )
+
+
+def read_footer(page):
+    """フッターを読んで Footer で返す。読めなければ NO_FOOTER。"""
+    try:
+        locator = page.locator(POSITION_SELECTOR)
+        if not locator.count():
+            return NO_FOOTER
+        # text_content を使う。撮影前に UI を CSS で隠すため、
+        # inner_text だと描画されていない要素から空文字が返ることがある
+        text = locator.first.text_content() or ""
+    except Exception:
+        return NO_FOOTER
+    return parse_footer(text)
+
+
+def unit_changed(before, after):
+    """2 つの読み値の単位が違う（位置とページ）か。どちらかの単位が読めなければ違うとは言わない。"""
+    return before.unit is not None and after.unit is not None and before.unit != after.unit
 
 
 def read_position_pair(page):
@@ -197,18 +266,8 @@ def read_position_pair(page):
     位置 3344 で止まった本が先頭付近なのか終盤なのか、ログから判断できなかった
     (#69)。
     """
-    try:
-        locator = page.locator(POSITION_SELECTOR)
-        if not locator.count():
-            return None, None
-        # text_content を使う。撮影前に UI を CSS で隠すため、
-        # inner_text だと描画されていない要素から空文字が返ることがある
-        matched = _POSITION_RE.search(locator.first.text_content() or "")
-    except Exception:
-        return None, None
-    if not matched:
-        return None, None
-    return int(matched.group(1)), int(matched.group(2))
+    footer = read_footer(page)
+    return footer.position, footer.total
 
 
 def read_position(page):
@@ -216,25 +275,37 @@ def read_position(page):
     return read_position_pair(page)[0]
 
 
-def _settled_position_pair(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=4):
-    """読書位置が読めるまで数回待って (位置, 総量) を返す。読めなければ (None, None)。
+def _settled_footer(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=4):
+    """読書位置が読めるまで数回待って Footer を返す。読めなければ NO_FOOTER。
 
     読み込み直後はラベルの描画が間に合わず None になることがある。
     1 回で諦めると「動いていない」と誤判定して向きの判定に失敗する。
     """
     for i in range(attempts):
-        position, total = read_position_pair(page)
-        if position is not None:
-            return position, total
+        footer = read_footer(page)
+        if footer.position is not None:
+            return footer
         if i < attempts - 1:
             page.wait_for_timeout(int(page_wait * 1000))
-    return None, None
+    return NO_FOOTER
+
+
+def _settled_position_pair(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=4):
+    """`_settled_footer` の (位置, 総量) だけ。"""
+    footer = _settled_footer(page, page_wait=page_wait, attempts=attempts)
+    return footer.position, footer.total
 
 
 def _stable_position_pair(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=3):
-    """**同じ値を 2 回続けて**読めるまで待って (位置, 総量) を返す。
+    """`_stable_footer` の (位置, 総量) だけ。"""
+    footer = _stable_footer(page, page_wait=page_wait, attempts=attempts)
+    return footer.position, footer.total
 
-    `_settled_position_pair` は「読めるまで待つ」であって「落ち着くまで待つ」では
+
+def _stable_footer(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=3):
+    """**同じ値を 2 回続けて**読めるまで待って Footer を返す。
+
+    `_settled_footer` は「読めるまで待つ」であって「落ち着くまで待つ」では
     ない。読めた時点で待ち時間ゼロで返るので、遷移中の一過性の値を掴んだ直後に
     呼んでも**同じ一過性の値がそのまま返る**。一過性かどうかの判定には使えない。
 
@@ -246,14 +317,16 @@ def _stable_position_pair(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=3):
     落ち着かなければ最後に読めた値を返す。判断材料が無いよりはましで、
     呼び出し側は None でなければ従来どおり扱える。
     """
-    last, last_total = _settled_position_pair(page, page_wait=page_wait)
+    last = _settled_footer(page, page_wait=page_wait)
     for _ in range(attempts):
         page.wait_for_timeout(int(page_wait * 1000))
-        current, current_total = _settled_position_pair(page, page_wait=page_wait)
-        if current is not None and current == last:
-            return current, current_total if current_total is not None else last_total
-        last, last_total = current, current_total
-    return last, last_total
+        current = _settled_footer(page, page_wait=page_wait)
+        if current.position is not None and current.position == last.position:
+            if current.total is None and last.total is not None:
+                current = current._replace(total=last.total)
+            return current
+        last = current
+    return last
 
 
 def _settled_position(page, *, page_wait=DEFAULT_PAGE_WAIT, attempts=4):
@@ -874,13 +947,24 @@ END_OF_BOOK_SHORT_PERCENT = 10
 END_OF_BOOK_SLACK = 100
 
 
-def short_of_end(position, book_total):
+def short_of_end(position, book_total, percent=None):
     """読み手側の位置が本の終わりに達していないか。
 
     判断材料が無ければ False（従来どおり最終ページとして扱う）。
     """
     if position is None or not book_total:
         return False
+    # 本全体の % が position/total の割合より 10 ポイント以上低ければ、total は本全体ではない
+    # （ページ番号のある合本: total はいま開いている巻のページ数。実測: `169/1358ページ ● 3%`）。
+    # そのときだけ % を信じる (#110)。% だけで判定しないのは、短い本では最終画面 1 枚ぶんのラグ
+    # （9/11 → 82%）が割合で 10% を超えて、位置判定が絶対量の下駄で通す本を落とすため（レビューで指摘）
+    if percent is not None:
+        ratio = 100 * position // book_total
+        if (
+            percent < 100 - END_OF_BOOK_SHORT_PERCENT
+            and percent + END_OF_BOOK_SHORT_PERCENT <= ratio
+        ):
+            return True
     allowed = max(END_OF_BOOK_SLACK, book_total * END_OF_BOOK_SHORT_PERCENT // 100)
     return (book_total - position) > allowed
 
@@ -948,7 +1032,8 @@ def _reload_and_advance(page, key, *, page_wait, emit=null_emit):
     荒れる瞬間で、**読めた時点で返す読み方では一過性の値を掴む**（#69 で
     実測がある）。判定を左右する値ほど強く読む。
     """
-    before, _ = _stable_position_pair(page, page_wait=page_wait)
+    before_footer = _stable_footer(page, page_wait=page_wait)
+    before = before_footer.position
 
     def report(outcome, reopened=None, after=None, human=None):
         emit(
@@ -978,14 +1063,33 @@ def _reload_and_advance(page, key, *, page_wait, emit=null_emit):
     if not is_signed_in(page.url):
         return report(RELOAD_SIGNIN, human="開き直した先がサインイン画面でした")
 
-    reopened, _ = _stable_position_pair(page, page_wait=page_wait)
+    reopened_footer = _stable_footer(page, page_wait=page_wait)
+    reopened = reopened_footer.position
+
+    # **単位が変わっていたら比べない (#110)。** 位置 1 で開いた合本はページ番号のデータが
+    # 遅れて届くとフッターが「位置」から「ページ」に変わる。位置 455 とページ 5 を比べると
+    # 「戻った」「飛んだ」になるが、本は動いていない。以後の基準は新しい単位で取り直す
+    relabeled = unit_changed(before_footer, reopened_footer)
+    if relabeled:
+        emit(
+            "position_unit_changed",
+            human=(
+                f"開き直したらフッターの単位が {before_footer.unit} から {reopened_footer.unit} に"
+                f"変わりました（{before} → {reopened} は比べません）"
+            ),
+            before=before,
+            after=reopened,
+            before_unit=before_footer.unit,
+            after_unit=reopened_footer.unit,
+        )
 
     # **元いた場所へ戻ってきたかを確かめる。** ダイアログを閉じた拍子に
     # 位置が飛ぶ本がある（Whispersync の「最後に読んでいたページへ移動しますか」に
     # 「はい」を押した形。#69）。飛んだ先から撮り続けると、間のページが
     # 黙って抜けたまま最終位置に着いて end_of_book で確定する。
     if (
-        before is not None
+        not relabeled
+        and before is not None
         and reopened is not None
         and not (before - RELOAD_BACK_SLACK <= reopened <= before + RELOAD_AHEAD_SLACK)
     ):
@@ -999,7 +1103,7 @@ def _reload_and_advance(page, key, *, page_wait, emit=null_emit):
     # reopened と比べると「戻った分を押し返しただけ」を復帰と数えてしまう。
     # 本当の最終ページはまさにその形になり、上限まで空回りする（実測:
     # before=438 reopened=436 after=438 を 10 回繰り返して 2.5 分を捨てた）。
-    baseline = before if before is not None else reopened
+    baseline = before if before is not None and not relabeled else reopened
     after = reopened
     for _ in range(KEY_PROBE_ATTEMPTS):
         page.keyboard.press(key)
@@ -1095,6 +1199,7 @@ def capture_pages(
     # 最後に保存したページを撮ったときの読書位置。本が先へ進んでしまっているかの
     # 判断に使う (#81)
     last_position = None
+    last_footer = NO_FOOTER
     # リーダーを開き直した回数 (#91)。上限を超えたら従来どおり最終ページとして扱う
     reloads = 0
     while True:
@@ -1127,7 +1232,25 @@ def capture_pages(
             retried = 0
             waited = 0
             while current == prev and (retried < max_retries or waited < CATCHUP_WAITS):
-                position, _ = read_position_pair(page)
+                footer = read_footer(page)
+                position = footer.position
+                # 単位が変わった読み値は「先へ進んだ」の根拠にしない (#110)。押す側に倒す
+                # （押さずに待つほうは、進んでいないのに待ち続けて上限まで捨てるだけで済むが、
+                # 判断材料が無いのは読めなかったときと同じ）
+                if unit_changed(last_footer, footer):
+                    emit(
+                        "position_unit_changed",
+                        human=(
+                            f"フッターの単位が {last_footer.unit} から {footer.unit} に変わりました"
+                            f"（{last_position} → {position} は比べません）"
+                        ),
+                        before=last_position,
+                        after=position,
+                        before_unit=last_footer.unit,
+                        after_unit=footer.unit,
+                    )
+                    last_footer = footer
+                    last_position = position
                 ahead = (
                     position is not None and last_position is not None and position > last_position
                 )
@@ -1250,10 +1373,9 @@ def capture_pages(
                 # **落ち着いてから読む。** 直前に最大 max_retries 回キーを押して
                 # いるので、一過性のラベルを掴みやすい (#53)。生読みで判断すると、
                 # 最後まで撮れた本が 1 回の上振れ／下振れで失敗する
-                position, book_total = _stable_position_pair(
-                    page, page_wait=max(page_wait, DEFAULT_PAGE_WAIT)
-                )
-                if reason == "end_of_book" and short_of_end(position, book_total):
+                footer = _stable_footer(page, page_wait=max(page_wait, DEFAULT_PAGE_WAIT))
+                position, book_total = footer.position, footer.total
+                if reason == "end_of_book" and short_of_end(position, book_total, footer.percent):
                     # **読み手側がまだ終わりに達していない。最終ページではない。**
                     reason = "short_of_end"
                 emit(
@@ -1263,6 +1385,8 @@ def capture_pages(
                     reason=reason,
                     position=position,
                     book_total=book_total,
+                    unit=footer.unit,
+                    percent=footer.percent,
                     message=trouble or "",
                 )
                 if trouble:
@@ -1289,7 +1413,8 @@ def capture_pages(
         emit("page", human=f"Page {total}: {filename}", page=total, file=filename)
         # このページを撮ったときの位置。次に画像が止まったとき、本が先へ
         # 進んでしまっているかをこれと比べて見る (#81)
-        last_position, _ = read_position_pair(page)
+        last_footer = read_footer(page)
+        last_position = last_footer.position
 
         if max_pages and total >= max_pages:
             return total, "max_pages"
@@ -1863,7 +1988,10 @@ def run_headless_capture(
             reloads.append({k: fields.get(k) for k in ("before", "reopened", "after", "advanced")})
         if event == "capture_stopped":
             stopped_at.update(
-                {k: fields.get(k) for k in ("page", "reason", "position", "book_total")}
+                {
+                    k: fields.get(k)
+                    for k in ("page", "reason", "position", "book_total", "unit", "percent")
+                }
             )
         emit(event, human=human, **fields)
 
