@@ -140,6 +140,7 @@ def test_a_book_without_a_cover_still_converts(tmp_path):
         "表紙を取得できませんでした（本文だけで続けます）"
     ]
     assert [kw["added"] for kw in cover_events] == [False]
+    assert [kw["reason"] for kw in cover_events] == ["fetch_failed"]
 
 
 def test_a_missing_folder_is_not_an_error(tmp_path):
@@ -376,6 +377,8 @@ def test_a_book_whose_first_page_is_already_the_cover_is_left_alone(tmp_path):
     assert [kw["human"] for name, kw in events if name == "cover"] == [
         "1 ページ目が既に表紙なので足しません"
     ]
+    # スモークが human ではなく構造化した値で見分けられるように
+    assert [kw["reason"] for name, kw in events if name == "cover"] == ["already_cover"]
 
 
 def test_a_lookalike_title_page_still_gets_the_cover(tmp_path):

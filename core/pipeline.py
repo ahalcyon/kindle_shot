@@ -880,6 +880,7 @@ def add_cover_page(trimmed_dir, asin, *, emit=null_emit, fetch=None):
                 human="表紙を取得できませんでした（本文だけで続けます）",
                 asin=asin,
                 added=False,
+                reason="fetch_failed",
             )
             return False
         fitted = cover_module.fit_cover(data, size)
@@ -893,12 +894,15 @@ def add_cover_page(trimmed_dir, asin, *, emit=null_emit, fetch=None):
                     human="1 ページ目が既に表紙なので足しません",
                     asin=asin,
                     added=False,
+                    reason="already_cover",
                 )
                 return False
         with open(os.path.join(trimmed_dir, COVER_NAME), "wb") as f:
             f.write(fitted)
     except Exception as exc:  # noqa: BLE001 - 表紙で本を落とさない
-        emit("cover", human=f"表紙を置けませんでした: {exc}", asin=asin, added=False)
+        emit(
+            "cover", human=f"表紙を置けませんでした: {exc}", asin=asin, added=False, reason="error"
+        )
         return False
     # **表示文言ではなく構造化した値で伝える。** human は --json の出力に入らない
     # ので、文言で判定する側は絶対に一致しない（#50 で同じ穴を踏んでいる）
