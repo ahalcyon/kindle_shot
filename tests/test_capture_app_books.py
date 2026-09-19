@@ -755,3 +755,16 @@ def test_dialog_status_reads_the_box_and_tells_unsupported_from_other_dialogs(mo
     # 他のダイアログは読めた文字をそのまま返す（呼ぶ側が待つ）
     assert cab._dialog_status(None, _dialog_screen()) == "ダウンロードできません"
     assert cab._dialog_status(None, Image.new("RGB", (1200, 1390), (255, 255, 255))) is None
+
+
+def test_search_terms_fall_back_to_the_head_of_the_title():
+    """一覧の題名で当たらない本は、先頭部分（と半角に寄せたもの）で探し直す（実測: トリーズの９画面法）。"""
+    title = "トリーズの９画面法　問題解決・アイデア発想＆伝達のための　［科学的］思考支援ツール"
+    assert cab.search_terms(title) == [title, "トリーズの９画面法", "トリーズの9画面法"]
+    # 括弧の前で切る。半角に寄せても同じなら重ねない
+    assert cab.search_terms("新・現代会計入門 (日本経済新聞出版)") == [
+        "新・現代会計入門 (日本経済新聞出版)",
+        "新・現代会計入門",
+    ]
+    # 先頭部分が短すぎると 2 冊以上に当たるので試さない
+    assert cab.search_terms("経営 入門講座") == ["経営 入門講座"]

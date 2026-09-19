@@ -484,8 +484,6 @@ def open_book(hwnd, title, *, emit=print):
     """
     import pyautogui
 
-    from core.win32_utils import activate_window
-
     if not _to_library(hwnd):
         emit("  ライブラリに戻れない")
         return False
@@ -496,7 +494,74 @@ def open_book(hwnd, title, *, emit=print):
     if anchor is None:
         emit("  ライブラリの「全て」の行が見つからない")
         return False
-    if not _to_clipboard(title):
+    first = (COVER_XS[0], anchor + COVER_DY)
+    # 一覧の題名どおりに検索して当たらない本がある（実測: 『トリーズの９画面法　…　［科学的］思考支援ツール』
+    # は「一致する商品は見つかりませんでした」）。そのときは題名の先頭部分で探し直す。
+    # 短くして 2 冊以上に当たったら開かない（開いたあとの題名の照合とは別に、ここでも別の本を撮らない）
+    for term in search_terms(title):
+        found = _search(hwnd, anchor, term, emit=emit)
+        if found == "one":
+            break
+        if found != "none":
+            return False
+        emit(f"  検索に当たらない: {term!r}")
+    else:
+        _keep_shot(hwnd, "search")
+        return False
+    # 結果が出た直後のクリックは飲まれることがある（実測: 同じ状態でもう一度押すと開いた）。
+    # 開いたことをライブラリ画面が消えたかで確かめ、8 秒反応が無ければもう一度押す
+    time.sleep(1.0)
+    seen_dialog = False
+    for attempt in range(2):
+        _click(hwnd, *first, wait=2.0)
+        waited = 2.0
+        while waited < OPEN_WAIT:
+            shot = _shot(hwnd)
+            if not is_library(shot):
+                # 開けない本はライブラリの上にダイアログを出す（ライブラリは暗くなって見えなくなる）
+                dialog = _dialog_status(hwnd, shot)
+                if dialog is None:
+                    return True
+                if dialog == UNSUPPORTED:
+                    emit("  Windows 版 Kindle が対応していない本（アプリのダイアログ）")
+                    pyautogui.press("esc")  # ダイアログを閉じる（次の本の検索を邪魔しない）
+                    return UNSUPPORTED
+                # 他のダイアログ（や画面の切り替わりの途中）は、消えて本が開くかもしれないので待ち続ける
+                if not seen_dialog:
+                    emit(f"  ダイアログが出ている（読めた文字: {dialog[:60]!r}）")
+                    seen_dialog = True
+            time.sleep(1.0)
+            waited += 1.0
+            if attempt == 0 and waited >= 8.0:
+                break
+    emit("  本が開かない（未ダウンロードで時間がかかっている可能性）")
+    _keep_shot(hwnd, "open")
+    return False
+
+
+def search_terms(title):
+    """ライブラリの検索窓に入れる文字列の候補（当たるまで順に試す）。
+
+    題名そのもの → 最初の空白か括弧までの先頭部分 → その先頭部分を NFKC で半角に寄せたもの
+    （アプリ側の題名は全角数字が半角のことがある）。先頭部分が短すぎる（4 字未満）なら試さない。
+    """
+    import re
+    import unicodedata
+
+    terms = [title]
+    head = re.split(r"[\s　（(［\[]", title, maxsplit=1)[0].strip()
+    if len(head) >= 4:
+        terms += [head, unicodedata.normalize("NFKC", head)]
+    return list(dict.fromkeys(t for t in terms if t))
+
+
+def _search(hwnd, anchor, term, *, emit):
+    """検索窓に term を入れて結果を待つ。"one"（1 冊だけ）/ "none" / "many" / False（入力できない）。"""
+    import pyautogui
+
+    from core.win32_utils import activate_window
+
+    if not _to_clipboard(term):
         emit("  クリップボードに題名を入れられない")
         return False
     # クリップボードに入れる PowerShell が前面を奪う。奪われたままだと、検索窓への
@@ -538,43 +603,12 @@ def open_book(hwnd, title, *, emit=print):
         if is_cover(_shot(hwnd, _cover_box(first))) and not is_cover(
             _shot(hwnd, _cover_box(second))
         ):
-            break
-    else:
-        if not is_cover(_shot(hwnd, _cover_box(first))):
-            emit("  検索に当たらない")
-        else:
-            emit("  検索が 2 冊以上に当たる")
-        _keep_shot(hwnd, "search")
-        return False
-    # 結果が出た直後のクリックは飲まれることがある（実測: 同じ状態でもう一度押すと開いた）。
-    # 開いたことをライブラリ画面が消えたかで確かめ、8 秒反応が無ければもう一度押す
-    time.sleep(1.0)
-    seen_dialog = False
-    for attempt in range(2):
-        _click(hwnd, *first, wait=2.0)
-        waited = 2.0
-        while waited < OPEN_WAIT:
-            shot = _shot(hwnd)
-            if not is_library(shot):
-                # 開けない本はライブラリの上にダイアログを出す（ライブラリは暗くなって見えなくなる）
-                dialog = _dialog_status(hwnd, shot)
-                if dialog is None:
-                    return True
-                if dialog == UNSUPPORTED:
-                    emit("  Windows 版 Kindle が対応していない本（アプリのダイアログ）")
-                    pyautogui.press("esc")  # ダイアログを閉じる（次の本の検索を邪魔しない）
-                    return UNSUPPORTED
-                # 他のダイアログ（や画面の切り替わりの途中）は、消えて本が開くかもしれないので待ち続ける
-                if not seen_dialog:
-                    emit(f"  ダイアログが出ている（読めた文字: {dialog[:60]!r}）")
-                    seen_dialog = True
-            time.sleep(1.0)
-            waited += 1.0
-            if attempt == 0 and waited >= 8.0:
-                break
-    emit("  本が開かない（未ダウンロードで時間がかかっている可能性）")
-    _keep_shot(hwnd, "open")
-    return False
+            return "one"
+    if not is_cover(_shot(hwnd, _cover_box(first))):
+        return "none"
+    emit("  検索が 2 冊以上に当たる")
+    _keep_shot(hwnd, "search")
+    return "many"
 
 
 def title_bar_height(image, *, x=(300, 900), limit=100):
