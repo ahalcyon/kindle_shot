@@ -1166,7 +1166,11 @@ def run_book(
                     emit=emit,
                 )
                 if code != EXIT_OK:
-                    close_book(profile, emit=emit)
+                    # ウィンドウが見つからなかった (サインインページに飛ばされた等) なら、
+                    # 自分のタブは題名 Kindle で探しても見つからない。見つかるとしたら
+                    # 利用者の Kindle 系のタブなので、探し直して閉じることはしない
+                    if code != EXIT_WINDOW_NOT_FOUND:
+                        close_book(profile, emit=emit)
                     return finish(code)
 
             step("capture: ページを自動キャプチャ")
@@ -1181,6 +1185,8 @@ def run_book(
                 overwrite=overwrite,
                 emit=emit,
             )
+            # 例外で抜ける経路 (画面ロック・KeyboardInterrupt) では閉じない。キーの
+            # 届き先が分からない状態で送らないため
             if opened_here:
                 close_book(profile, emit=emit)
             if code != EXIT_OK:

@@ -624,6 +624,17 @@ def test_screen_path_closes_the_tab_when_open_fails(tmp_path, monkeypatch):
     assert len(closed) == 1
 
 
+def test_screen_path_does_not_search_for_a_tab_it_never_found(tmp_path, monkeypatch):
+    """ウィンドウ未検出で戻ったら閉じない。題名で探し直すと利用者の Kindle 系タブが当たる。"""
+    closed = screen_path_stubs(
+        monkeypatch, open_code=pipeline.EXIT_WINDOW_NOT_FOUND, capture_code=pipeline.EXIT_OK
+    )
+    pipeline.run_book(
+        title="t", output=str(tmp_path), profile_key="kindle_cloud", asin="B0X", headless=False
+    )
+    assert closed == []
+
+
 def test_screen_path_leaves_a_manually_opened_book_alone(tmp_path, monkeypatch):
     """asin / url 無し（利用者が開いておいた本）は閉じない。"""
     closed = screen_path_stubs(

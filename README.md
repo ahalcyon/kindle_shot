@@ -785,6 +785,10 @@ python scripts\convert_2nd.py --books books_c.json --out C:\books --format markd
 - **`cover` イベント**: 表紙を 1 ページ目にしたか。`human` に「1 ページ目にしました」と
   出れば付いており、PDF のページ数は本文より 1 多くなります。取れなかった本でも処理は
   続きます（表紙なしで本文だけの PDF になります）
+- **`closed` イベント（画面キャプチャ経路で `--asin` / `--url` を付けたとき）**: 自分で開いた
+  Cloud Reader のタブを撮影のあとに閉じた結果。`ok` が false のときの `reason` は
+  `window_not_found`（既に無い）/ `activate_failed`（前面にできず、送っていない）/
+  `title_unchanged`（送ったが閉じたと確かめられない。押し直しはしない）
 - **`bookmarks_rebuilt` / `bookmarks_skipped` イベント（`--asin` 付きの `image_pdf` / `searchable_pdf`）**:
   PDF ができたあと、Kindle の本が持つ目次でしおりを作り直した結果。`bookmarks_rebuilt` は
   `entries`（しおりの件数）/ `confirmed`（テキスト層で章名を確かめられた件数）/

@@ -487,12 +487,21 @@ def close_book(profile, *, emit=null_emit):
         return False
 
     before = get_window_title(hwnd)
-    engine.activate_target_window(hwnd, emit=emit)
+    # 前面にできなければ何も送らない (レビュー指摘)。キーはそのとき前面にいる窓に
+    # 届き、Ctrl+W は大半のアプリで「閉じる」。前面化の失敗は実機で起きる (#74)
+    if not engine.activate_target_window(hwnd, emit=emit):
+        emit(
+            "closed",
+            human="注意: リーダーを前面にできなかったのでタブを閉じません",
+            ok=False,
+            reason="activate_failed",
+        )
+        return False
     if is_window_fullscreen(hwnd):
         pag.press("f11")
-        time.sleep(2)
+        time.sleep(2)  # open_book の F11 後と同じ。全画面の解除が描画に反映されるまで
     pag.hotkey("ctrl", "w")
-    time.sleep(1.5)
+    time.sleep(1.5)  # タブが閉じて隣のタブの題名がウィンドウに反映されるまで (実測 1 秒未満)
     after = get_window_title(hwnd)
     ok = after != before
     emit(

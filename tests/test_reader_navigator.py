@@ -4,10 +4,14 @@
 イベントだけを見る。
 """
 
+import sys
 import time
 
 import pytest
 
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Win32 API")
+# Windows 以外では ctypes.windll が無く import できないので、collect の時点で skip にする
+pytest.importorskip("core.win32_utils")
 pytest.importorskip("pyautogui")
 
 from core import reader_navigator  # noqa: E402
@@ -15,9 +19,10 @@ from core.capture_profiles import get_profile  # noqa: E402
 
 
 class FakeEngine:
-    """CaptureEngine の代役。見つかるウィンドウは作るときに決める。"""
+    """CaptureEngine の代役。見つかるウィンドウと前面化の成否は作るときに決める。"""
 
     hwnd = None
+    in_front = True
 
     def __init__(self, profile, exclude_pid=None):
         self.profile = profile
@@ -26,15 +31,16 @@ class FakeEngine:
         return self.hwnd
 
     def activate_target_window(self, hwnd, emit=None):
-        return True
+        return self.in_front
 
 
-def _stubs(monkeypatch, *, hwnd, titles, fullscreen, process="chrome.exe"):
+def _stubs(monkeypatch, *, hwnd, titles, fullscreen, process="chrome.exe", in_front=True):
     """titles は get_window_title が順に返す題名（閉じる前・閉じた後）。"""
     keys = []
     events = []
     remaining = list(titles)
     FakeEngine.hwnd = hwnd
+    FakeEngine.in_front = in_front
     monkeypatch.setattr(reader_navigator, "CaptureEngine", FakeEngine)
     monkeypatch.setattr("core.win32_utils.get_window_process_name", lambda h: process)
     monkeypatch.setattr("core.win32_utils.get_window_title", lambda h: remaining.pop(0))
@@ -77,6 +83,17 @@ def test_close_book_does_nothing_without_a_reader_window(monkeypatch):
     assert keys == []
     (closed,) = [kw for name, kw in events if name == "closed"]
     assert closed["reason"] == "window_not_found"
+
+
+def test_close_book_sends_nothing_when_the_reader_cannot_be_brought_to_front(monkeypatch):
+    """前面化に失敗したら送らない。Ctrl+W はそのとき前面にいる別の窓を閉じてしまう。"""
+    keys, events, emit = _stubs(
+        monkeypatch, hwnd=1, titles=["Kindle", ""], fullscreen=True, in_front=False
+    )
+    assert reader_navigator.close_book(get_profile("kindle_cloud"), emit=emit) is False
+    assert keys == []
+    (closed,) = [kw for name, kw in events if name == "closed"]
+    assert closed["reason"] == "activate_failed"
 
 
 def test_close_book_ignores_a_window_of_another_process(monkeypatch):
