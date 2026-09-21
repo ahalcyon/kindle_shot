@@ -587,6 +587,64 @@ def test_explicit_headless_overrides_the_default(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------
+# 画面経路は自分で開いたタブを閉じる (#147)
+# ------------------------------------------------------------
+
+
+def screen_path_stubs(monkeypatch, *, open_code, capture_code):
+    """open / capture を差し替え、close_book が呼ばれた回数を返す。"""
+    closed = []
+    monkeypatch.setattr("core.reader_navigator.open_book", lambda *a, **k: open_code)
+    monkeypatch.setattr("core.capture_runner.run_capture", lambda *a, **k: capture_code)
+    monkeypatch.setattr(
+        "core.reader_navigator.close_book", lambda profile, emit: closed.append(profile)
+    )
+    return closed
+
+
+def test_screen_path_closes_the_tab_after_capture(tmp_path, monkeypatch):
+    """撮影が失敗しても、自分で開いたタブは閉じる。"""
+    closed = screen_path_stubs(
+        monkeypatch, open_code=pipeline.EXIT_OK, capture_code=pipeline.EXIT_ERROR
+    )
+    pipeline.run_book(
+        title="t", output=str(tmp_path), profile_key="kindle_cloud", asin="B0X", headless=False
+    )
+    assert len(closed) == 1 and closed[0].window_title_keyword == "Kindle"
+
+
+def test_screen_path_closes_the_tab_when_open_fails(tmp_path, monkeypatch):
+    """open_book は最初にタブを開くので、開けなかった扱いで返ってもタブは残っている。"""
+    closed = screen_path_stubs(
+        monkeypatch, open_code=pipeline.EXIT_ERROR, capture_code=pipeline.EXIT_OK
+    )
+    pipeline.run_book(
+        title="t", output=str(tmp_path), profile_key="kindle_cloud", asin="B0X", headless=False
+    )
+    assert len(closed) == 1
+
+
+def test_screen_path_does_not_search_for_a_tab_it_never_found(tmp_path, monkeypatch):
+    """ウィンドウ未検出で戻ったら閉じない。題名で探し直すと利用者の Kindle 系タブが当たる。"""
+    closed = screen_path_stubs(
+        monkeypatch, open_code=pipeline.EXIT_WINDOW_NOT_FOUND, capture_code=pipeline.EXIT_OK
+    )
+    pipeline.run_book(
+        title="t", output=str(tmp_path), profile_key="kindle_cloud", asin="B0X", headless=False
+    )
+    assert closed == []
+
+
+def test_screen_path_leaves_a_manually_opened_book_alone(tmp_path, monkeypatch):
+    """asin / url 無し（利用者が開いておいた本）は閉じない。"""
+    closed = screen_path_stubs(
+        monkeypatch, open_code=pipeline.EXIT_OK, capture_code=pipeline.EXIT_ERROR
+    )
+    pipeline.run_book(title="t", output=str(tmp_path), profile_key="kindle_cloud", headless=False)
+    assert closed == []
+
+
+# ------------------------------------------------------------
 # Cloud Reader 非対応の本 (#42)
 # ------------------------------------------------------------
 

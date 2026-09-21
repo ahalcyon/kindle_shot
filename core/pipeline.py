@@ -1047,7 +1047,7 @@ def run_book(
     from core.capture_profiles import get_profile
     from core.capture_runner import run_capture
     from core.config import load_config
-    from core.reader_navigator import open_book
+    from core.reader_navigator import close_book, open_book
     from core.win32_utils import allow_sleep, prevent_sleep
 
     cfg = config if config is not None else load_config()
@@ -1148,7 +1148,11 @@ def run_book(
             if code != EXIT_OK:
                 return finish(code)
         else:
-            if asin or url:
+            # 自分で開いたタブは撮影の成否にかかわらず閉じる (#147)。open_book は
+            # 最初に startfile するので、開けなかった扱いで返ってもタブは残っている。
+            # 利用者が自分で開いておいた本（asin / url 無し）には触らない
+            opened_here = bool(asin or url)
+            if opened_here:
                 step("open: 本を開いて先頭ページへ")
                 code = open_book(
                     profile,
@@ -1162,6 +1166,11 @@ def run_book(
                     emit=emit,
                 )
                 if code != EXIT_OK:
+                    # ウィンドウが見つからなかった (サインインページに飛ばされた等) なら、
+                    # 自分のタブは題名 Kindle で探しても見つからない。見つかるとしたら
+                    # 利用者の Kindle 系のタブなので、探し直して閉じることはしない
+                    if code != EXIT_WINDOW_NOT_FOUND:
+                        close_book(profile, emit=emit)
                     return finish(code)
 
             step("capture: ページを自動キャプチャ")
@@ -1176,6 +1185,10 @@ def run_book(
                 overwrite=overwrite,
                 emit=emit,
             )
+            # 例外で抜ける経路 (画面ロック・KeyboardInterrupt) では閉じない。キーの
+            # 届き先が分からない状態で送らないため
+            if opened_here:
+                close_book(profile, emit=emit)
             if code != EXIT_OK:
                 return finish(code)
 
