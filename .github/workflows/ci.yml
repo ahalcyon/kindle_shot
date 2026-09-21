@@ -172,10 +172,15 @@ jobs:
         shell: cmd
         run: python -m pip install --upgrade pip && pip install -r requirements.txt && pip install --group dev && pip install playwright && playwright install chromium
 
+      # セッションはチェックアウトの外に置く。actions/checkout は毎回 git clean -ffdx で
+      # リポジトリ内の .playwright-profile/ を消す (ログに "Removing .playwright-profile/")。
+      # 消えると e2e のたびに新規サインインになり、Amazon がパスキー登録のダイアログを
+      # ランナーと同じログオンセッション＝利用者の画面に出す (#31。実測: 2026-09-21 に 3 回)
       - name: E2E against Amazon
         shell: cmd
         env:
           KINDLE_SHOT_AMAZON_EMAIL: ${{ secrets.KINDLE_SHOT_AMAZON_EMAIL }}
           KINDLE_SHOT_AMAZON_PASSWORD: ${{ secrets.KINDLE_SHOT_AMAZON_PASSWORD }}
           KINDLE_SHOT_E2E_ASIN: ${{ vars.KINDLE_SHOT_E2E_ASIN }}
+          KINDLE_SHOT_PROFILE_DIR: ${{ runner.workspace }}\.playwright-profile
         run: pytest tests/e2e/test_amazon_e2e.py -m e2e -q

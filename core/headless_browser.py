@@ -20,6 +20,10 @@ ENV_PASSWORD = "KINDLE_SHOT_AMAZON_PASSWORD"
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_PROFILE_DIR = os.path.join(REPO_ROOT, ".playwright-profile")
+# セッションの置き場を外から指定する。CI の checkout は git clean -ffdx で
+# リポジトリ内の .playwright-profile/ を毎回消すので、そのままだと実行のたびに
+# 新規サインインになり、Amazon がパスキー登録のダイアログを利用者の画面に出す (#31)
+ENV_PROFILE_DIR = "KINDLE_SHOT_PROFILE_DIR"
 
 SIGNIN_MARKER = "/ap/signin"
 
@@ -30,6 +34,11 @@ PASSWORD_SELECTORS = ("#ap_password", "input[type=password]")
 SUBMIT_SELECTORS = ("#signInSubmit", "input#signInSubmit")
 # 自動では越えない追加認証
 CHALLENGE_SELECTORS = ("#auth-mfa-otpcode", "#auth-captcha-guess", "input[name=otpCode]")
+
+
+def default_profile_dir():
+    """セッションを置くディレクトリ。環境変数があればそちら、無ければリポジトリ直下。"""
+    return (os.environ.get(ENV_PROFILE_DIR) or "").strip() or DEFAULT_PROFILE_DIR
 
 
 def load_dotenv(path=None):
@@ -145,7 +154,7 @@ def open_reader(url, *, profile_dir=None, headless=True, viewport=None, emit=nul
         yield None
         return
 
-    profile_dir = profile_dir or DEFAULT_PROFILE_DIR
+    profile_dir = profile_dir or default_profile_dir()
     viewport = viewport or {"width": 1600, "height": 1200}
 
     with sync_playwright() as playwright:

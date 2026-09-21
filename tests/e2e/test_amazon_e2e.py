@@ -29,14 +29,16 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO_ROOT)
 
-from core.headless_browser import load_dotenv  # noqa: E402
+from core.headless_browser import default_profile_dir, load_dotenv  # noqa: E402
 
 # ローカルでは .env、CI では Secrets 由来の環境変数から読む。
 # load_dotenv は setdefault なので、環境変数があればそちらが優先される。
 load_dotenv()
 
 CLI = os.path.join(REPO_ROOT, "cli.py")
-PROFILE_DIR = os.path.join(REPO_ROOT, ".playwright-profile")
+# cli.py の子プロセスと同じ置き場 (KINDLE_SHOT_PROFILE_DIR があればそちら)。
+# CI ではリポジトリの外に置く。checkout の git clean で消えると毎回サインインになる (#31)
+PROFILE_DIR = default_profile_dir()
 
 ASIN = os.environ.get("KINDLE_SHOT_E2E_ASIN", "")
 HAS_CREDENTIALS = bool(
