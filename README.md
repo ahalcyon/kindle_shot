@@ -207,7 +207,7 @@ kindle_shot.bat check --profile kindle_cloud
 |-----------|------|------|
 | `--title` | （必須） | タイトル。保存フォルダ名・出力ファイル名になる |
 | `--out` | （必須） | 保存先フォルダ |
-| `--asin` / `--url` | なし | 指定すると Cloud Reader で本を開くところから実行。省略時はキャプチャから（本を開いておくこと） |
+| `--asin` / `--url` | なし | 指定すると Cloud Reader で本を開くところから実行し、撮影が終わったらそのタブを閉じる（`closed` イベント）。省略時はキャプチャから（本を開いておくこと。閉じない） |
 | `--profile` | `kindle_cloud` | キャプチャプロファイル |
 | `--format` | `searchable_pdf` | `image_pdf` / `text_pdf` / `searchable_pdf` / `markdown` |
 | `--page-turn` | プロファイルの値 | ページめくりキー（`right` / `left` / `pagedown` / `pageup` / `down` / `up`） |

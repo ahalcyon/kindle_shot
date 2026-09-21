@@ -2,6 +2,7 @@
 
 「本を URL で開く → 読み込み待ち → F11 全画面化 → リーダー UI を非表示化 →
 先頭ページへ巻き戻し」の一連の手順。キャプチャ開始前の準備を無人で行う。
+撮影が終わったら close_book で、開いたタブを閉じる (#147)。
 
 注意: 先頭ページへの巻き戻しは Kindle の読書位置 (Whispersync) を動かす。
 
@@ -448,3 +449,62 @@ def _open_impl(profile, *, asin, url, no_fullscreen, no_rewind, max_rewind, load
         presses=presses,
     )
     return EXIT_ERROR
+
+
+def close_book(profile, *, emit=null_emit):
+    """open_book が開いたリーダーのタブを閉じる。閉じたと確かめられたら True。
+
+    open_book は os.startfile で既定のブラウザに**新しいタブ**を開くので、閉じないと
+    撮影のたびにタブが溜まる (#147。画面経路のスモーク 33 回でタブ 33 個)。
+    全画面のままだと戻し忘れになるので、先に F11 で戻してから Ctrl+W を送る。
+
+    閉じたことはウィンドウの題名で確かめる（ウィンドウごと閉じたら題名は空になる）。
+    題名が変わらなければ、次にアクティブになったタブも Kindle か、キーが効かなかったか
+    のどちらかで区別できない。**その場合でも 2 度は送らない。** 次のタブは利用者が
+    開いたものかもしれず、閉じてよいのは自分で開いた 1 枚だけ。
+    """
+    import pyautogui as pag
+
+    from core.win32_utils import (
+        get_window_process_name,
+        get_window_title,
+        is_window_fullscreen,
+    )
+
+    engine = CaptureEngine(profile, exclude_pid=os.getpid())
+    hwnd = engine.find_target_window()
+    if hwnd is not None and profile.process_name:
+        exe = (get_window_process_name(hwnd) or "").lower()
+        if exe != profile.process_name.lower():
+            hwnd = None
+    if hwnd is None:
+        emit(
+            "closed",
+            human="閉じるタブが見つかりません（既に閉じているか、ブラウザが無い）",
+            ok=False,
+            reason="window_not_found",
+        )
+        return False
+
+    before = get_window_title(hwnd)
+    engine.activate_target_window(hwnd, emit=emit)
+    if is_window_fullscreen(hwnd):
+        pag.press("f11")
+        time.sleep(2)
+    pag.hotkey("ctrl", "w")
+    time.sleep(1.5)
+    after = get_window_title(hwnd)
+    ok = after != before
+    emit(
+        "closed",
+        human=(
+            "開いていたタブを閉じました"
+            if ok
+            else f"注意: タブを閉じたか確かめられません（題名が変わらない: {before!r}）"
+        ),
+        ok=ok,
+        title_before=before,
+        title_after=after,
+        reason=None if ok else "title_unchanged",
+    )
+    return ok
