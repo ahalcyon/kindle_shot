@@ -605,7 +605,10 @@ kindle_env\Scripts\python.exe -m pip install playwright
 kindle_env\Scripts\python.exe -m playwright install chromium
 ```
 
-セッションは `.playwright-profile/` に保持されるので、通常はログインが発生しません。
+セッションは `.playwright-profile/` に保持されるので、通常はログインが発生しません
+（置き場は環境変数 `KINDLE_SHOT_PROFILE_DIR` で変えられます。CI ではチェックアウトの
+外に置いています。毎回消えると毎回サインインになり、Amazon がパスキー登録のダイアログを
+出します。#31）。
 セッションが切れている場合は `.env` の `KINDLE_SHOT_AMAZON_EMAIL` /
 `KINDLE_SHOT_AMAZON_PASSWORD` を使って自動でサインインします
 （`.env` は `.gitignore` 済み。値はログに出ません）。

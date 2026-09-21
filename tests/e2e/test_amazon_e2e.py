@@ -4,8 +4,9 @@
 DOM に依存しているため、**Amazon 側の構造が変われば壊れる**。偽のページで
 代替すると、まさにその変化を検知できない。したがってここでは本物に当てる。
 
-セッションは使い回さず、毎回サインインから通す。ランナーが変われば
-セッションは無く、期限切れも起きるため、自動ログインこそ守るべき経路になる。
+セッションは使い回す（置き場は KINDLE_SHOT_PROFILE_DIR。CI ではチェックアウトの外）。
+毎回サインインすると Amazon がパスキー登録のダイアログを利用者の画面に出す (#31)。
+サインイン経路そのものは KINDLE_SHOT_E2E_FRESH_LOGIN=1 で明示的に検証する。
 
 必要な設定（いずれか欠けたら skip する）:
     KINDLE_SHOT_AMAZON_EMAIL     Amazon のメールアドレス
@@ -29,14 +30,16 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO_ROOT)
 
-from core.headless_browser import load_dotenv  # noqa: E402
+from core.headless_browser import default_profile_dir, load_dotenv  # noqa: E402
 
 # ローカルでは .env、CI では Secrets 由来の環境変数から読む。
 # load_dotenv は setdefault なので、環境変数があればそちらが優先される。
 load_dotenv()
 
 CLI = os.path.join(REPO_ROOT, "cli.py")
-PROFILE_DIR = os.path.join(REPO_ROOT, ".playwright-profile")
+# cli.py の子プロセスと同じ置き場 (KINDLE_SHOT_PROFILE_DIR があればそちら)。
+# CI ではリポジトリの外に置く。checkout の git clean で消えると毎回サインインになる (#31)
+PROFILE_DIR = default_profile_dir()
 
 ASIN = os.environ.get("KINDLE_SHOT_E2E_ASIN", "")
 HAS_CREDENTIALS = bool(
