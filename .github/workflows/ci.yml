@@ -149,8 +149,9 @@ jobs:
   # ログインで追加認証が入りうるため（サインインページへの到達自体は
   # 実測で確認済み: status 200 / CAPTCHA 無し）。
   #
-  # 毎回セッションを消してサインインから通す。ランナーが変わればセッションは
-  # 無く、期限切れも起きるため、自動ログインこそ守るべき経路になる。
+  # セッションは使い回す（下の KINDLE_SHOT_PROFILE_DIR）。毎回サインインすると
+  # Amazon がパスキー登録のダイアログを利用者の画面に出す (#31)。サインイン経路の
+  # 検証は KINDLE_SHOT_E2E_FRESH_LOGIN=1 で明示的に行う。
   amazon-e2e:
     name: e2e tests (real Amazon, self-hosted)
     runs-on: [self-hosted, windows]
@@ -175,7 +176,8 @@ jobs:
       # セッションはチェックアウトの外に置く。actions/checkout は毎回 git clean -ffdx で
       # リポジトリ内の .playwright-profile/ を消す (ログに "Removing .playwright-profile/")。
       # 消えると e2e のたびに新規サインインになり、Amazon がパスキー登録のダイアログを
-      # ランナーと同じログオンセッション＝利用者の画面に出す (#31。実測: 2026-09-21 に 3 回)
+      # ランナーと同じログオンセッション＝利用者の画面に出す (#31。実測: 2026-09-21 に 3 回)。
+      # この置き場を消す（_work/ の掃除など）と、次の 1 回だけサインインが走る
       - name: E2E against Amazon
         shell: cmd
         env:

@@ -45,6 +45,19 @@ def test_e2e_files_exist():
     assert not missing, f"ワークフローが存在しないファイルを参照しています: {missing}"
 
 
+def test_amazon_e2e_keeps_its_session_outside_the_checkout():
+    """実 Amazon の e2e はセッションをチェックアウトの外に置くこと (#31)。
+
+    actions/checkout は毎回 git clean -ffdx でリポジトリ内の .playwright-profile/ を
+    消す。中に置くと e2e のたびに新規サインインになり、Amazon がパスキー登録の
+    ダイアログを利用者の画面に出す。github.workspace（チェックアウトの中）に
+    戻したら落ちる。
+    """
+    m = re.search(r"KINDLE_SHOT_PROFILE_DIR:[ \t]*(.+)", workflow_text())
+    assert m, "amazon-e2e の env に KINDLE_SHOT_PROFILE_DIR がありません"
+    assert "runner.workspace" in m.group(1) and "github.workspace" not in m.group(1)
+
+
 def test_unit_job_excludes_e2e():
     """ユニットのジョブが e2e を巻き込まないこと（実機依存で落ちるため）。"""
     assert 'pytest -m "not e2e" -q' in workflow_text()
